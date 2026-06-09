@@ -383,11 +383,117 @@ Remaining Low issues:
 
 Review gate summary: zero unresolved High or Medium findings.
 
-## Post-Implementation Evidence Placeholder
+## Post-Implementation Evidence
 
-- Actual files changed:
-- Actual size/free-space delta:
-- Exact test commands/results:
-- Deploy/hardware evidence or no-deploy reason:
-- Remaining low-risk issues:
-- Final acceptance status:
+Actual files changed:
+
+- `src/dlcp_fw/asm/dlcp_main_v34.asm`
+- `firmware/patched/releases/DLCP_Firmware_V3.4.hex`
+- `crates/dlcp-sim-py/src/lib.rs`
+- `src/dlcp_fw/sim/dlcp_sim_native.py`
+- `tests/sim/test_v34_mute_refresh_bug.py`
+- `tests/sim/test_v32_flasher_sim_backend_hid.py`
+- `tests/sim/test_v34_v173_i2c_recovery_contract.py`
+- `tests/sim/test_v34_v173_refactoring_contracts.py`
+- `docs/IMPL_MUTE_DSP_REFRESH_BUG.md`
+
+Actual implementation summary:
+
+- Added `stock_094.bit5` as the V3.4 user-mute latch.
+- Explicit mute-on and HID mute import set the latch; explicit mute-off,
+  HID unmute import, and real changed user-volume actions clear it.
+- Automated volume-dirty refreshes now preserve effective mute: while
+  `active_flags.bit4` is set they route through the mute-zero path instead
+  of clearing mute and writing a non-zero TAS3108 `0x30` coefficient.
+- SRC4382 non-PCM auto-mute can clear only its own automatic mute; it does
+  not clear user mute or preset force-mute ownership.
+- Muted zero writes now use the verified TAS3108 volume write path for
+  ACK/NACK retry and fault escalation.
+- `volume_dsp_write` now suppresses clean `BF/08=0` chatter when there was no
+  prior DSP fault, while preserving a visible fault-clear transition.
+- Kept V1.72/V3.4 mixed preset filename compatibility by avoiding extra clean
+  BF/08 traffic during normal zero-write success.
+
+Actual size/free-space metrics:
+
+- Baseline before this implementation: `used_bytes_pre_preset_b=15099`,
+  `last_used_pre_preset_b=0x4B6F`,
+  `free_bytes_before_0x4C00=144`, `free_object_words=72`.
+- Final canonical V3.4: `used_bytes_pre_preset_b=15115`,
+  `last_used_pre_preset_b=0x4B7D`,
+  `free_bytes_before_0x4C00=130`, `free_object_words=65`.
+- Acceptance floor remains met: `free_object_words >= 64` and
+  `byte_margin >= 128`.
+
+Exact test commands/results:
+
+```bash
+cargo build --release -p dlcp-sim-py
+# passed
+
+bash crates/dlcp-sim-py/build.sh
+# refreshed src/dlcp_sim_native.so
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v34_mute_refresh_bug.py
+# 16 passed in 14.55s
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q \
+  tests/sim/test_v34_mute_refresh_bug.py \
+  tests/sim/test_v34_v173_compatibility.py \
+  tests/sim/test_v34_v173_i2c_recovery_contract.py \
+  tests/sim/test_v34_v173_refactoring_contracts.py \
+  tests/sim/test_v34_v173_release_builders.py \
+  tests/sim/test_dlcp_v34_release_flash.py \
+  tests/sim/test_ram_bank_safety.py \
+  tests/sim/test_firmware_version_label.py
+# 71 passed in 51.04s
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q -n 16 tests/sim
+# 1484 passed, 1 skipped, 6 failed, 13 warnings in 476.75s
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q \
+  tests/sim/test_v32_flasher_sim_backend_hid.py::test_v32_firmware_hid_entrypoint_matches_listing
+# 1 passed in 0.08s
+```
+
+Full-suite failures observed in the long run:
+
+- `tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_and_b_finalize_switches_b_and_restores_a`
+- `tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_all_ch_requests_post_flash_finalize`
+- `tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_warns_when_diag_memread_endpoint_is_missing`
+- `tests/sim/test_dlcp_main_flash_capture_overlay.py::test_cli_capture_a_warns_when_eeprom_name_has_not_persisted_yet`
+- `tests/sim/test_v32_flasher_sim_backend_hid.py::test_v32_firmware_hid_entrypoint_matches_listing`
+- `tests/sim/test_v32_release_flash_sim.py::test_v32_release_flash_sim_full_main_post_flash_state`
+
+The V32 HID entrypoint failure was caused by this implementation replacing the
+V3.2-only helper with the loaded-hex symbol resolver; the test was updated and
+rerun green as shown above.
+
+Known remaining full-suite failures after that fix:
+
+- The four `test_dlcp_main_flash_capture_overlay.py` failures enter live EP0
+  profile probing from flasher unit tests and fail with `DLCP not found`.
+- The V32 release-flash sim failure expects setup profile `0x03` but the
+  current flasher path verifies `0x04` after default Hypex profile
+  application.
+
+These remaining failures are outside the V3.4 mute firmware path and remain
+separate flasher/profile cleanup work.
+
+Deploy/hardware evidence:
+
+- No live flashing or hardware validation was performed in this implementation
+  turn.  This is a MAIN firmware/sim fix only; hardware smoke remains the
+  release gate before deploying to a live rig.
+
+Remaining low-risk issues:
+
+- Full sim gate has unrelated flasher/profile failures listed above, so this
+  commit is not a whole-repo release-ready declaration.
+
+Final acceptance status:
+
+- Sim-focused implementation acceptance is met.
+- V3.4/V1.73 release-adjacent mute and compatibility tests pass.
+- Release-ready status is pending unrelated flasher/profile cleanup and live
+  muted-playback smoke evidence.

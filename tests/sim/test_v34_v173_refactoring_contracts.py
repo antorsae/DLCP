@@ -178,6 +178,11 @@ def test_v34_parser_forwarded_bytes_mark_chain_tx_emitted_before_uart_tx() -> No
 
 def test_v34_reply_helpers_participate_in_chain_tx_emitted_contract() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    helper_body = _label_body(text, "mark_chain_tx_emitted_bsr0", ["send_dsp_fault_status"])
+    assert "bsf         chain_tx_emitted_b2, 0, BANKED" in helper_body
+    assert "movlb       0x00" in helper_body
+    assert "return      0" in helper_body
+
     required = {
         "send_status_burst": ["send_status_burst_preamble"],
         "report_cmd29_status": ["cmd21_diag_query_handler"],
@@ -190,7 +195,10 @@ def test_v34_reply_helpers_participate_in_chain_tx_emitted_contract() -> None:
     missing = []
     for label, next_labels in required.items():
         body = _label_body(text, label, next_labels)
-        if "bsf         chain_tx_emitted_b2, 0, BANKED" not in body:
+        if (
+            "bsf         chain_tx_emitted_b2, 0, BANKED" not in body
+            and "rcall       mark_chain_tx_emitted_bsr0" not in body
+        ):
             missing.append(label)
     assert not missing
 

@@ -86,18 +86,19 @@ __version__: str = _native.__version__
 
 
 @_lru_cache(maxsize=None)
-def _v32_main_symbol(name: str, fallback: int) -> int:
-    """Resolve a canonical V3.2 MAIN symbol from the gpasm listing.
+def _main_symbol_for_hex(hex_path: str | None, name: str, fallback: int) -> int:
+    """Resolve a MAIN symbol from the gpasm listing for ``hex_path``.
 
     The PyO3 helper executes firmware subroutines by PC.  Those PCs move when
-    V3.2 source changes, so keep the native fallback for old binaries but feed
-    current labels from the release listing whenever available.
+    source changes, so keep the native fallback for old binaries but feed
+    current labels from the listing matching the loaded MAIN image whenever
+    available.
     """
     try:
         from dlcp_fw.paths import V32_MAIN_HEX
         from dlcp_fw.sim.v30_symbols import load_gpasm_symbols_for_hex
 
-        symbols = load_gpasm_symbols_for_hex(V32_MAIN_HEX)
+        symbols = load_gpasm_symbols_for_hex(_Path(hex_path) if hex_path else V32_MAIN_HEX)
         if symbols and name in symbols:
             return int(symbols[name])
     except Exception:
@@ -139,9 +140,14 @@ class Chain:
         window.
     """
 
-    __slots__ = ("_inner",)
+    __slots__ = ("_inner", "_main_hex_path")
 
-    def __init__(self, _inner: "_native.Chain") -> None:
+    def __init__(
+        self,
+        _inner: "_native.Chain",
+        *,
+        main_hex_path: str | None = None,
+    ) -> None:
         # Private constructor -- factory methods only.
         # The leading underscore on the parameter is the
         # convention this codebase uses to mark "not for
@@ -150,6 +156,7 @@ class Chain:
         # method to this facade instead of bypassing
         # :meth:`from_v171_v32`.
         self._inner = _inner
+        self._main_hex_path = main_hex_path
 
     @classmethod
     def from_v171_v32(
@@ -195,12 +202,19 @@ class Chain:
 
         After return the chain is ready for :meth:`step_ticks`.
         """
+        if main_hex_path is None:
+            from dlcp_fw.paths import V32_MAIN_HEX
+
+            resolved_main_hex = str(V32_MAIN_HEX)
+        else:
+            resolved_main_hex = main_hex_path
         return cls(
             _native.Chain.from_v171_v32(
                 control_hex_path,
                 main_hex_path,
                 v23_seed_hex_path,
-            )
+            ),
+            main_hex_path=resolved_main_hex,
         )
 
     @classmethod
@@ -223,7 +237,9 @@ class Chain:
         (app-only) merged onto V2.3-combined (silicon-correct
         boot block + EEPROM).
         """
-        return cls(_native.Chain.from_v171_v31())
+        from dlcp_fw.paths import V31_MAIN_HEX
+
+        return cls(_native.Chain.from_v171_v31(), main_hex_path=str(V31_MAIN_HEX))
 
     @classmethod
     def from_v3x_main_only(
@@ -242,19 +258,26 @@ class Chain:
         chain frames into MAIN's RX ring (V3.x native_ring
         layout: rd at 0x0C6, wr at 0x0C7, ring at 0x0200).
         """
-        return cls(_native.Chain.from_v3x_main_only(
-            v3x_main_hex_path, v23_seed_hex_path,
-        ))
+        return cls(
+            _native.Chain.from_v3x_main_only(
+                v3x_main_hex_path, v23_seed_hex_path,
+            ),
+            main_hex_path=v3x_main_hex_path,
+        )
 
     @classmethod
     def from_v31_main_only(cls) -> "Chain":
         """Convenience: V3.1 MAIN-only chain."""
-        return cls(_native.Chain.from_v31_main_only())
+        from dlcp_fw.paths import V31_MAIN_HEX
+
+        return cls(_native.Chain.from_v31_main_only(), main_hex_path=str(V31_MAIN_HEX))
 
     @classmethod
     def from_v32_main_only(cls) -> "Chain":
         """Convenience: V3.2 MAIN-only chain."""
-        return cls(_native.Chain.from_v32_main_only())
+        from dlcp_fw.paths import V32_MAIN_HEX
+
+        return cls(_native.Chain.from_v32_main_only(), main_hex_path=str(V32_MAIN_HEX))
 
     @classmethod
     def from_v17_v3x_chain(
@@ -274,9 +297,12 @@ class Chain:
         V2.3-combined.hex`` when ``v23_seed_hex_path`` is
         ``None``) for silicon-correct boot.
         """
-        return cls(_native.Chain.from_v17_v3x_chain(
-            control_hex_path, v3x_main_hex_path, v23_seed_hex_path,
-        ))
+        return cls(
+            _native.Chain.from_v17_v3x_chain(
+                control_hex_path, v3x_main_hex_path, v23_seed_hex_path,
+            ),
+            main_hex_path=v3x_main_hex_path,
+        )
 
     @classmethod
     def from_v17_chain(
@@ -308,7 +334,10 @@ class Chain:
         chain-probe finding.  For V3.x main use a 3-core
         factory like :meth:`from_v171_v32`.
         """
-        return cls(_native.Chain.from_v17_chain(control_hex_path, main_hex_path))
+        return cls(
+            _native.Chain.from_v17_chain(control_hex_path, main_hex_path),
+            main_hex_path=main_hex_path,
+        )
 
     @classmethod
     def from_v17_control_only(cls, control_hex_path: str) -> "Chain":
@@ -640,7 +669,7 @@ class Chain:
         max_steps: int = 20_000,
     ) -> tuple[bytes, int]:
         """Execute one app-mode 64-byte HID report through the
-        running V3.2 firmware's EP1 OUT/IN service path.
+        running V3.x firmware's EP1 OUT/IN service path.
 
         This models a configured EP1 transaction at the firmware
         dispatcher boundary rather than emulating command semantics in
@@ -650,8 +679,12 @@ class Chain:
         entries into ``hid_command_dispatch``.
         """
         report = [int(b) & 0xFF for b in payload]
-        main_usb_service_pc = _v32_main_symbol("main_usb_service_3a26", 0x3436)
-        hid_command_dispatch_pc = _v32_main_symbol("hid_command_dispatch", 0x10AC)
+        main_usb_service_pc = _main_symbol_for_hex(
+            self._main_hex_path, "main_usb_service_3a26", 0x3436
+        )
+        hid_command_dispatch_pc = _main_symbol_for_hex(
+            self._main_hex_path, "hid_command_dispatch", 0x10AC
+        )
         response, dispatch_hits = self._inner.firmware_hid_report(
             int(unit),
             report,
@@ -830,6 +863,17 @@ class Chain:
         if payload is None:
             return None
         return bytes(payload)
+
+    def read_main_dsp_write_payloads(self, unit: int, subaddr: int) -> list[bytes]:
+        """Read all completed TAS3108 write payloads that started at
+        ``subaddr`` for one MAIN's DSP slave, in completion order.
+        """
+        return [
+            bytes(payload)
+            for payload in self._inner.read_main_dsp_write_payloads(
+                int(unit), int(subaddr) & 0xFF
+            )
+        ]
 
     def reset_main_dsp_write_log(self, unit: int) -> None:
         """Clear one MAIN-coupled TAS3108 completed-write log."""

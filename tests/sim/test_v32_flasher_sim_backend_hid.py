@@ -75,8 +75,14 @@ def test_v32_firmware_hid_entrypoint_matches_listing() -> None:
     py_facade_src = (PROJECT_ROOT / "src/dlcp_fw/sim/dlcp_sim_native.py").read_text(
         encoding="utf-8"
     )
-    assert "_v32_main_symbol(\"main_usb_service_3a26\"" in py_facade_src
-    assert native_facade._v32_main_symbol("main_usb_service_3a26", 0) == service_pc
+    assert "_main_symbol_for_hex(" in py_facade_src
+    assert "main_usb_service_3a26" in py_facade_src
+    assert (
+        native_facade._main_symbol_for_hex(
+            str(V32_MAIN_HEX), "main_usb_service_3a26", 0
+        )
+        == service_pc
+    )
 
     rust_facade_src = (PROJECT_ROOT / "crates/dlcp-sim-py/src/lib.rs").read_text(
         encoding="utf-8"

@@ -2083,6 +2083,18 @@ impl Chain {
             .map(|payload| payload.to_vec()))
     }
 
+    /// Return all completed TAS3108 write payloads that started at
+    /// `subaddr` for a specific MAIN's DSP slave, in completion order.
+    fn read_main_dsp_write_payloads(&self, unit: u8, subaddr: u8) -> PyResult<Vec<Vec<u8>>> {
+        let i_dsp = self.tas3108_slave_index(unit, "read_main_dsp_write_payloads")?;
+        Ok(self.inner.tas3108_slaves[i_dsp]
+            .write_log()
+            .iter()
+            .filter(|tx| tx.start_subaddr == subaddr)
+            .map(|tx| tx.payload.clone())
+            .collect())
+    }
+
     /// Clear the completed TAS3108 write-log for one MAIN's DSP slave.
     fn reset_main_dsp_write_log(&mut self, unit: u8) -> PyResult<()> {
         let i_dsp = self.tas3108_slave_index(unit, "reset_main_dsp_write_log")?;

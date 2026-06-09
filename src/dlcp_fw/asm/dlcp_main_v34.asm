@@ -156,6 +156,9 @@ filename_dirty_flags     EQU  0x0BD   ; bit5 = stock filename RAM slot dirty
                                        ;        clobber RAM via
                                        ;        preset_load_filename mid-
                                        ;        HOLDING)
+; stock_094.bit5 is the V3.4 user-mute latch. active_flags.bit4 is the
+; effective mute target and can also be set by SRC status or preset force-mute;
+; this latch distinguishes user intent from automatic mute ownership.
 preset_hold_timer_lo     EQU  0x08C   ; Timer3 ISR countdown low byte used by HOLDING
 preset_hold_timer_hi     EQU  0x08D   ; Timer3 ISR countdown high byte used by HOLDING
 
@@ -254,7 +257,7 @@ diag_inc_sat MACRO counter
 ; cold-init path (flow_main_flash_service_3ce8_3d4e).
 ; ---------------------------------------------------------------------------
     org 0x1000
-    goto        flow_app_entry_1014                 ; 0x1000 user reset trampoline
+    bra         flow_app_entry_1014                 ; 0x1000 user reset trampoline
     dw          0xFFFF
     dw          0xFFFF
     movff       FSR2L, isr_save_fsr2l_b0_phys               ; 0x1008 ISR shadow vector entry
@@ -513,9 +516,13 @@ flow_hid_command_dispatch_11ce:
     movlb       0x1
     btfsc       stock_123_b1, 0, BANKED
     bra         flow_hid_command_dispatch_11ec
+    movlb       0x0
+    bcf         stock_094_b0, 5, BANKED
     bcf         active_flags_acc, 4, ACCESS
     bra         flow_hid_command_dispatch_11ee
 flow_hid_command_dispatch_11ec:
+    movlb       0x0
+    bsf         stock_094_b0, 5, BANKED
     bsf         active_flags_acc, 4, ACCESS
 flow_hid_command_dispatch_11ee:
     movlb       0x1
@@ -1438,7 +1445,6 @@ flow_cmd_dispatch_gated_194c:
     movlw       0x0B
     movwf       stock_006_acc, ACCESS
     movlw       0xF0
-    bra         cmd_dispatch_gated_i2c_pair
 cmd_dispatch_gated_i2c_pair:
     movwf       stock_00D_acc, ACCESS
     movlw       0x0D
@@ -1484,12 +1490,15 @@ flow_cmd_dispatch_gated_19a8:
     movlb       0x0
     btfss       event_flags_b0, 3, BANKED
     bra         flow_cmd_dispatch_gated_1a76
-    ; V3.2: skip unmute if a user cmd 0x03 mute arrived this pass.
-    ; event_flags.5 is only set by cmd 0x03 mute/unmute handlers;
-    ; preset_force_mute clears it, so a set bit here means user intent.
-    btfss       event_flags_b0, 5, BANKED
-    bcf         active_flags_acc, 4, ACCESS
-    ; Leave event_flags.5 for the mute handler at 1a9c to process.
+    ; V3.4 BUG-MUTE-REFRESH-01: route/SRC/HID/wake refreshes can make
+    ; volume_dirty without being user volume movement. While effective mute is
+    ; set, route the dirty volume pass through the existing mute service; real
+    ; user unmute/volume movement clears active_flags.bit4 before this point.
+    btfss       active_flags_acc, 4, ACCESS
+    bra         flow_cmd_dispatch_gated_volume_unmuted
+    bsf         event_flags_b0, 5, BANKED
+    bra         flow_cmd_dispatch_gated_1a76
+flow_cmd_dispatch_gated_volume_unmuted:
     bsf         event_flags_b0, 6, BANKED
     clrf        stock_0A4_b0, BANKED
     movff       stock_0A4_b0_phys, stock_0B0_b0_phys
@@ -1557,6 +1566,7 @@ flow_cmd_dispatch_gated_19e6:
     movff       stock_031_b0_phys, i2c_coeff_2_b0_phys
     movff       stock_032_b0_phys, i2c_coeff_3_b0_phys
     call        volume_dsp_write, 0x0       ; V3.1 Fix B: verified volume write
+flow_cmd_dispatch_gated_volume_done:
     rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
     bsf         filename_dirty_flags_b0, 0, BANKED
@@ -1596,14 +1606,13 @@ flow_cmd_dispatch_gated_reapply_skip_name:
     bra         flow_cmd_dispatch_gated_1a9c
 flow_cmd_dispatch_gated_reapply_wait_name:
     bsf         RCSTA, 4, ACCESS
-    bra         flow_cmd_dispatch_gated_1a9c
 flow_cmd_dispatch_gated_1a9c:
     movlb       0x0
     btfss       event_flags_b0, 5, BANKED
     bra         flow_cmd_dispatch_gated_1aca
     btfss       active_flags_acc, 4, ACCESS
     bra         flow_cmd_dispatch_gated_1ab6
-    call        clrf_i2c_coeff_0123_and_write, 0x0  ; W03-E02: factored 5-line pattern
+    call        clrf_i2c_coeff_0123_and_write, 0x0  ; verified zero write via volume_dsp_write
     bra         flow_cmd_dispatch_gated_1ab8
 flow_cmd_dispatch_gated_1ab6:
     bsf         event_flags_b0, 3, BANKED
@@ -1666,7 +1675,6 @@ flow_cmd_dispatch_gated_1b46:
 flow_cmd_dispatch_gated_1b48:
     movwf       stock_013_acc, ACCESS
     call        main_i2c_service_381c, 0x0
-    bra         flow_cmd_dispatch_gated_1b8c
 flow_cmd_dispatch_gated_1b8c:
     rcall       usb_mailbox_service_05          ; W02-E03: factored 6-line pattern
     movlb       0x0
@@ -1976,6 +1984,7 @@ cmd03_mute_on_handler:
     btfsc       stock_094_b0, 3, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1cd6
     bsf         active_flags_acc, 4, ACCESS              ; user mute on
+    bsf         stock_094_b0, 5, BANKED                  ; remember user-owned mute
     ; V3.2: if preset job active, record user wants mute
     movlb       0x2
     tstfsz      preset_job_state_b2, BANKED             ; skip if IDLE
@@ -2026,6 +2035,7 @@ flow_main_uart_service_1be6_1cd6:
 cmd03_mute_off_handler:
     btfsc       stock_094_b0, 3, BANKED                 ; HID query mode?
     bra         flow_main_uart_service_1be6_1cd6
+    bcf         stock_094_b0, 5, BANKED                  ; explicit user unmute
     ; V3.2: during a force-muted preset job, suppress the actual mute-off
     ; so the DSP stays muted while the table apply is in progress.
     ; Only record the user's desire for COMMIT to act on later.
@@ -2156,6 +2166,12 @@ flow_main_uart_service_1be6_1d68:
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d6c:
     bsf         event_flags_b0, 3, BANKED
+    ; Real user volume movement is a V1.73 compatibility unmute. Periodic
+    ; full-sync volume frames do not reach this branch because unchanged
+    ; volume exits above.
+    bcf         stock_094_b0, 5, BANKED
+    bcf         active_flags_acc, 4, ACCESS
+    bcf         active_flags_acc, 5, ACCESS
     ; V3.1 Fix B': do NOT copy computed->logical here (deferred to volume_dsp_write)
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d80:
@@ -2168,7 +2184,7 @@ flow_main_uart_service_1be6_1d8a:
     movf        current_cmd_data_b0, W, BANKED
     xorlw       0x29
     bz          flow_main_uart_service_1be6_1d8a_report
-    goto        flow_main_uart_service_1be6_1e6c
+    bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d8a_report:
     call        report_cmd29_status, 0x0
     bra         flow_main_uart_service_1be6_1e6c
@@ -2300,7 +2316,6 @@ flow_main_uart_service_1be6_1e6c:
     bra         flow_main_uart_service_1be6_1e80
     movlb       0x02
     bsf         chain_tx_emitted_b2, 0, BANKED
-    movlb       0x00
     movlb       0x0
     movf        stock_0BC_b0, W, BANKED
     call        uart_tx_byte_blocking, 0x0
@@ -2553,7 +2568,7 @@ flow_main_core_service_1e88_20c2:
     clrf        stock_008_acc, ACCESS
     movlw       0x82
     movwf       stock_007_acc, ACCESS
-    movlw       0x7D                            ; V3.4_RUNTIME_EEPROM_REV
+    movlw       0x7F                            ; V3.4_RUNTIME_EEPROM_REV
     movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
@@ -3559,8 +3574,18 @@ flow_main_i2c_service_27f0_292e:
     movlb       0x0
     movwf       stock_0BF_b0, BANKED
     movf        stock_0BF_b0, W, BANKED
-    btfss       STATUS, 2, ACCESS
+    bnz         flow_main_i2c_service_27f0_nonpcm_mute
+    btfsc       stock_094_b0, 5, BANKED
+    bra         flow_main_i2c_service_27f0_mute_status
+    movlb       0x2
+    movf        preset_job_state_b2, F, BANKED
+    movlb       0x0
+    btfsc       STATUS, 2, ACCESS
+    bcf         active_flags_acc, 4, ACCESS
+    bra         flow_main_i2c_service_27f0_mute_status
+flow_main_i2c_service_27f0_nonpcm_mute:
     bsf         active_flags_acc, 4, ACCESS
+flow_main_i2c_service_27f0_mute_status:
     movlw       0x01
     btfss       active_flags_acc, 4, ACCESS
     movlw       0x00
@@ -4265,7 +4290,7 @@ preset_b_remap_start_addr_return:
     return      0
 
 flash_write:
-    call        preset_b_remap_start_addr, 0x0
+    rcall       preset_b_remap_start_addr
 flash_write_stock:
     clrf        stock_010_acc, ACCESS
     movff       stock_003_b0_phys, stock_014_b0_phys
@@ -5638,7 +5663,7 @@ preset_table_apply_entry_core:
     clrf        stock_008_acc, ACCESS
     movlw       0x04                                ; first read: 4-byte header (TAS reg + len)
     movwf       stock_007_acc, ACCESS
-    call        flash_read_fsr2_0017, 0x0           ; W05-E04 helper; far-safe after M1 growth
+    rcall       flash_read_fsr2_0017                ; W05-E04 helper; now in relative range
     movff       stock_018_b0_phys, stock_02F_b0_phys                ; ram_0x02F = TAS reg byte
     movff       stock_019_b0_phys, stock_031_b0_phys                ; ram_0x031 = byte count
     movlw       0x19                                ; >= 25 -> end-of-table sentinel
@@ -5656,7 +5681,7 @@ preset_table_apply_entry_core:
     clrf        stock_006_acc, ACCESS
     movff       stock_031_b0_phys, stock_007_b0_phys                ; second read = data block
     clrf        stock_008_acc, ACCESS
-    call        flash_read_fsr2_0017, 0x0
+    rcall       flash_read_fsr2_0017
     bsf         SSPCON2, 0, ACCESS                  ; SEN — START
     call        wait_sen_bounded, 0x0
     bc          preset_table_apply_entry_timeout
@@ -7755,21 +7780,22 @@ main_uart_service_44b2:
 ; ---------------------------------------------------------------------------
 ; Shared factor for the "clear i2c_coeff_0..3 then write a zero coefficient
 ; block to the DSP" pattern. Clears the 4-byte i2c_coeff_0..i2c_coeff_3 RAM
-; block (0x055..0x058, ACCESS) and then FALLS THROUGH into
-; i2c_tas3108_coeff_write — the helper is positioned immediately before
-; that function so no branch is required on exit.
+; block (0x055..0x058, ACCESS) and then jumps into volume_dsp_write so the
+; muted zero write uses the same ACK/NACK retry and BF/08 fault contract as
+; normal volume writes.
 ;
 ; Callers:
 ;   - flow_cmd_dispatch entry clear + write  (was 5 inline lines)
 ;   - flow_cmd_dispatch_gated post-gate write (was 5 inline lines)
 ;   - mssp_hard_reset post-reset clear + write (was 5 inline lines)
-;   - preset_force_mute  (tail-call via `bra`; helper fall-through chains
-;                         i2c_tas3108_coeff_write's `return` back to the
-;                         caller of preset_force_mute)
+;   - preset_force_mute  (tail-call via `bra`; helper chains through
+;                         volume_dsp_write's `return` back to the caller of
+;                         preset_force_mute)
 ;
-; BSR/Z/W: helper only executes `clrf` on ACCESS registers and falls
-; through; BSR unchanged, STATUS.Z = 1 (last clrf), W unchanged. All four
-; callers immediately return/branch without relying on post-pattern flags.
+; BSR/Z/W: helper only executes `clrf` on ACCESS registers before jumping;
+; BSR unchanged at entry to volume_dsp_write, STATUS.Z = 1 (last clrf),
+; W unchanged. All four callers immediately return/branch without relying on
+; post-pattern flags.
 ;
 ; Savings : (sites 1-3) 3 × (12 B -> 4 B) + (site 4) 1 × (12 B -> 2 B)
 ;           − 8 B helper = 24 + 10 − 8 = 26 B.
@@ -7779,7 +7805,7 @@ clrf_i2c_coeff_0123_and_write:
     clrf        i2c_coeff_1_acc, ACCESS
     clrf        i2c_coeff_2_acc, ACCESS
     clrf        i2c_coeff_3_acc, ACCESS
-    ; fall through into i2c_tas3108_coeff_write
+    goto        volume_dsp_write
 
 ; ---------------------------------------------------------------------------
 ; Function: i2c_tas3108_coeff_write        (DSP volume coefficient write)
@@ -9297,11 +9323,14 @@ dsp_ping_nack:
 ; ---------------------------------------------------------------------------
 ; Send DSP Fault Status (Fix E) — BF/08 frame to CONTROL
 ; ---------------------------------------------------------------------------
-send_dsp_fault_status:
-    movlb       0x00
+mark_chain_tx_emitted_bsr0:
     movlb       0x02
     bsf         chain_tx_emitted_b2, 0, BANKED
     movlb       0x00
+    return      0
+
+send_dsp_fault_status:
+    rcall       mark_chain_tx_emitted_bsr0
     movf        dsp_fault_flags_b0, W, BANKED
     andlw       0x44                        ; bits 6 + 2
     movwf       stock_00D_acc, ACCESS           ; save in ram_0x00D (uart_tx clobbers ram_0x003)
@@ -9517,9 +9546,7 @@ cmd22_reset_flags_query_handler:
 ; through the normal parser tail.
 ; ---------------------------------------------------------------------------
 cmd23_health_query_handler:
-    movlb       0x02
-    bsf         chain_tx_emitted_b2, 0, BANKED
-    movlb       0x00
+    rcall       mark_chain_tx_emitted_bsr0
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movlw       0x2C
@@ -9539,9 +9566,7 @@ cmd23_health_query_handler:
 ; into nibbles so future revs above 0x7F cannot look like route bytes.
 ; ---------------------------------------------------------------------------
 cmd25_identity_query_handler:
-    movlb       0x02
-    bsf         chain_tx_emitted_b2, 0, BANKED
-    movlb       0x00
+    rcall       mark_chain_tx_emitted_bsr0
     ; START carries the full 6-bit route-safe query id; the remaining
     ; four payloads are low nibbles and can reuse diag_send_burst_xx.
     movlw       0xBF
@@ -9558,7 +9583,7 @@ cmd25_identity_query_handler:
     movwf       stock_006_acc, ACCESS
     movlw       0x07                        ; V3.4_IDENTITY_REV_HI
     movwf       stock_007_acc, ACCESS
-    movlw       0x0D                        ; V3.4_IDENTITY_REV_LO
+    movlw       0x0F                        ; V3.4_IDENTITY_REV_LO
     movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       stock_004_acc, ACCESS
@@ -9704,7 +9729,7 @@ filename_read_source_eep:
     addwf       fn_job_tmp_b2, W, BANKED
     movwf       stock_003_acc, ACCESS
     clrf        stock_004_acc, ACCESS
-    call        eeprom_read_byte, 0x0
+    rcall       eeprom_read_byte
     return      0
 filename_read_source_ram:
     lfsr        FSR2, preset_filename_ram_base
@@ -9840,9 +9865,7 @@ filename_emit_frame:
 ; storm → unit hang.
 ; ---------------------------------------------------------------------------
 diag_send_burst_xx:
-    movlb       0x02
-    bsf         chain_tx_emitted_b2, 0, BANKED
-    movlb       0x00
+    rcall       mark_chain_tx_emitted_bsr0
     movlw       0xBF
     rcall       uart_tx_byte_blocking
     movf        i2c_coeff_3_acc, W, ACCESS
@@ -9872,9 +9895,11 @@ volume_dsp_write:
     bcf         event_flags_b0, 3, BANKED      ; clear volume dirty
     bsf         event_flags_b0, 7, BANKED      ; boot-complete gate
     rcall       copy_computed_volume_to_logical_volume  ; W02-E07: in range after W01-R01
-    bcf         dsp_fault_flags_b0, 6, BANKED  ; clear DSP fault (write worked)
     movlw       0xC7
     andwf       dsp_fault_flags_b0, F, BANKED  ; clear retry counter, preserve bits 7,6
+    btfss       dsp_fault_flags_b0, 6, BANKED  ; only report a real fault-clear transition
+    return      0
+    bcf         dsp_fault_flags_b0, 6, BANKED  ; clear DSP fault (write worked)
     bra         send_dsp_fault_status
 vol_write_nacked:
     movlw       0x08
@@ -9917,7 +9942,7 @@ vol_retry_ok:
 ;           Return with C=0 on success, C=1 on bounded START/STOP timeout.
 ; ---------------------------------------------------------------------------
 preset_job_apply_i2c_recover:
-    call        i2c_timeout_recover_advertise, 0x0
+    rcall       i2c_timeout_recover_advertise
     return      0
 
 preset_job_apply_i2c_entry:
@@ -10737,7 +10762,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0x7D, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x04, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

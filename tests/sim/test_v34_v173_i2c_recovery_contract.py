@@ -74,6 +74,9 @@ def test_v34_async_apply_timeout_retries_same_entry_after_visible_recovery() -> 
 
     assert "bc          preset_job_apply_retry" in apply_body
     assert "bc          preset_job_apply_retry" in retry_body
-    assert "call        i2c_timeout_recover_advertise, 0x0" in recover_body
+    assert (
+        "call        i2c_timeout_recover_advertise, 0x0" in recover_body
+        or "rcall       i2c_timeout_recover_advertise" in recover_body
+    )
     assert "bsf         STATUS, 0, ACCESS" in helper_body
     assert "incf        preset_job_index_b2" not in retry_body
