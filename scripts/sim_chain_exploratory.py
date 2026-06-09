@@ -501,8 +501,13 @@ class Explorer:
         chain.mark_main1_rx_capture_point()
         chain.mark_tx_capture_point()
         chain.mark_main1_tx_capture_point()
+        cursor_map = getattr(self, "_dsp30_cursor", {0: 0, 1: 0})
         main_diag = []
         for unit in (0, 1):
+            tas30_all = chain.read_main_dsp_write_payloads(unit, TAS_VOLUME_SUBADDR)
+            tas30_cursor = cursor_map.get(unit, 0)
+            tas30_since = tas30_all[tas30_cursor:]
+            cursor_map[unit] = len(tas30_all)
             main_diag.append(
                 {
                     "unit": unit,
@@ -527,12 +532,11 @@ class Explorer:
                     # TAS3108 volume-coefficient (0x30) write history: the
                     # ground truth for mute-leak detection (a non-zero 0x30
                     # write while mute_latch is set = audio returning).
-                    "tas30_last_write": (
-                        chain.read_main_dsp_write_payload(unit, TAS_VOLUME_SUBADDR) or b""
-                    ).hex(),
-                    "tas30_write_count": len(
-                        chain.read_main_dsp_write_payloads(unit, TAS_VOLUME_SUBADDR)
-                    ),
+                    "tas30_last_write": (tas30_all[-1].hex() if tas30_all else ""),
+                    "tas30_write_count": len(tas30_all),
+                    # every distinct 0x30 write since the previous sample (capped),
+                    # so a transient unmute-while-muted is visible to the oracle.
+                    "tas30_writes_since": [p.hex() for p in tas30_since[-16:]],
                     # ACTUAL DSP preset-coefficient fingerprint.  The biquad
                     # range 0x37..0x90 (per test_v171_v32_dual_main_preset_sync)
                     # is the preset-defining coefficient block; it EXCLUDES
@@ -1013,6 +1017,10 @@ class Explorer:
 
     def _run_session(self, config: SessionConfig) -> None:
         chain = self._new_chain(config)
+        # per-unit cursor into each DSP's TAS 0x30 write log, so each sample can
+        # report the volume-coefficient writes SINCE the previous sample (a
+        # non-zero write while muted must not be hidden by a later zero write).
+        self._dsp30_cursor = {0: 0, 1: 0}
         previous: dict[str, Any] | None = None
         try:
             chunks = chain.run_until_connected(limit=self.args.connect_limit)

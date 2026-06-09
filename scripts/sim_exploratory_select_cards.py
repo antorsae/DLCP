@@ -66,7 +66,9 @@ def main(argv: list[str] | None = None) -> int:
     eligible = [
         r for r in rows
         if r.get("score", -1) >= 0
-        and r.get("n_stimuli", 0) >= args.min_stimuli
+        # keep boot/connect failures (no observations) even with too few stimuli (M4)
+        and (r.get("n_stimuli", 0) >= args.min_stimuli
+             or r.get("signals", {}).get("no_observations"))
         and (r["run_dir"], r["session_id"]) not in inprogress
     ]
     if args.realistic:

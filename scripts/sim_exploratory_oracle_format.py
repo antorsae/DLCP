@@ -226,6 +226,7 @@ def _state_vector(obs: dict[str, Any]) -> dict[str, Any]:
         sv[f"{tag}_input_mirror"] = int(m.get("input_mirror", 0))
         sv[f"{tag}_tas30"] = m.get("tas30_last_write", "")
         sv[f"{tag}_tas30_count"] = int(m.get("tas30_write_count", 0))
+        sv[f"{tag}_tas30_since"] = list(m.get("tas30_writes_since", []))
         # actual preset-coefficient fingerprint (biquad range 0x37..0x90)
         sv[f"{tag}_dsp_digest"] = m.get("dsp_biquad_digest", "")
         sv[f"{tag}_dsp_full"] = m.get("dsp_full_digest", "")
@@ -250,11 +251,17 @@ def _fmt_value(field: str, value: Any) -> str:
     return str(value)
 
 
+# lists/large fields the card renders explicitly; keep them out of the delta line
+_DIFF_SKIP = {"PB1_tas30_since", "PB2_tas30_since"}
+
+
 def _diff(prev: dict[str, Any] | None, cur: dict[str, Any]) -> list[str]:
     if prev is None:
         return []
     changes: list[str] = []
     for k, v in cur.items():
+        if k in _DIFF_SKIP:
+            continue
         pv = prev.get(k)
         if pv == v:
             continue
@@ -417,6 +424,7 @@ def render_card(run_dir: Path, session_id: int) -> str:
                 f"computed_vol=0x{sv[f'{tag}_computed_vol']:02X} "
                 f"input={sv[f'{tag}_input']}/mirror={sv[f'{tag}_input_mirror']} "
                 f"tas30={sv[f'{tag}_tas30'] or '--'}(n={sv[f'{tag}_tas30_count']})"
+                + (f" tas30_since={sv[f'{tag}_tas30_since']}" if sv[f'{tag}_tas30_since'] else "")
                 + (f" dsp_coeff={sv.get(f'{tag}_dsp_digest', '--')}" if sv.get(f'{tag}_dsp_digest') else "")
             )
         changes = _diff(prev_sv, sv)
@@ -549,6 +557,13 @@ def _triage_session(
         "final_cross_pb_coeff_desync": False,
         "preset_coeff_collision": False,   # preset A and B map to SAME coeffs
         "preset_coeff_unstable": False,    # one preset maps to >1 coeff image
+        # candidate mute-leak windows: CONTROL shows muted yet a MAIN wrote a
+        # volume coefficient (0x30) in the interval (agent adjudicates the value).
+        "mute_volwrite_obs": 0,
+        "final_mute_volwrite": False,
+        # session produced no observations at all (boot/connect failure or aborted
+        # before sampling) -- must still be surfaceable to the oracle (M4).
+        "no_observations": False,
     }
     # per-unit map: active preset bit -> set of settled biquad digests seen
     preset_digests: dict[int, dict[int, set[str]]] = {0: {}, 1: {}}
@@ -572,6 +587,9 @@ def _triage_session(
             dg = sv.get(f"{tag}_dsp_digest", "")
             if dg and sv[f"{tag}_gate"] and sv[f"{tag}_job"] == 0:
                 preset_digests[u].setdefault(sv[f"{tag}_preset"], set()).add(dg)
+        # candidate mute-leak: CONTROL shows muted but a MAIN wrote 0x30 this interval
+        if sv.get("ctl_mute") and (sv.get("PB1_tas30_since") or sv.get("PB2_tas30_since")):
+            signals["mute_volwrite_obs"] += 1
         if sv["PB1_gate"] != sv["PB2_gate"]:
             signals["gate_mismatch_obs"] += 1
         # CONTROL believes presetB, but PB1 active preset disagrees (UI vs MAIN)
@@ -608,6 +626,12 @@ def _triage_session(
             and last["PB1_preset"] == last["PB2_preset"]
             and ld1 and ld2 and ld1 != ld2
         )
+        signals["final_mute_volwrite"] = bool(
+            last.get("ctl_mute") and (last.get("PB1_tas30_since") or last.get("PB2_tas30_since"))
+        )
+    else:
+        # no observations: boot/connect failure or aborted before sampling
+        signals["no_observations"] = True
     for u in (0, 1):
         per_preset = preset_digests[u]
         if any(len(digs) > 1 for digs in per_preset.values()):
@@ -632,6 +656,9 @@ def _triage_session(
         + 18 * int(signals["preset_coeff_collision"])
         + 14 * int(signals["preset_coeff_unstable"])
         + 3 * min(signals["cross_pb_coeff_desync_obs"], 8)
+        + 20 * int(signals["final_mute_volwrite"])
+        + 3 * min(signals["mute_volwrite_obs"], 6)
+        + 22 * int(signals["no_observations"])
     )
     # synthetic-fault load: count deliberately-corrupting stimuli in the session.
     # Divergence accompanied by these is usually the injected fault surfacing
@@ -658,6 +685,9 @@ def _triage_session(
         + 18 * int(signals["preset_coeff_collision"])
         + 14 * int(signals["preset_coeff_unstable"])
         + 3 * min(signals["cross_pb_coeff_desync_obs"], 6)
+        + 20 * int(signals["final_mute_volwrite"])
+        + 3 * min(signals["mute_volwrite_obs"], 6)
+        + 22 * int(signals["no_observations"])
     )
     signals["synthetic_fault_load"] = synthetic_fault_load
     meta = _session_meta(run_dir, session_id, events=events, observations=observations)

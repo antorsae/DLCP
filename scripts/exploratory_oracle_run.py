@@ -53,13 +53,31 @@ def call_model(model_cmd: str, prompt: str, timeout: int) -> str:
     return proc.stdout
 
 
+def _truthy(value: Any) -> bool:
+    """Strict truthiness for schema-loose model output: the string "false" is False.
+
+    A model that emits ``"is_real": "false"`` must NOT be read as real (plain
+    ``bool("false")`` is True), or a refutation gets promoted to a confirmation.
+    """
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"true", "yes", "1"}
+    return False
+
+
 def extract_json(text: str) -> dict[str, Any]:
-    """Best-effort: pull the last balanced top-level JSON object out of model output."""
+    """Best-effort: pull the last balanced top-level JSON object out of model output.
+
+    The brace scan is string-aware (braces and the ``}`` char inside JSON string
+    literals are ignored) so evidence text containing braces does not break it.
+    """
     text = text.strip()
-    # strip a leading/trailing ```json ... ``` fence if present
+    # strip ```json ... ``` fences if present
     if "```" in text:
-        parts = text.split("```")
-        for chunk in parts:
+        for chunk in text.split("```"):
             c = chunk.strip()
             if c.startswith("json"):
                 c = c[4:].strip()
@@ -72,19 +90,32 @@ def extract_json(text: str) -> dict[str, Any]:
         return json.loads(text)
     except json.JSONDecodeError:
         pass
-    # scan for the last balanced {...}
+    # string-aware scan for the last balanced {...}
     depth = 0
     start = -1
     candidate = None
+    in_str = False
+    escape = False
     for i, ch in enumerate(text):
-        if ch == "{":
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+            continue
+        if ch == '"':
+            in_str = True
+        elif ch == "{":
             if depth == 0:
                 start = i
             depth += 1
         elif ch == "}":
-            depth -= 1
-            if depth == 0 and start >= 0:
-                candidate = text[start:i + 1]
+            if depth > 0:
+                depth -= 1
+                if depth == 0 and start >= 0:
+                    candidate = text[start:i + 1]
     if candidate:
         return json.loads(candidate)
     raise ValueError("no JSON object found in model output")
@@ -152,7 +183,7 @@ def run(args: argparse.Namespace) -> int:
         except Exception as exc:
             return {"is_real": False, "confidence": 0.0, "reasoning": "",
                     "refutation": f"verify error: {exc!r}", "source_evidence": "",
-                    "repro_sketch": ""}
+                    "repro_sketch": "", "_error": repr(exc)}
 
     print(f"[oracle] judging {len(cards)} cards with: {args.model_cmd}", file=sys.stderr)
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
@@ -176,9 +207,19 @@ def run(args: argparse.Namespace) -> int:
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         verified = list(pool.map(verify_both, pending))
 
+    # M1 observability: a broken run must NOT look like a clean firmware pass.
+    judge_errors = [
+        {"card": j["card"].get("card"), "error": j.get("error")}
+        for j in judged if j.get("overall") == "error" or "error" in j
+    ]
+    verify_errors = sum(
+        1 for v in verified
+        for lens in ("artifact", "correctness") if "_error" in v[lens]
+    )
+
     confirmed, needs_human, refuted = [], [], []
     for v in verified:
-        a, c = bool(v["artifact"].get("is_real")), bool(v["correctness"].get("is_real"))
+        a, c = _truthy(v["artifact"].get("is_real")), _truthy(v["correctness"].get("is_real"))
         bucket = "confirmed" if (a and c) else ("needs_human" if (a or c) else "refuted")
         rec = {
             "bug_class": v["finding"].get("bug_class"),
@@ -194,7 +235,11 @@ def run(args: argparse.Namespace) -> int:
         {"confirmed": confirmed, "needs_human": needs_human, "refuted": refuted}[bucket].append(rec)
 
     print(f"[oracle] confirmed={len(confirmed)} needs_human={len(needs_human)} "
-          f"refuted={len(refuted)}", file=sys.stderr)
+          f"refuted={len(refuted)} | judge_errors={len(judge_errors)} "
+          f"verify_errors={verify_errors}", file=sys.stderr)
+    if judge_errors or verify_errors:
+        print("[oracle] WARNING: model/parse errors occurred — a low confirmed count "
+              "may reflect a broken run, not clean firmware.", file=sys.stderr)
 
     synth_prompt = fill(
         tmpl["synthesize"],
@@ -214,6 +259,9 @@ def run(args: argparse.Namespace) -> int:
         "confirmed": confirmed,
         "needs_human": needs_human,
         "refuted_count": len(refuted),
+        "judge_errors": judge_errors,
+        "verify_error_count": verify_errors,
+        "run_ok": not judge_errors and not verify_errors,
     }, indent=2) + "\n", encoding="utf-8")
     Path(str(out) + ".report.md").write_text(report, encoding="utf-8")
     print(f"[oracle] wrote {out} and {out}.report.md", file=sys.stderr)
