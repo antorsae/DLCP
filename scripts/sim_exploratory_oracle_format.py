@@ -659,7 +659,7 @@ def _triage_session(
     #      never opens, so that preset may not be recorded at all (a one-way
     #      A->B collision or initial-preset drift can be missed).
     #   2. The biquad range 0x37..0x90 is also perturbed within a held preset by
-    #      input/mute activity, so "same preset, >1 image" is not purely a
+    #      input/route refresh activity, so "same preset, >1 image" is not purely a
     #      preset-coeff bug.
     # The TRUSTWORTHY coeff signal is cross_pb_coeff_desync (compares both units
     # at the same instant with identical state), and the LLM oracle reads the raw
@@ -687,7 +687,7 @@ def _triage_session(
         + 24 * int(signals["final_cross_pb_coeff_desync"])
         + 18 * int(signals["preset_coeff_collision"])
         # soft/confounded: the biquad range (0x37..0x90) is also perturbed within a
-        # held preset by input/mute activity, so same-preset >1 image is not purely
+        # held preset by input/route refresh activity, so same-preset >1 image is not purely
         # a preset-coeff bug.  cross_pb_coeff_desync (same instant, same state) is
         # the trustworthy coeff signal; keep this only as a minor tiebreaker.
         + 4 * int(signals["preset_coeff_unstable"])
