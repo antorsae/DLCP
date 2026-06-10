@@ -320,25 +320,34 @@ def _merge(
     sess_events: list[dict[str, Any]],
     sess_obs: list[dict[str, Any]],
 ) -> list[tuple[str, dict[str, Any]]]:
-    timeline: list[tuple[int, int, int, str, dict[str, Any]]] = []
-    # Both streams keep their causal write order (event_id / obs_seq) even if
-    # raw ticks rewind: sort ticks are monotonized per stream in that order,
-    # so a pre-clock-fix corpus can no longer reorder events or observations
-    # across interleaved clock epochs (post-reset stimuli sorting before
-    # pre-reset observations and vice versa).  On a monotonic corpus this is
-    # byte-identical to sorting by raw tick.
-    carry = 0
+    timeline: list[tuple[int, int, int, int, str, dict[str, Any]]] = []
+    # Both streams keep their causal write order (event_id / obs_seq), and a
+    # raw-tick rewind (pre-clock-fix corpus: a mid-session reset rewound the
+    # universal clock) starts a new EPOCH for that stream.  The merge sorts by
+    # (epoch, tick, kind, seq): a reset rewinds both streams at the same
+    # boundary, so epochs align across streams and post-rewind stimuli can no
+    # longer collapse onto the pre-rewind observation block even when the
+    # monotonized high-water ticks would tie.  On a monotonic corpus every
+    # epoch is 0 and this is byte-identical to sorting by raw tick.
+    epoch = 0
+    prev = 0
     for e in sess_events:
-        t = max(carry, _event_tick(e, carry))
-        carry = t
+        t = _event_tick(e, prev)
+        if t < prev:
+            epoch += 1
+        prev = t
         # event sorts before an observation sharing its tick (kind=0)
-        timeline.append((t, 0, int(e["event_id"]), "event", e))
-    mono = 0
+        timeline.append((epoch, t, 0, int(e["event_id"]), "event", e))
+    epoch = 0
+    prev = 0
     for seq, o in enumerate(sess_obs):
-        mono = max(mono, int(o["tick"]))
-        timeline.append((mono, 1, seq, "obs", o))
-    timeline.sort(key=lambda x: (x[0], x[1], x[2]))
-    return [(kind, payload) for (_t, _k, _s, kind, payload) in timeline]
+        t = int(o["tick"])
+        if t < prev:
+            epoch += 1
+        prev = t
+        timeline.append((epoch, t, 1, seq, "obs", o))
+    timeline.sort(key=lambda x: (x[0], x[1], x[2], x[3]))
+    return [(kind, payload) for (_e, _t, _k, _s, kind, payload) in timeline]
 
 
 # --- card rendering ---------------------------------------------------------
