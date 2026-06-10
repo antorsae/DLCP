@@ -414,7 +414,10 @@ V3.4/V1.73 recommended refactoring release:
 - `test_dlcp_v34_release_flash.py` (V3.4 release-flash wrapper argument forwarding, no-local-captures warning path, info-only passthrough, explicit-route requirement)
 - `test_v34_v173_refactoring_contracts.py` (V3.4/V1.73 identity ownership, MAIN lifecycle clear, chain-TX arbitration contracts, Preset row-0 ordering/no full-redraw hack, and 128-byte/64-word listing headroom gate)
 - `test_v34_v173_i2c_recovery_contract.py` (V3.4 bounded I2C SEN/PEN timeout classification, visible recovery counters, and async preset-apply retry contract)
-- `test_v34_v173_compatibility.py` (V1.73/V3.4 native chain plus staged V1.73+V3.3, V1.72+V3.4, V1.73+V3.2, and V1.71+V3.4 compatibility)
+- `test_v34_v173_compatibility.py` (V1.73/V3.4 native chain plus staged V1.73+V3.3, V1.72+V3.4, V1.73+V3.2, and V1.71+V3.4 compatibility; includes the bounded filename-retry timeout contract against old MAINs)
+- `test_v34_v173_exploratory_bug_regressions.py` (the five 2026-06-09 exploratory bug contracts: cmd 0x03 sole mute authority, WAITING IR re-arm + fresh reconnect status mask, Preset row-0 lifecycle invalidation, bounded filename retry, and preset-target record/defer independent of the USB filename gate — structural + behavioral)
+- `test_v173_wake_responsiveness.py` (standby->wake to responsive display under a 160M-tick bound on the native V1.73+V3.4 chain, first post-wake IR key works, and a structural pin that the WAITING entries never re-grow an open-loop banner delay)
+- `test_sim_reset_clock_monotonic.py` (rust facade: `apply_reset_all` keeps the universal clock and the TAS write-log observation artifacts monotonic across mid-run resets)
 - `test_ram_bank_safety.py` covers old+new RAM-safety targets: `main-v33`, `control-v172`, `main-v34`, and `control-v173`.
 
 Version labels:
@@ -491,6 +494,8 @@ Top-level docs:
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/SIM_CHAIN_EXPLORATORY_STRESS_SPEC.md` (exploratory chain bug-hunt campaign spec: stimulus families, observation capture, and the oracle/bug-classifier rubric used by the LLM judge)
+- `docs/V34_V173_EXPLORATORY_BUGS.md` (2026-06-09 exploratory bug ledger for the V3.4/V1.73 pair — all five bugs fixed; per-bug regression tests and fix notes)
+- `docs/IMPL_V34_V173_EXPLORATORY_BUGS.md` (implementation plan + post-implementation evidence for the five exploratory bug fixes)
 - `docs/SIM_EXPLORATORY_BUG_TAXONOMY.md` (9-class intermittent-bug failure-mode taxonomy used as the oracle reference: preset/coeff desync, UI/MAIN disagreement, standby/wake, LCD glitch, mute leak, lost IR, liveness, fault-surfacing, protocol framing)
 - `docs/exploratory_oracle/ORACLE_PROTOCOL.md` (MODEL-AGNOSTIC oracle protocol: judge/verify/synthesize prompt templates in `docs/exploratory_oracle/prompts/`, JSON schemas in `docs/exploratory_oracle/schemas/`, driven by `scripts/exploratory_oracle_run.py` with any `--model-cmd` — codex or Claude)
 - `docs/SIM_REWRITE_RUST_SPEC.md` (Rust single-process PIC18 simulator rewrite specification)
@@ -550,6 +555,7 @@ Deep analysis docs:
 - `docs/analysis/V162B_STDBY_TXIE_BUG.md`
 - `docs/analysis/SEMANTIC_FUNCTION_MAP.md` (auto-name → semantic-name mapping for disassembly labels; source for annotated disasm)
 - `docs/analysis/V162B_RECONNECT_WAKE_BUG.md`
+- `docs/analysis/CONNECTED_WAITING_WAKE_DELAY_2026-06-10.md` (connected-WAITING root cause: stock open-loop banner delays + sequential two-MAIN wake; round-2 fix evidence and the deferred async-reapply design)
 
 ## Artifacts and Caches
 

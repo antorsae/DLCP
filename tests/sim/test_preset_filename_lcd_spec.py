@@ -70,6 +70,7 @@ FNAME_DEADLINE_LO_PHYS = 0x257
 FNAME_DEADLINE_HI_PHYS = 0x258
 FNAME_VALID_MASK = 0x01
 FNAME_PENDING_MASK = 0x02
+FNAME_WANT_QUERY_MASK = 0x04
 FNAME_ROW_DIRTY_MASK = 0x08
 FNAME_ARMED_MASK = 0x10
 FNAME_TAILDIR_MASK = 0x20
@@ -585,12 +586,16 @@ def _assert_native_filename_query_completed(
     preset: str,
     slot_a: str,
     slot_b: str,
+    query_frames: list[tuple[int, int, int]] | None = None,
 ) -> int:  # type: ignore[no-untyped-def]
     name = _preset_name(preset, slot_a, slot_b)
     other = _preset_other_name(preset, slot_a, slot_b)
     effective = _effective_name(name)
 
-    query_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
+    # ctl_tx_record_since_last_capture() is consume-on-read; callers that
+    # already drained it (e.g. the cache-or-query wrapper) pass the frames in.
+    if query_frames is None:
+        query_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
     filename_queries = [
         frame for frame in query_frames if frame[0] == 0xB1 and frame[1] == 0x26
     ]
@@ -673,6 +678,7 @@ def _assert_native_filename_cache_or_query_completed(
             preset=preset,
             slot_a=slot_a,
             slot_b=slot_b,
+            query_frames=query_frames,
         )
         return
 

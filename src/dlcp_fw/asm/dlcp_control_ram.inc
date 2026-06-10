@@ -112,9 +112,18 @@ v171_rx_frame_gap_timeout  equ  0x0AC
 ; Slots chosen from the 0x0A8..0x0A9 gap (no absolute references in
 ; the V1.71 source; no lfsr lands in this range).  Both bytes are
 ; cleared to 0 on entry to each WAITING loop.  0x0AA was a retired
-; deferred-IR latch and is intentionally unassigned.
+; deferred-IR latch; V1.73 claims it for the reconnect freshness mask.
 v171_waiting_grace_count_lo equ  0x0A8
 v171_waiting_grace_count_hi equ  0x0A9
+
+; V1.73 BUG-V34V173-2: per-attempt reconnect liveness evidence (physical
+; 0x0AA, BANK 0 so the RX parser and the WAITING loops -- both BSR=0 --
+; touch it without movlb churn).  Cleared at reconnect_wait_loop entry;
+; bit0 set by the BF/05 status-poll answer, bit1 by the BF/03/01 wake
+; echo.  The reconnect exit tests this mask instead of the legacy
+; four-sentinel cache compare (vacuously true on stale prior-session
+; values, since the 0x80 sentinel seed happens exactly once at boot).
+v173_reconnect_fresh_status_mask equ 0x0AA
 
 ; Threshold = 4 in the high byte.  Once `grace_hi` reaches 4 (i.e.
 ; the lo byte has wrapped past 0xFF four times), the button gate
@@ -507,7 +516,7 @@ v172_diag_id_tmp_rev_hi    equ  0x054
 V172_DIAG_ID_TIMEOUT_RELOAD equ 0x04
 
 ; --- V1.72/V3.3 Preset filename LCD cache/state (BANK 2) ---
-; Physical 0x220..0x244 and 0x255..0x25C.  Keep 0x245..0x254
+; Physical 0x220..0x244 and 0x255..0x25D.  Keep 0x245..0x254
 ; reserved for diagnostics identity above.  EQU operands are BANKED-form
 ; values; every firmware access must assert `movlb 0x02`.
 v172_fname_cache           equ  0x020  ; physical 0x220..0x23D, 30 chars
@@ -541,6 +550,12 @@ v172_fname_render_col      equ  0x059
 v172_fname_render_off      equ  0x05A
 v172_fname_row0_status_snap equ 0x05B
 v172_fname_tmp             equ  0x05C
+; V1.73 BUG-V34V173-4: bounded filename retry budget.  Incremented by
+; fname_reset_blank_maybe_retry on parser abort / pending-deadline expiry;
+; cleared on successful reception (FNAME_VALID set) and on Preset page
+; entry, so each page visit gets a fresh budget.
+v172_fname_retry           equ  0x05D
+FNAME_RETRY_MAX            equ  0x03  ; initial query + 2 spaced retries
 FNAME_PENDING_DEADLINE_HI  equ  0x40
 FNAME_PENDING_DEADLINE_LO  equ  0x00
 FNAME_QUERY_DELAY_A_HI     equ  0x30
@@ -724,6 +739,9 @@ v171_waiting_grace_count_lo_b0_phys EQU  0x0A8    ; physical address for movff/l
 v171_waiting_grace_count_hi_b0   EQU  0x0A9    ; phys 0x0A9, bank 0, owner v171_waiting_grace_count_hi
 v171_waiting_grace_count_hi_b0_op EQU  0xA9     ; 8-bit f operand for v171_waiting_grace_count_hi_b0
 v171_waiting_grace_count_hi_b0_phys EQU  0x0A9    ; physical address for movff/lfsr
+v173_reconnect_fresh_status_mask_b0 EQU  0x0AA    ; phys 0x0AA, bank 0, owner v173_reconnect_fresh_status_mask
+v173_reconnect_fresh_status_mask_b0_op EQU  0xAA     ; 8-bit f operand for v173_reconnect_fresh_status_mask_b0
+v173_reconnect_fresh_status_mask_b0_phys EQU  0x0AA    ; physical address for movff/lfsr
 bf08_fault_byte_b0               EQU  0x0AB    ; phys 0x0AB, bank 0, owner bf08_fault_byte
 bf08_fault_byte_b0_op            EQU  0xAB     ; 8-bit f operand for bf08_fault_byte_b0
 bf08_fault_byte_b0_phys          EQU  0x0AB    ; physical address for movff/lfsr
@@ -1090,4 +1108,7 @@ v172_fname_row0_status_snap_b2_phys EQU  0x25B    ; physical address for movff/l
 v172_fname_tmp_b2                EQU  0x25C    ; phys 0x25C, bank 2, owner v172_fname_tmp
 v172_fname_tmp_b2_op             EQU  0x5C     ; 8-bit f operand for v172_fname_tmp_b2
 v172_fname_tmp_b2_phys           EQU  0x25C    ; physical address for movff/lfsr
+v172_fname_retry_b2              EQU  0x25D    ; phys 0x25D, bank 2, owner v172_fname_retry
+v172_fname_retry_b2_op           EQU  0x5D     ; 8-bit f operand for v172_fname_retry_b2
+v172_fname_retry_b2_phys         EQU  0x25D    ; physical address for movff/lfsr
 ; --- RAM bank safety generated aliases: END ---

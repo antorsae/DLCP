@@ -44,7 +44,14 @@ STANDBY_SETTLE_TICKS = 10_000_000
 ONE_SECOND_TICKS = 4_000_000
 
 IR_ADDR_HYPEX = 0x10
+IR_CMD_HYPEX_VOLUME_UP = 0x33
 IR_CMD_HYPEX_MUTE = 0x35
+
+# Short enough that CONTROL's periodic full-sync (first step trigger is
+# >= ~480 ms after the volume key resets the counter) cannot have emitted a
+# mute frame yet -- any B0/03/03 seen within this window is the synchronous
+# volume-key unmute notification, not the periodic broadcast.
+PROMPT_UNMUTE_TICKS = 1_000_000
 
 
 try:
@@ -237,13 +244,24 @@ def test_v34_unchanged_full_sync_volume_while_muted_does_not_unmute(
 def test_v34_explicit_user_volume_change_unmutes_for_v173_compatibility(
     v34_mute_hex: Path,
 ) -> None:
+    """V1.73 volume-key compatibility expressed as the real chain sequence.
+
+    A bare volume frame carries no provenance, so MAIN must keep mute; the
+    real user volume key on V1.73 CONTROL clears local mute and emits the
+    explicit B0/03/03, which is the sole unmute authority on MAIN.
+    """
     chain = _boot_v34_main(v34_mute_hex)
     _mute_main(chain)
 
     current = (chain.read_main_reg(0, LOGICAL_VOLUME) + 0x60) & 0xFF
     changed = (current + 4) & 0x7F
     chain.reset_main_dsp_write_log(0)
-    _inject_frame(chain, 0x07, changed)
+    _inject_frame(chain, 0x07, changed)   # CONTROL cleared its local mute first...
+    chain.step_ticks(COMMAND_SETTLE_TICKS)
+    _assert_user_muted_with_zero_volume_coeff(chain)   # bare volume frame: still muted
+
+    chain.reset_main_dsp_write_log(0)
+    _inject_frame(chain, 0x03, 0x03)      # ...and emitted B0/03/03 (the real unmute)
     chain.step_ticks(COMMAND_SETTLE_TICKS)
 
     _assert_unmuted_with_nonzero_volume_coeff(chain)
@@ -388,6 +406,42 @@ def test_v173_v34_chain_mute_survives_periodic_full_sync_refresh(
     for unit in (0, 1):
         assert chain.read_main_reg(unit, PRESET_JOB_STATE) == 0
         _assert_user_muted_with_zero_volume_coeff(chain, unit=unit)
+
+
+def test_v173_v34_chain_volume_key_while_muted_unmutes_promptly(
+    v34_mute_hex: Path,
+) -> None:
+    """BUG-V34V173-1 CONTROL companion: a volume key while muted must emit an
+    explicit B0/03/03 synchronously (not wait for the periodic full-sync mute
+    step, which every volume frame postpones), so the CONTROL LCD showing the
+    volume and MAIN audio never disagree.
+    """
+    chain = _boot_v173_v34_chain(v34_mute_hex)
+
+    for unit in (0, 1):
+        chain.reset_main_dsp_write_log(unit)
+    chain.inject_decoded_ir_event(addr=IR_ADDR_HYPEX, cmd=IR_CMD_HYPEX_MUTE)
+    chain.step_ticks(COMMAND_SETTLE_TICKS)
+    for unit in (0, 1):
+        _assert_user_muted_with_zero_volume_coeff(chain, unit=unit)
+
+    for unit in (0, 1):
+        chain.reset_main_dsp_write_log(unit)
+    chain.mark_ctl_tx_capture_point()
+    chain.inject_decoded_ir_event(addr=IR_ADDR_HYPEX, cmd=IR_CMD_HYPEX_VOLUME_UP)
+    chain.step_ticks(PROMPT_UNMUTE_TICKS)
+
+    frames = [
+        tuple(chunk)
+        for chunk in zip(*[iter(chain.ctl_tx_record_since_last_capture())] * 3)
+    ]
+    assert (0xB0, 0x03, 0x03) in frames, (
+        f"no prompt explicit unmute after a muted volume key; frames={frames}"
+    )
+
+    chain.step_ticks(COMMAND_SETTLE_TICKS)
+    for unit in (0, 1):
+        _assert_unmuted_with_nonzero_volume_coeff(chain, unit=unit)
 
 
 def test_bug_mute_refresh_has_no_stale_strict_xfail() -> None:

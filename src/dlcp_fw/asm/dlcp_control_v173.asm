@@ -1037,6 +1037,7 @@ flow_rx_parser_entry_04F8:                                                  ; ad
         decfsz  rx_parsed_data_acc, W, A                     ; reg: 0x030
         goto    flow_rx_parser_entry_0514                                   ; dest: 0x000514
         bsf     control_flags_acc, 0x1, A                   ; reg: 0x01f
+        bsf     v173_reconnect_fresh_status_mask_b0, 1, B   ; BUG-2: fresh wake echo this attempt
         goto    flow_rx_parser_entry_0552                                   ; dest: 0x000552
 
 flow_rx_parser_entry_0514:                                                  ; address: 0x000514
@@ -1095,6 +1096,7 @@ flow_rx_parser_entry_0562:                                                  ; ad
         cpfslt  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    flow_rx_parser_entry_0576                                   ; dest: 0x000576
         movff   rx_parsed_data_b0_phys, 0x0a1                    ; reg1: 0x030
+        bsf     v173_reconnect_fresh_status_mask_b0, 0, B   ; BUG-2: fresh status-poll answer
 
 flow_rx_parser_entry_0576:                                                  ; address: 0x000576
 
@@ -1381,6 +1383,7 @@ fname_not_len:
         xorwf   v172_fname_expected_len_b2, W, BANKED
         bnz     fname_abort
         bsf     v172_fname_flags_b2, FNAME_VALID, BANKED
+        clrf    v172_fname_retry_b2, BANKED        ; BUG-4: success resets the retry budget
         bcf     v172_fname_flags_b2, FNAME_PENDING, BANKED
         bcf     v172_fname_flags_b2, FNAME_ARMED, BANKED
         bcf     v172_fname_flags_b2, FNAME_WANT_QUERY, BANKED
@@ -1430,7 +1433,7 @@ fname_char_check_high:
         bra     fname_exit
 
 fname_abort:
-        call    fname_reset_blank, 0x0
+        call    fname_reset_blank_maybe_retry, 0x0  ; BUG-4: bounded retry, not terminal blank
         bra     fname_exit
 fname_disarm:
         bcf     v172_fname_flags_b2, FNAME_ARMED, BANKED
@@ -2990,6 +2993,49 @@ flow_mute_frame_send_0C94:                                                  ; ad
 
 
 ; ===========================================================================
+; V1.73 BUG-V34V173 helper trio (exploratory-bug fixes)
+; ---------------------------------------------------------------------------
+; v173_volume_clear_mute_notify (BUG-1): the volume keys clear local mute so
+;   the LCD renders the volume instead of "Mute"; the chain must hear the
+;   same fact explicitly.  On a real mute->unmute transition emit B0/03/03
+;   via mute_frame_send (the same atomic-ring sender the mute key already
+;   uses from this foreground context).  MAIN V3.4 treats cmd 0x03 as the
+;   SOLE mute authority, so the volume frame alone no longer implies unmute
+;   -- and a held volume key keeps resetting the full-sync counter, so the
+;   periodic mute step alone could be postponed indefinitely.
+; v173_waiting_ir_service (BUG-2): the WAITING loops never ran the
+;   foreground IR dispatcher, so a frame captured by the IR ISR left
+;   IR_ARMED clear forever (IR dead).  Consume-and-re-arm (discard) --
+;   dispatching from WAITING is unsafe: IR vol-down would corrupt the 0x80
+;   volume boot sentinel during cold WAITING, and the IR standby arm
+;   toggles control_flags.bit1, which the WAITING/reconnect flow owns.
+; v173_preset_lcd_invalidate (BUG-3): every transition that overlays the
+;   Preset page must drop row-0 readiness AND the filename cache (the USB
+;   host can rewrite MAIN's stored filename while CONTROL is away), exactly
+;   like the normal Preset exit does.  Row 1 stays suppressed until Preset
+;   entry repaints the full row-0 title.
+; ===========================================================================
+v173_volume_clear_mute_notify:
+        btfss   control_flags_acc, 0x5, A          ; muted now?
+        return  0x0                                ; no -> no extra chain traffic
+        bcf     control_flags_acc, 0x5, A          ; local unmute (LCD shows volume)
+        goto    mute_frame_send                    ; tail-call: emits B0/03/03
+
+v173_waiting_ir_service:
+        btfsc   control_flags_acc, IR_ARMED, A     ; armed -> no pending frame
+        return  0x0
+        bsf     control_flags_acc, IR_ARMED, A     ; discard frame, re-arm decoder
+        return  0x0
+
+v173_preset_lcd_invalidate:
+        movlb   0x02
+        bsf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
+        bcf     v172_fname_flags_b2, FNAME_VALID, BANKED
+        movlb   0x00
+        return  0x0
+
+
+; ===========================================================================
 ; standby_wake_broadcast @ 0x000C98 — standby_wake_broadcast
 ; ---------------------------------------------------------------------------
 ; THIS IS THE WAKE/STANDBY ROUTE THAT V1.62b RECONNECT BUG TARGETED.
@@ -3279,7 +3325,7 @@ flow_ccs_0DCE_0E0C:                                                  ; address: 
         cpfslt  volume_cache_b0, B                                     ; reg: 0x0b9
         goto    flow_ccs_0DCE_0E2E                                   ; dest: 0x000e2e
         incf    volume_cache_b0, F, B                                  ; reg: 0x0b9
-        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
+        call    v173_volume_clear_mute_notify, 0x0    ; BUG-1: explicit B0/03/03 on mute->unmute
         rcall   volume_frame_send                                ; dest: 0x000c40
         bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         bsf     control_flags_acc, 0x4, A                   ; reg: 0x01f
@@ -3301,7 +3347,7 @@ flow_ccs_0DCE_0E32:                                                  ; address: 
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    flow_ccs_0DCE_0E54                                   ; dest: 0x000e54
         decf    volume_cache_b0, F, B                                  ; reg: 0x0b9
-        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
+        call    v173_volume_clear_mute_notify, 0x0    ; BUG-1: explicit B0/03/03 on mute->unmute
         rcall   volume_frame_send                                ; dest: 0x000c40
         bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         bsf     control_flags_acc, 0x4, A                   ; reg: 0x01f
@@ -3711,6 +3757,7 @@ v172_preset_blank_row1_entry:
         bra     v172_preset_blank_row1_entry
 
         movlb   0x02
+        clrf    v172_fname_retry_b2, BANKED        ; BUG-4: fresh page visit = fresh budget
         bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
         btfsc   v172_fname_flags_b2, FNAME_VALID, BANKED
         bra     v171_prs_screen_cache_check
@@ -5180,6 +5227,21 @@ fname_delay_query_slot_b:
         movlb   0x00
         return  0x0
 
+fname_reset_blank_maybe_retry:
+        ; V1.73 BUG-V34V173-4: a parser abort or pending-deadline expiry is a
+        ; transient on a contended chain, not a terminal state.  Blank as
+        ; before, but while the retry budget lasts re-arm the existing
+        ; delayed-query machinery (fname_reset_and_delay_query re-checks the
+        ; Preset page + CONNECTED at fire time, and the query send mints a
+        ; fresh generation id so stale frames cannot be misattributed).  The
+        ; budget resets on successful reception and on Preset page entry.
+        movlb   0x02
+        incf    v172_fname_retry_b2, F, BANKED
+        movlw   FNAME_RETRY_MAX
+        cpfslt  v172_fname_retry_b2, BANKED        ; budget left?
+        bra     fname_reset_blank                  ; exhausted -> blank only
+        bra     fname_reset_and_delay_query        ; bounded retry (FNAME_QUERY_WAIT)
+
 v172_preset_filename_service:
         movlb   0x00
         movlw   0x01
@@ -5289,7 +5351,7 @@ v172_fname_deadline_dec_lo:
         decf    v172_fname_deadline_lo_b2, F, BANKED
         return  0x0
 v172_fname_deadline_expire:
-        rcall   fname_reset_blank
+        rcall   fname_reset_blank_maybe_retry      ; BUG-4: bounded retry, not terminal blank
         return  0x0
 
 v172_fname_query_delay_service:
@@ -6355,12 +6417,22 @@ v171_preset_boot_init_done:
         call    v171_clear_lcd_row2, 0x0
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bsf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
-        movlw   0x0f
-        movwf   (Common_RAM + 15), A                        ; reg: 0x00f
-        movlw   0xa0
-        call    control_core_service_01BE, 0x0                           ; dest: 0x0001be
+        ; V1.73 round-2 (docs/analysis/CONNECTED_WAITING_WAKE_DELAY_2026-06-10):
+        ; the stock open-loop banner delay that sat here (01BE count 0x0FA0,
+        ; ~11 s measured at 2.79 ms/unit) is DELETED.  It predated the
+        ; closed-loop WAITING machinery and left the foreground dead for its
+        ; whole duration (no polls, no RX parsing -- the 47-byte ring
+        ; overflows -- no buttons, no IR re-arm).  The cold WAITING loop
+        ; below owns the wait: it polls, parses, services IR, and exits on
+        ; the four-sentinel boot handshake.  The loop label keeps its
+        ; historical 0FA0 name from the deleted delay constant.
 
 flow_ccs_0FA0_118C:                                                  ; address: 0x00118c
+
+        ; BUG-V34V173-3: WAITING owns the physical LCD now -- drop Preset
+        ; row-0 readiness + filename cache (idempotent; runs per iteration
+        ; because this label is also the loop-back target).
+        call    v173_preset_lcd_invalidate, 0x0
 
         ; ---------------------------------------------------------------
         ; V1.72 WAITING-loop operator-recovery (2026-04-21)
@@ -6449,6 +6521,7 @@ v171_waiting_cold_past_grace_done:
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0             ; cold WAITING parser stall guard (entry/exit movlb 0x0 absorbs rx_parser_entry BSR drift)
+        call    v173_waiting_ir_service, 0x0               ; BUG-2: keep IR armed while WAITING
         movlw   0x80
         subwf   input_select_cache_b0, W, B                                  ; reg: 0x0b8
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -6618,6 +6691,8 @@ flow_display_state_entry_1244:                                                  
 flow_display_state_entry_1250:                                                  ; address: 0x001250
 
         bcf     control_flags_acc, 0x1, A                   ; reg: 0x01f
+        ; BUG-V34V173-3: the standby zzz overlay replaces the Preset LCD owner.
+        call    v173_preset_lcd_invalidate, 0x0
         call    standby_wake_broadcast, 0x0                           ; dest: 0x000c98
         call    app_entry_defensive_stub, 0x0                           ; dest: 0x00004c
         movlw   0x80
@@ -6661,10 +6736,15 @@ flow_display_state_entry_126E:                                                  
         call    v171_clear_lcd_row2, 0x0
         bcf     TRISC, RC1, A                               ; reg: 0xf94, bit: 1
         bsf     LATC, LATC1, A                              ; reg: 0xf8b, bit: 1
-        movlw   0x13
-        movwf   (Common_RAM + 15), A                        ; reg: 0x00f
-        movlw   0x88
-        call    control_core_service_01BE, 0x0                           ; dest: 0x0001be
+        ; V1.73 round-2 (docs/analysis/CONNECTED_WAITING_WAKE_DELAY_2026-06-10):
+        ; the stock open-loop wake banner delay that sat here (01BE count
+        ; 0x1388, ~14 s measured at 2.79 ms/unit) is DELETED.  It ran with
+        ; control_flags.bit1 still set -- producing the exploratory
+        ; "connected + WAITING + intents dead" signature on every
+        ; standby->wake -- and it merely open-loop-padded the MAIN wake
+        ; bring-up (~8 s deaf adc_boot_gate window).  The reconnect loop
+        ; below owns the wait: it polls every ~10 ms, parses, services IR,
+        ; and exits on the first fresh-status evidence after MAIN answers.
         bcf     control_flags_acc, 0x1, A                   ; reg: 0x01f
 
 reconnect_wait_loop:                                                  ; address: 0x0012bc
@@ -6704,6 +6784,12 @@ reconnect_wait_loop:                                                  ; address:
         movlb   0x00
         clrf    v171_waiting_grace_count_lo_b0, B
         clrf    v171_waiting_grace_count_hi_b0, B
+        ; BUG-V34V173-2: a fresh reconnect attempt starts with no liveness
+        ; evidence; the RX parser sets mask bits as fresh frames arrive.
+        clrf    v173_reconnect_fresh_status_mask_b0, B
+        ; BUG-V34V173-3: the Waiting-for-DLCP overlay replaced the Preset
+        ; LCD owner.
+        call    v173_preset_lcd_invalidate, 0x0
 
 v171_reconnect_wait_body:
         ; Refresh the debounced button event latch at 0x9A via the
@@ -6737,52 +6823,32 @@ v171_reconnect_past_grace_done:
         call    delay_short, 0x0                           ; dest: 0x0001bc
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0             ; reconnect WAITING parser stall guard (entry/exit movlb 0x0 absorbs rx_parser_entry BSR drift)
+        call    v173_waiting_ir_service, 0x0               ; BUG-2: keep IR armed while WAITING
 
-        ; Accumulate sentinel-cleared bits into ram_0x018.
-        ; Each block: if sentinel != 0x80 → set ram_0x018 to 1, else
-        ; AND 1 (first test initializes, subsequent tests AND-reduce).
-        ; Bug #45 CONTROL-side fix (2026-05-03): the original V1.72
-        ; AND-reduce had a spurious `clrf WREG, A` between the `subwf`
-        ; and the `btfss STATUS, Z, A` test in each of the four blocks
-        ; below.  CLRF on PIC18 always sets STATUS.Z = 1, so the
-        ; subsequent `btfss STATUS, Z` ALWAYS skipped the `movlw 0x01`,
-        ; leaving WREG = 0 from the clrf.  ram_0x018 was therefore set
-        ; to 0 unconditionally, the `bnz v171_reconnect_wait_done`
-        ; below NEVER fired, and CONTROL stayed parked on `Waiting
-        ; for DLCP` indefinitely after a STDBY/WAKE cycle even though
-        ; all four sentinels had been cleared by MAIN's status burst.
-        ; The cold-boot WAITING loop (`v171_waiting_cold_past_grace_done`
-        ; at asm:4747; AND-reduce body at asm:4754-4773) does NOT have
-        ; the spurious clrf and works correctly -- this fix matches
-        ; its proven pattern.  Removing the four `clrf WREG, A`
-        ; instructions saves 8 bytes total in the V1.72 release;
-        ; downstream addresses shift accordingly.
-        movlw   0x80
-        subwf   input_select_cache_b0, W, B                     ; 0xB8
-        btfss   STATUS, Z, A
-        movlw   0x01
-        movwf   (Common_RAM + 24), A                        ; ram_0x018
-
-        movlw   0x80
-        subwf   volume_cache_b0, W, B                           ; 0xB9
-        btfss   STATUS, Z, A
-        movlw   0x01
-        andwf   (Common_RAM + 24), F, A
-
-        movlw   0x80
-        subwf   cmd1d_setting_cache_b0, W, B                    ; 0xA7
-        btfss   STATUS, Z, A
-        movlw   0x01
-        andwf   (Common_RAM + 24), F, A
-
-        movlw   0x80
-        subwf   raw_status_cache_b0, W, B                       ; 0xA1
-        btfss   STATUS, Z, A
-        movlw   0x01
-        andwf   (Common_RAM + 24), F, A
-
-        movf    (Common_RAM + 24), F, A
-        bnz     v171_reconnect_wait_done                    ; all sentinels cleared
+        ; BUG-V34V173-2: exit only on link evidence freshly observed during
+        ; THIS reconnect attempt.  v173_reconnect_fresh_status_mask is
+        ; cleared at reconnect entry and set by the RX parser on a BF/05
+        ; status-poll answer (bit0) or a BF/03/01 wake echo (bit1) -- the
+        ; B1/04 poll emitted above bypasses MAIN's active gate, so even a
+        ; MAIN still in standby answers within one iteration.
+        ; The legacy four-sentinel compare (input/volume/cmd1d/raw_status
+        ; all != 0x80) measured STALE prior-session cache values: the 0x80
+        ; sentinel seed happens exactly once at cold boot, so after any
+        ; connected session the compare was vacuously true on the first
+        ; iteration and the loop "reconnected" without MAIN answering at
+        ; all.  (The V1.72 Bug #45 AND-reduce fix made that compare work
+        ; mechanically; this change makes the exit meaningful.  The cold
+        ; WAITING loop keeps its sentinel handshake -- there the seed is
+        ; fresh.)
+        ; Round-2: the exit requires bit0 -- a real status-poll ANSWER.
+        ; bit1 (wake echo) is telemetry only: MAIN V3.4 now re-broadcasts
+        ; the wake downstream BEFORE its deaf adc_boot_gate window
+        ; (parallel two-MAIN wake), so the forwarded B0/03/01 reliably
+        ; reaches CONTROL seconds before either MAIN can answer polls;
+        ; exiting on the echo would resume the display against a
+        ; still-deaf chain and bounce back into WAITING on idle timeout.
+        btfsc   v173_reconnect_fresh_status_mask_b0, 0, B
+        bra     v171_reconnect_wait_done                    ; fresh poll answer -> connected
 
         ; Not done yet — increment retry counter.
         movlb   0x01
@@ -7004,7 +7070,7 @@ flow_standby_display_1360:                                                  ; ad
 
 flow_standby_display_1392:                                                  ; address: 0x001392
 
-        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
+        call    v173_volume_clear_mute_notify, 0x0    ; BUG-1: explicit B0/03/03 on mute->unmute
         call    volume_frame_send, 0x0                           ; dest: 0x000c40
 
 flow_standby_display_1398:                                                  ; address: 0x001398
@@ -7021,7 +7087,7 @@ flow_standby_display_1398:                                                  ; ad
 
 flow_standby_display_13AE:                                                  ; address: 0x0013ae
 
-        bcf     control_flags_acc, 0x5, A                   ; reg: 0x01f
+        call    v173_volume_clear_mute_notify, 0x0    ; BUG-1: explicit B0/03/03 on mute->unmute
         call    volume_frame_send, 0x0                           ; dest: 0x000c40
 
 flow_standby_display_13B4:                                                  ; address: 0x0013b4
@@ -7945,7 +8011,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x30, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x30, 0x38, 0x00 ; "Rev x40 20260608"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x30, 0x00 ; "Rev x42 20260610"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -7953,8 +8019,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x40                    ; V1.73 + monotonic release revision
-        db      0x20, 0x26, 0x06, 0x08                    ; build date 20260608 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x33, 0x42                    ; V1.73 + monotonic release revision
+        db      0x20, 0x26, 0x06, 0x10                    ; build date 20260610 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

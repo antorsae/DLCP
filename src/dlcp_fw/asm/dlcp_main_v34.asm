@@ -2166,12 +2166,12 @@ flow_main_uart_service_1be6_1d68:
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d6c:
     bsf         event_flags_b0, 3, BANKED
-    ; Real user volume movement is a V1.73 compatibility unmute. Periodic
-    ; full-sync volume frames do not reach this branch because unchanged
-    ; volume exits above.
-    bcf         stock_094_b0, 5, BANKED
-    bcf         active_flags_acc, 4, ACCESS
-    bcf         active_flags_acc, 5, ACCESS
+    ; V3.4 BUG-V34V173-1: a volume frame updates the latent volume only.
+    ; Mute is owned EXCLUSIVELY by cmd 0x03.  A real user volume key while
+    ; muted is unmuted by the B0/03/03 that V1.73 CONTROL emits after
+    ; clearing its local mute; host/full-sync volume frames carry no such
+    ; provenance and must not clear mute.  While active_flags.bit4 is set
+    ; the volume-dirty drain routes through the verified mute-zero path.
     ; V3.1 Fix B': do NOT copy computed->logical here (deferred to volume_dsp_write)
     bra         flow_main_uart_service_1be6_1e6c
 flow_main_uart_service_1be6_1d80:
@@ -2568,7 +2568,7 @@ flow_main_core_service_1e88_20c2:
     clrf        stock_008_acc, ACCESS
     movlw       0x82
     movwf       stock_007_acc, ACCESS
-    movlw       0x7F                            ; V3.4_RUNTIME_EEPROM_REV
+    movlw       0x81                            ; V3.4_RUNTIME_EEPROM_REV
     movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
@@ -4080,6 +4080,22 @@ main_core_service_2d80:
     return      0
 
 ; ---------------------------------------------------------------------------
+; Helper: wake_rebroadcast_downstream      (blocking B0/03/01 emit)
+; ---------------------------------------------------------------------------
+; Shared by adc_boot_gate's entry (round-2 parallel wake: downstream MAIN
+; gates concurrently with ours) and exit (Bug #45 H2 backstop).  Blocking,
+; ~1 ms for 3 bytes at 31,250 baud; callers run with the UART still
+; configured (entry: pre-quiesce; exit: post TX-only re-arm).
+; ---------------------------------------------------------------------------
+wake_rebroadcast_downstream:
+    movlw       0xB0
+    call        uart_tx_byte_blocking, 0x0
+    movlw       0x03
+    call        uart_tx_byte_blocking, 0x0
+    movlw       0x01
+    goto        uart_tx_byte_blocking           ; tail-call return
+
+; ---------------------------------------------------------------------------
 ; Function: adc_boot_gate                  (rail-rise wait + DSP cold init)
 ; Address : 0x2D8C
 ; ---------------------------------------------------------------------------
@@ -4115,6 +4131,17 @@ main_core_service_2d80:
 ; ---------------------------------------------------------------------------
 adc_boot_gate:
     bcf         INTCON, 7, ACCESS
+    ; V3.4 round-2 (docs/analysis/CONNECTED_WAITING_WAKE_DELAY_2026-06-10):
+    ; re-broadcast WAKE downstream BEFORE quiescing the UART, so the next
+    ; MAIN in the ring starts its own (deaf, blocking) wake gate in PARALLEL
+    ; with ours.  Previously the parser's chain-echo forward could be killed
+    ; mid-frame by the quiesce below (Bug #45 H2), and even a clean forward
+    ; only reached the downstream MAIN through OUR deaf window -- so a
+    ; two-MAIN chain woke SEQUENTIALLY (~2x the single-gate latency, the
+    ; dominant term in CONTROL's wake-to-responsive time).  The exit-time
+    ; re-emit stays as the H2 robustness backstop; a duplicate wake is
+    ; consumed idempotently by an already-awake MAIN.
+    rcall       wake_rebroadcast_downstream
     call        uart_quiesce_for_wake, 0x0
     bcf         LATB, 2, ACCESS
     movlb       0x0
@@ -4205,12 +4232,9 @@ adc_boot_gate_exit:
     ; here -- on cold boot a downstream MAIN is also booting, so a
     ; spurious WAKE broadcast is consumed harmlessly (gate-already-open
     ; path); CONTROL handles unsolicited broadcast bytes idempotently.
-    movlw       0xB0
-    call        uart_tx_byte_blocking, 0x0
-    movlw       0x03
-    call        uart_tx_byte_blocking, 0x0
-    movlw       0x01
-    call        uart_tx_byte_blocking, 0x0
+    ; (Round-2: the entry-time wake_rebroadcast_downstream is the primary
+    ; parallel-wake path; this exit emit remains the H2 backstop.)
+    rcall       wake_rebroadcast_downstream
     movlb       0x0
     bsf         event_flags_b0, 1, BANKED
     bsf         event_flags_b0, 3, BANKED
@@ -9581,9 +9605,9 @@ cmd25_identity_query_handler:
     movwf       stock_005_acc, ACCESS
     movlw       0x04                        ; V3.4 identity minor
     movwf       stock_006_acc, ACCESS
-    movlw       0x07                        ; V3.4_IDENTITY_REV_HI
+    movlw       0x08                        ; V3.4_IDENTITY_REV_HI
     movwf       stock_007_acc, ACCESS
-    movlw       0x0F                        ; V3.4_IDENTITY_REV_LO
+    movlw       0x01                        ; V3.4_IDENTITY_REV_LO
     movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       stock_004_acc, ACCESS
@@ -9956,30 +9980,23 @@ preset_job_apply_i2c_timeout:
 
 ; ---------------------------------------------------------------------------
 ; Preset Select Handler (V3.2 non-blocking — cmd=0x20)
-; Parser entry: record target preset and start/coalesce the async preset job.
-; Actual work is done by preset_job_service from the main loop.
+; Parser entry: ALWAYS record the target preset and start/coalesce the async
+; preset job.  Actual work is done by preset_job_service from the main loop.
 ;
-; USB filename-xact gate (V3.2 cleanup): when filename_dirty_flags.bit6 is
-; set, a USB cmd 0x03 filename WRITE has already updated RAM at
-; preset_filename_ram_base but the host's force_persist has not yet
-; flushed RAM to EEPROM.  In that window, advancing the state machine
-; would have the HOLDING -> APPLY transition call preset_load_filename,
-; which OVERWRITES the host's just-written RAM with the incoming
-; preset's stored filename -- silently dropping the host's data.  Gate
-; the state-machine entry on bit6 so the target is recorded but no
-; switch fires until main_core_service_265c clears bit6 after persist.
-; The next CONTROL broadcast (or any subsequent preset_select_handler
-; entry) past the cleared gate will pick up the deferred target.
+; V3.4 BUG-V34V173-5: the handler no longer gates on the USB filename-write
+; bit (filename_dirty_flags.bit6).  The old parser-entry gate dropped the
+; broadcast without storing the target, so a preset change coinciding with a
+; host filename write was lost on this unit until the ~6 s full-sync
+; re-broadcast (cross-PB preset/coeff desync).  The deferral the gate wanted
+; lives in the layer that owns the hazard: preset_job_pending parks un-muted
+; while bit6 is set, and the HOLDING -> APPLY transition keeps its bit6
+; backstop immediately before preset_load_filename (the only call that can
+; clobber the host's just-written filename RAM).  main_core_service_265c
+; clears bit6 after the host's force_persist and the parked job proceeds on
+; the next main-loop pass.
 ; ---------------------------------------------------------------------------
 preset_select_handler:
     movlb       0x0
-    ; V3.2 USB-xact gate: drop broadcast entirely while host's filename
-    ; write is in flight (bit6 set).  Target NOT stored -- the next
-    ; CONTROL full_sync_burst step 6 broadcast (within ~6 sec) will
-    ; retry once the gate clears.  2-instruction gate; we share the
-    ; ``movlb 0x0`` already at the top of the handler.
-    btfsc       filename_dirty_flags_b0, 6, BANKED
-    bra         preset_select_handler_done
     movf        current_cmd_data_b0, W, BANKED ; data byte: 0=A, 1=B
     andlw       0x01
     movlb       0x2
@@ -10092,8 +10109,16 @@ preset_job_ret:
 
 ; --- PENDING (1): persist filename, force mute, configure hold timer ---
 preset_job_pending:
-    ; Persist dirty filename for outgoing preset
     movlb       0x0
+    ; V3.4 BUG-V34V173-5: while a USB cmd 0x03 filename WRITE is in flight
+    ; (bit6 set), park un-muted in PENDING.  The target stays recorded and
+    ; coalescable; main_core_service_265c clears bit6 after the host's
+    ; force_persist and the next pass proceeds (persist/mute/hold/apply).
+    ; Parking before the bit5 persist also defers that persist to
+    ; main_core_service_265c, its canonical owner.
+    btfsc       filename_dirty_flags_b0, 6, BANKED
+    return      0
+    ; Persist dirty filename for outgoing preset
     btfsc       filename_dirty_flags_b0, 5, BANKED
     rcall       preset_persist_filename
 
@@ -10762,7 +10787,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0x7F, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x04, 0x81, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

@@ -18,6 +18,7 @@ from tests.sim.test_preset_filename_lcd_spec import (
     FNAME_PENDING_MASK,
     FNAME_QUERY_WAIT_MASK,
     FNAME_VALID_MASK,
+    FNAME_WANT_QUERY_MASK,
     NativePresetFilenameStep,
     PRESET_FILENAME_SLOT_A,
     PRESET_FILENAME_SLOT_B,
@@ -97,6 +98,12 @@ def test_mixed_new_old_filename_pairs_preserve_query_cache_and_reentry(
 
 
 def test_v173_v32_old_main_filename_query_times_out_blank() -> None:
+    """V1.73 + old V3.2 MAIN (no cmd 0x26 support): the filename query times
+    out blank.  BUG-V34V173-4 makes the timeout schedule a *bounded* delayed
+    retry (FNAME_RETRY_MAX total attempts), so the FSM is briefly re-armed
+    after each expiry and then settles terminally quiet -- it must not retry
+    forever against a MAIN that will never answer.
+    """
     _require_rust()
     chain = RustChain.from_v171_v32(
         control_hex_path=str(V173_CONTROL_HEX),
@@ -108,19 +115,26 @@ def test_v173_v32_old_main_filename_query_times_out_blank() -> None:
     _press(chain, "RIGHT")
 
     _wait_for_lcd(chain, lambda lcd: lcd == ("Preset         A", "                "))
-    for _ in range(120):
+    busy_mask = FNAME_PENDING_MASK | FNAME_WANT_QUERY_MASK | FNAME_QUERY_WAIT_MASK
+    for _ in range(600):
         chain.step_ticks(1_000_000)
-        if not (chain.read_reg(FNAME_FLAGS_PHYS) & FNAME_PENDING_MASK):
+        if not (chain.read_reg(FNAME_FLAGS_PHYS) & busy_mask):
             break
 
     flags = chain.read_reg(FNAME_FLAGS_PHYS)
     assert not (flags & FNAME_VALID_MASK)
-    assert not (flags & (FNAME_PENDING_MASK | FNAME_QUERY_WAIT_MASK))
-    assert chain.lcd_lines() == ("Preset         A", "                ")
-    assert any(
-        frame[0] == 0xB1 and frame[1] == 0x26
-        for frame in _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
+    assert not (flags & busy_mask), (
+        "filename FSM still armed after the bounded retry budget expired: "
+        f"flags=0x{flags:02X}"
     )
+    assert chain.lcd_lines() == ("Preset         A", "                ")
+    queries = [
+        frame
+        for frame in _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
+        if frame[0] == 0xB1 and frame[1] == 0x26
+    ]
+    # FNAME_RETRY_MAX = 3: the initial query plus exactly two bounded retries.
+    assert len(queries) == 3, queries
 
 
 def test_v171_v34_old_control_never_sends_filename_query() -> None:
