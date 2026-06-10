@@ -2446,13 +2446,28 @@ impl Chain {
     }
 
     /// Apply a reset source to every core, clear chain-level UART history,
-    /// and re-bootstrap all cores at tick zero.  This is the simulator
-    /// analogue for whole-system POR/BOR sweeps.
+    /// and re-bootstrap all cores.  This is the simulator analogue for
+    /// whole-system POR/BOR sweeps.
+    ///
+    /// The universal clock stays MONOTONIC across a mid-run reset: cores are
+    /// re-bootstrapped at the *current* tick (recorded as their new per-core
+    /// boot epoch), not at tick zero.  A device reset does not rewind
+    /// wall-clock time, and downstream consumers — the exploratory runner's
+    /// observation log, Δtick math, and tick-ordered timeline merges — assume
+    /// `current_tick` never goes backward (the old rewind-to-zero interleaved
+    /// clock epochs in `observations.jsonl` and manufactured phantom
+    /// counter/DSP-digest regressions in the 2026-06-09 post-fix exploratory
+    /// corpus).  `schedule_initial_steps` zeroes `current_tick` as part of
+    /// its constructor-bootstrap contract, so restore it afterwards; the
+    /// re-bootstrap events are queued at `now`, so stepping resumes exactly
+    /// where the pre-reset run left off.
     fn apply_reset_all(&mut self, source: &str) -> PyResult<()> {
         let src = parse_reset_source(source)?;
-        let offsets = vec![0_u64; self.inner.cores.len()];
+        let now = self.inner.current_tick;
+        let offsets = vec![now; self.inner.cores.len()];
         self.inner.apply_reset_all(src);
         self.inner.schedule_initial_steps(&offsets);
+        self.inner.current_tick = now;
         Ok(())
     }
 

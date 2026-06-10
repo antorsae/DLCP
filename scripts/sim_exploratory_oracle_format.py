@@ -292,7 +292,25 @@ def _session_timeline(
     sess_events = [e for e in events if int(e["session_id"]) == session_id]
     sess_events.sort(key=lambda e: int(e["event_id"]))
     sess_obs = [o for o in observations if int(o["session_id"]) == session_id]
-    # observations.jsonl preserves write order, which is tick-monotonic per session
+    # observations.jsonl preserves write order, which is tick-monotonic per
+    # session.  Mid-session resets used to rewind the universal clock (fixed in
+    # the rust facade 2026-06-10); a corpus produced before that fix has clock
+    # epochs interleaved, and the tick-sorted merge below then pairs stimuli
+    # with observations from a DIFFERENT epoch — producing phantom negative
+    # counters and DSP-digest "oscillation" in the rendered cards.  Detect and
+    # warn loudly so such a corpus is not judged as firmware evidence.
+    rewinds = sum(
+        1
+        for prev, cur in zip(sess_obs, sess_obs[1:])
+        if int(cur["tick"]) < int(prev["tick"])
+    )
+    if rewinds:
+        print(
+            f"WARNING: session {session_id}: {rewinds} universal-clock rewind(s) "
+            "in observation write order — pre-clock-fix corpus; tick-merged "
+            "cards interleave epochs and counter/digest deltas are unreliable",
+            file=sys.stderr,
+        )
     return sess_events, sess_obs
 
 

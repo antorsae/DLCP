@@ -576,6 +576,11 @@ class Explorer:
             "kind": kind,
             "session_id": session_id,
             "campaign": config.campaign,
+            # Monotonic per-run sequence number: the causal write order, robust
+            # even if a future regression makes `tick` non-monotonic again
+            # (mid-session resets used to rewind the universal clock, which
+            # scrambled tick-sorted timeline merges downstream).
+            "obs_seq": self.stats.observations,
             "tick": chain.current_tick(),
             "lcd": list(lcd),
             "is_connected": chain.is_connected(),
