@@ -321,16 +321,18 @@ def _merge(
     sess_obs: list[dict[str, Any]],
 ) -> list[tuple[str, dict[str, Any]]]:
     timeline: list[tuple[int, int, int, str, dict[str, Any]]] = []
+    # Both streams keep their causal write order (event_id / obs_seq) even if
+    # raw ticks rewind: sort ticks are monotonized per stream in that order,
+    # so a pre-clock-fix corpus can no longer reorder events or observations
+    # across interleaved clock epochs (post-reset stimuli sorting before
+    # pre-reset observations and vice versa).  On a monotonic corpus this is
+    # byte-identical to sorting by raw tick.
     carry = 0
     for e in sess_events:
-        t = _event_tick(e, carry)
+        t = max(carry, _event_tick(e, carry))
         carry = t
         # event sorts before an observation sharing its tick (kind=0)
         timeline.append((t, 0, int(e["event_id"]), "event", e))
-    # Observations keep their causal write order (obs_seq / file order) even
-    # if raw ticks rewind: the sort tick is monotonized in write order, so a
-    # pre-clock-fix corpus can no longer reorder observations across epochs.
-    # On a monotonic corpus this is byte-identical to sorting by raw tick.
     mono = 0
     for seq, o in enumerate(sess_obs):
         mono = max(mono, int(o["tick"]))
@@ -385,7 +387,10 @@ def render_card(run_dir: Path, session_id: int) -> str:
             f"- **WARNING: {tick_rewinds} universal-clock rewind(s) in this "
             "session's observation stream (pre-clock-fix corpus).** Counter "
             "and DSP-digest deltas across rewinds are measurement artifacts, "
-            "not firmware behavior; do not judge them as evidence."
+            "and stimulus->observation pairing near the rewinds is "
+            "approximate (causal write order is preserved per stream, but "
+            "cross-stream interleave around a rewind cannot be fully "
+            "reconstructed); do not judge either as firmware evidence."
         )
     out.append(f"- campaign: `{campaign}`")
     out.append(f"- seed: `{manifest.get('seed')}`")
