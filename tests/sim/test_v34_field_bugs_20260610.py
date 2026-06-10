@@ -313,6 +313,39 @@ def test_field1_finalize_only_applies_profile_without_flashing(
     assert "0x03 -> 0x04" in out
 
 
+def test_field1_wrapper_forwards_profile_on_finalize_only_and_info_only() -> None:
+    """codex review of 947ca22: the wrapper's info-only/finalize-only early
+    exits dropped an explicit --profile, silently falling back to the main
+    flasher's default.  Both modes honor the flag, so it must forward."""
+    import argparse
+
+    from dlcp_fw.flash import dlcp_v34_release_flash as wrapper
+
+    parser = argparse.ArgumentParser()
+    for mode_flag in ("--finalize-only", "--info-only"):
+        argv_in = [mode_flag, "--profile", "rc5"]
+        # parse via the wrapper's real parser by reusing release_main's
+        # argument wiring through build_forward_argv
+        ns = argparse.Namespace(
+            vid=0x04D8,
+            pid=0xFF89,
+            path=None,
+            list=False,
+            info_only=(mode_flag == "--info-only"),
+            finalize_only=(mode_flag == "--finalize-only"),
+            preflight_only=False,
+            dry_run=False,
+            verbose=False,
+            left=False,
+            right=False,
+            all_ch=None,
+            profile="rc5",
+            reconnect_timeout_s=None,
+        )
+        argv = wrapper.build_forward_argv(ns, parser)
+        assert ["--profile", "rc5"] == argv[-2:], (mode_flag, argv)
+
+
 def test_field1_info_only_warns_on_rc5_profile(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

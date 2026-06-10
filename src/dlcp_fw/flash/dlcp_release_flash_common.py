@@ -113,6 +113,12 @@ def build_forward_argv(
     _append_common_args(argv, args)
 
     if args.list or args.info_only or getattr(args, "finalize_only", False):
+        # info-only / finalize-only exit before the release-flash argv is
+        # built, so an explicit --profile must be forwarded here too (the
+        # finalize-only mode and the info-only mismatch warning both honor
+        # it; dropping it silently fell back to the flasher default).
+        if getattr(args, "profile", None):
+            argv.extend(["--profile", args.profile])
         return argv
 
     route = _resolve_route(args, parser)
