@@ -72,6 +72,16 @@ def test_main_reboots_and_observables_stay_monotonic_across_reset_all(
     tick_before = chain.current_tick()
 
     chain.apply_reset_all("mclr")
+    # Epoch pin: the re-bootstrap events must be scheduled at the CURRENT
+    # tick, so the reboot unfolds across simulated time exactly like a cold
+    # boot.  A regression that queued boot events at tick 0 (while merely
+    # restoring current_tick) would let the entire boot race ahead "in the
+    # past" and the gate would already be up here.
+    chain.step_tcy(BOOT_TCY // 16)
+    assert not (chain.read_main_reg(0, ACTIVE_FLAGS) & ACTIVE_GATE_MASK), (
+        "post-reset boot collapsed into a burst: gate already up after a "
+        "fraction of the boot time (re-bootstrap events not at the current epoch)"
+    )
     chain.step_tcy(BOOT_TCY)
 
     assert chain.read_main_reg(0, ACTIVE_FLAGS) & ACTIVE_GATE_MASK, (

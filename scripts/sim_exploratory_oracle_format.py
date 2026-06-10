@@ -288,17 +288,19 @@ def _session_timeline(
     events: list[dict[str, Any]],
     observations: list[dict[str, Any]],
     session_id: int,
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], int]:
     sess_events = [e for e in events if int(e["session_id"]) == session_id]
     sess_events.sort(key=lambda e: int(e["event_id"]))
     sess_obs = [o for o in observations if int(o["session_id"]) == session_id]
-    # observations.jsonl preserves write order, which is tick-monotonic per
-    # session.  Mid-session resets used to rewind the universal clock (fixed in
-    # the rust facade 2026-06-10); a corpus produced before that fix has clock
-    # epochs interleaved, and the tick-sorted merge below then pairs stimuli
-    # with observations from a DIFFERENT epoch — producing phantom negative
-    # counters and DSP-digest "oscillation" in the rendered cards.  Detect and
-    # warn loudly so such a corpus is not judged as firmware evidence.
+    # observations.jsonl preserves write order (obs_seq since 2026-06-10),
+    # which is tick-monotonic per session.  Mid-session resets used to rewind
+    # the universal clock (fixed in the rust facade 2026-06-10); a corpus
+    # produced before that fix has clock epochs interleaved, and a naive
+    # tick-sorted merge then pairs stimuli with observations from a DIFFERENT
+    # epoch — producing phantom negative counters and DSP-digest
+    # "oscillation" in the rendered cards.  Detect rewinds, warn on stderr,
+    # and surface the warning IN the card (render_card) so the oracle never
+    # judges such a corpus as firmware evidence.
     rewinds = sum(
         1
         for prev, cur in zip(sess_obs, sess_obs[1:])
@@ -307,11 +309,11 @@ def _session_timeline(
     if rewinds:
         print(
             f"WARNING: session {session_id}: {rewinds} universal-clock rewind(s) "
-            "in observation write order — pre-clock-fix corpus; tick-merged "
-            "cards interleave epochs and counter/digest deltas are unreliable",
+            "in observation write order — pre-clock-fix corpus; counter/digest "
+            "deltas are unreliable",
             file=sys.stderr,
         )
-    return sess_events, sess_obs
+    return sess_events, sess_obs, rewinds
 
 
 def _merge(
@@ -325,8 +327,14 @@ def _merge(
         carry = t
         # event sorts before an observation sharing its tick (kind=0)
         timeline.append((t, 0, int(e["event_id"]), "event", e))
+    # Observations keep their causal write order (obs_seq / file order) even
+    # if raw ticks rewind: the sort tick is monotonized in write order, so a
+    # pre-clock-fix corpus can no longer reorder observations across epochs.
+    # On a monotonic corpus this is byte-identical to sorting by raw tick.
+    mono = 0
     for seq, o in enumerate(sess_obs):
-        timeline.append((int(o["tick"]), 1, seq, "obs", o))
+        mono = max(mono, int(o["tick"]))
+        timeline.append((mono, 1, seq, "obs", o))
     timeline.sort(key=lambda x: (x[0], x[1], x[2]))
     return [(kind, payload) for (_t, _k, _s, kind, payload) in timeline]
 
@@ -361,7 +369,7 @@ def render_card(run_dir: Path, session_id: int) -> str:
     events = _load_jsonl(run_dir / "events.jsonl")
     observations = _load_jsonl(run_dir / "observations.jsonl")
     incidents = _load_jsonl(run_dir / "incidents.jsonl")
-    sess_events, sess_obs = _session_timeline(events, observations, session_id)
+    sess_events, sess_obs, tick_rewinds = _session_timeline(events, observations, session_id)
     if not sess_events:
         raise SystemExit(f"no events for session {session_id} in {run_dir}")
     campaign = next(
@@ -372,6 +380,13 @@ def render_card(run_dir: Path, session_id: int) -> str:
     out: list[str] = []
     out.append(f"# Exploratory session card — {run_dir.name} / session {session_id}")
     out.append("")
+    if tick_rewinds:
+        out.append(
+            f"- **WARNING: {tick_rewinds} universal-clock rewind(s) in this "
+            "session's observation stream (pre-clock-fix corpus).** Counter "
+            "and DSP-digest deltas across rewinds are measurement artifacts, "
+            "not firmware behavior; do not judge them as evidence."
+        )
     out.append(f"- campaign: `{campaign}`")
     out.append(f"- seed: `{manifest.get('seed')}`")
     out.append(f"- CONTROL: `{Path(manifest['control_hex']).name}`  MAIN: `{Path(manifest['main_hex']).name}`")
