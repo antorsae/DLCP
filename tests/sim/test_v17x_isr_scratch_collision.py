@@ -2,7 +2,8 @@
 
 Found during the FIELD-3 forensics (docs/V34_FIELD_BUGS_20260610.md
 Addendum): the in-ISR RC5 decoder uses ``Common_RAM+12/13`` (0x00C/0x00D)
-as its per-edge timing scratch, and every foreground delay
+as its per-edge timing scratch (and, after the timing phase, as the
+address/command accumulators), while every foreground delay
 (``control_core_service_01D8``) decrements the very same cells in place.
 When an IR edge interrupts a foreground delay loop the two writers
 interleave, deterministically reproduced in sim:
@@ -41,7 +42,9 @@ from tests.sim.test_v171_ir_rc5_pulse_train import (
 )
 
 HYPEX_ADDR = 0x10
-HYPEX_VOL_UP = 0x10
+# Distinct from the address byte so an addr/cmd swap or mirror cannot
+# satisfy the decode assertions by accident (codex review of 6aef4da).
+HYPEX_VOL_DOWN = 0x11
 
 DELAY_LOOP_LO = 0x01E2
 DELAY_LOOP_HI = 0x01EE
@@ -86,10 +89,10 @@ def test_rc5_decode_works_on_idle_foreground(v173_control_hex: Path) -> None:
     delay is in flight.  Keeps the xfails below meaningful."""
     chain = _build_warmed_ir_chain(v173_control_hex)
     _prime_for_rc5_decode(chain)
-    _drive_rc5_pulse_train(chain, HYPEX_ADDR, HYPEX_VOL_UP)
+    _drive_rc5_pulse_train(chain, HYPEX_ADDR, HYPEX_VOL_DOWN)
     chain.step_ticks(4_000_000)
     assert chain.read_reg(IR_DECODED_ADDR_PHYS) == HYPEX_ADDR
-    assert chain.read_reg(IR_DECODED_CMD_PHYS) == HYPEX_VOL_UP
+    assert chain.read_reg(IR_DECODED_CMD_PHYS) == HYPEX_VOL_DOWN
 
 
 @pytest.mark.xfail(
@@ -107,13 +110,13 @@ def test_rc5_decode_survives_foreground_delay_in_flight(
     chain = _build_warmed_ir_chain(v173_control_hex)
     _prime_for_rc5_decode(chain)
     _catch_foreground_in_delay_loop(chain)
-    _drive_rc5_pulse_train(chain, HYPEX_ADDR, HYPEX_VOL_UP)
+    _drive_rc5_pulse_train(chain, HYPEX_ADDR, HYPEX_VOL_DOWN)
     chain.step_ticks(4_000_000)
     got = (
         chain.read_reg(IR_DECODED_ADDR_PHYS),
         chain.read_reg(IR_DECODED_CMD_PHYS),
     )
-    assert got == (HYPEX_ADDR, HYPEX_VOL_UP), (
+    assert got == (HYPEX_ADDR, HYPEX_VOL_DOWN), (
         "IR frame dropped while the foreground was mid-delay: "
         f"decoded addr/cmd = 0x{got[0]:02X}/0x{got[1]:02X}"
     )
@@ -134,7 +137,7 @@ def test_foreground_delay_count_never_inflated_by_ir_isr(
     chain = _build_warmed_ir_chain(v173_control_hex)
     _prime_for_rc5_decode(chain)
     count_before = _catch_foreground_in_delay_loop(chain)
-    _drive_rc5_pulse_train(chain, HYPEX_ADDR, HYPEX_VOL_UP)
+    _drive_rc5_pulse_train(chain, HYPEX_ADDR, HYPEX_VOL_DOWN)
     count_after = (chain.read_reg(DELAY_CNT_HI) << 8) | chain.read_reg(DELAY_CNT_LO)
     pc = chain.current_ctl_pc()
     if not (DELAY_LOOP_LO <= pc <= DELAY_LOOP_HI):
