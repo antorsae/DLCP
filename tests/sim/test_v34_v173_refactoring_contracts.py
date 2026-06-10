@@ -99,7 +99,13 @@ def test_v34_v173_listing_size_gates_keep_refactoring_headroom() -> None:
     v173_lst = V173_CONTROL_ASM.with_suffix(".lst")
     assert v34_lst.exists(), f"missing listing: {v34_lst}"
     assert v173_lst.exists(), f"missing listing: {v173_lst}"
-    _assert_listing_fits_before(v34_lst, 0x4C00, min_margin=128)
+    # MAIN floor lowered 128 -> 96 bytes on 2026-06-11: the FIELD-4A
+    # ACK-verified preset table apply and the FIELD-4B volume-family row
+    # skip (docs/V34_FIELD_BUGS_20260610.md) spent ~20 bytes of reserve on
+    # a safety fix (live audio through a wrong/half-applied DSP image).
+    # Current margin 108 bytes; recover headroom in the next size campaign
+    # before any non-safety feature lands.
+    _assert_listing_fits_before(v34_lst, 0x4C00, min_margin=96)
     _assert_listing_fits_before(v173_lst, 0x77B0, min_margin=128)
 
 
@@ -208,13 +214,23 @@ def test_v173_preset_row0_readiness_gates_row1_filename_rendering() -> None:
     draw = _label_body(text, "v171_prs_screen_draw_body", ["v171_prs_screen_cache_check"])
     service = _label_body(text, "v172_preset_filename_service", ["v172_fname_query_service"])
 
-    assert "FNAME_ROW0_NOT_READY" in draw
+    # FIELD-3 factoring (2026-06-11): the row-0 paint (including the
+    # readiness bcf) moved into v173_preset_row0_paint so the per-pass
+    # filename service can self-heal a blanked row 0; the draw body
+    # delegates to it before blanking row 1.
+    paint = _label_body(text, "v173_preset_row0_paint", ["v171_preset_screen"])
+    assert "FNAME_ROW0_NOT_READY" in paint
     assert "FNAME_ROW0_NOT_READY" in service
+    assert "call    v173_preset_row0_paint" in draw
+    _assert_ordered(
+        paint,
+        "call    v172_preset_status_patch_service",
+        "bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED",
+    )
     _assert_ordered(
         draw,
-        "call    v172_preset_status_patch_service",
+        "call    v173_preset_row0_paint",
         "v172_preset_blank_row1_entry",
-        "bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED",
     )
     _assert_ordered(
         service,

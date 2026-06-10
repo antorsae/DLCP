@@ -102,6 +102,9 @@ flow_local_0040:                                                  ; address: 0x0
 
 app_entry_defensive_stub:                                               ; address: 0x00004c
 
+        ; FIELD-3: a full LCD clear destroys Preset row 0; mark it not-ready
+        ; so the page service self-heals if we are parked on the Preset page.
+        call    v173_preset_lcd_invalidate, 0x0
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0xfe
@@ -3034,6 +3037,64 @@ v173_preset_lcd_invalidate:
         movlb   0x00
         return  0x0
 
+v173_preset_row0_paint:
+        ; FIELD-3: paint Preset row 0 ("Preset" + spaces), seed the status
+        ; snap, patch cols 14/15, and mark row 0 ready.  Factored from
+        ; v171_prs_screen_draw_body so the per-pass filename service can
+        ; SELF-HEAL after any full LCD clear (the post-wake standby-path
+        ; bounce blanks the LCD after the entry draw ran).  Enter any bank;
+        ; exit BSR=0.
+        ; Row 0: "Preset          " (16 characters)
+        movlw   0x80
+        movwf   (Common_RAM + 1), A
+        movlw   0x80                                       ; LCD cursor row 0 col 0
+        call    lcd_command, 0x0
+        movlw   'P'
+        call    lcd_char_write, 0x0
+        movlw   'r'
+        call    lcd_char_write, 0x0
+        movlw   'e'
+        call    lcd_char_write, 0x0
+        movlw   's'
+        call    lcd_char_write, 0x0
+        movlw   'e'
+        call    lcd_char_write, 0x0
+        movlw   't'
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+        movlw   ' '
+        call    lcd_char_write, 0x0
+
+        ; Row 0 live status cells: col14 health glyph, col15 A/B/!.
+        ; Seed snap invalid so two bounded status patch calls paint both cells.
+        movlb   0x02
+        movlw   0xFF
+        movwf   v172_fname_row0_status_snap_b2, BANKED
+        movlb   0x00
+        call    v172_preset_status_patch_service, 0x0
+        call    v172_preset_status_patch_service, 0x0
+        movlb   0x02
+        bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
+        movlb   0x00
+        return  0x0
+
 
 ; ===========================================================================
 ; standby_wake_broadcast @ 0x000C98 — standby_wake_broadcast
@@ -3698,52 +3759,9 @@ v171_prs_screen_draw_delayed_query:
         bsf     v172_fname_flags_b2, FNAME_QUERY_WAIT, BANKED
         movlb   0x00
 v171_prs_screen_draw_body:
-        ; Row 0: "Preset          " (16 characters)
-        movlw   0x80
-        movwf   (Common_RAM + 1), A
-        movlw   0x80                                       ; LCD cursor row 0 col 0
-        call    lcd_command, 0x0
-        movlw   'P'
-        call    lcd_char_write, 0x0
-        movlw   'r'
-        call    lcd_char_write, 0x0
-        movlw   'e'
-        call    lcd_char_write, 0x0
-        movlw   's'
-        call    lcd_char_write, 0x0
-        movlw   'e'
-        call    lcd_char_write, 0x0
-        movlw   't'
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-
-        ; Row 0 live status cells: col14 health glyph, col15 A/B/!.
-        ; Seed snap invalid so two bounded status patch calls paint both cells.
-        movlb   0x02
-        movlw   0xFF
-        movwf   v172_fname_row0_status_snap_b2, BANKED
-        movlb   0x00
-        call    v172_preset_status_patch_service, 0x0
-        call    v172_preset_status_patch_service, 0x0
+        ; FIELD-3: row-0 paint factored into v173_preset_row0_paint so the
+        ; per-pass filename service can self-heal a blanked row 0.
+        call    v173_preset_row0_paint, 0x0
 
         ; Row 1 starts blank; filename service will incrementally repaint.
         movlw   0xC0                                       ; LCD cursor row 1 col 0
@@ -3758,7 +3776,6 @@ v172_preset_blank_row1_entry:
 
         movlb   0x02
         clrf    v172_fname_retry_b2, BANKED        ; BUG-4: fresh page visit = fresh budget
-        bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
         btfsc   v172_fname_flags_b2, FNAME_VALID, BANKED
         bra     v171_prs_screen_cache_check
         bra     v171_prs_screen_query_check_wait
@@ -5250,9 +5267,31 @@ v172_preset_filename_service:
         movlb   0x02
         btfss   v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
         bra     v172_preset_filename_service_row0_ready
+        ; FIELD-3 self-heal: row 0 was invalidated (standby entry, reconnect,
+        ; or a defensive LCD clear) while we are parked on the Preset page.
+        ; Repaint it -- but only while awake/CONNECTED: in standby or WAITING
+        ; the Zzz/banner overlay owns the LCD and the heal must stay parked.
         movlb   0x00
+        btfss   control_flags_acc, 0x1, A
+        return  0x0
+        call    v173_preset_row0_paint, 0x0
         return  0x0
 v172_preset_filename_service_row0_ready:
+        ; FIELD-3 belt: the post-wake bounce can blank row 0 through a
+        ; corrupted LCD byte sequence AFTER the entry repaint cleared the
+        ; not-ready latch, so flag bookkeeping alone cannot be trusted.
+        ; Re-assert row 0 every 32 service passes while awake on the Preset
+        ; page; rewriting identical characters is invisible on the HD44780.
+        incf    v173_row0_reassert_div_b2, F, BANKED
+        btfss   v173_row0_reassert_div_b2, 5, BANKED
+        bra     v173_row0_reassert_done
+        clrf    v173_row0_reassert_div_b2, BANKED
+        movlb   0x00
+        btfss   control_flags_acc, 0x1, A
+        return  0x0
+        call    v173_preset_row0_paint, 0x0
+        return  0x0
+v173_row0_reassert_done:
         movlb   0x00
         call    v172_fname_query_service, 0x0
         call    v172_fname_deadline_service, 0x0
@@ -8011,7 +8050,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x30, 0x00 ; "Rev x42 20260610"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x33, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x31, 0x00 ; "Rev x43 20260611"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -8019,8 +8058,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x42                    ; V1.73 + monotonic release revision
-        db      0x20, 0x26, 0x06, 0x10                    ; build date 20260610 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x33, 0x43                    ; V1.73 + monotonic release revision
+        db      0x20, 0x26, 0x06, 0x11                    ; build date 20260611 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

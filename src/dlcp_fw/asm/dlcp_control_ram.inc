@@ -555,6 +555,7 @@ v172_fname_tmp             equ  0x05C
 ; cleared on successful reception (FNAME_VALID set) and on Preset page
 ; entry, so each page visit gets a fresh budget.
 v172_fname_retry           equ  0x05D
+v173_row0_reassert_div     equ  0x05E    ; bank2 0x25E: Preset row-0 re-assert pass divider (FIELD-3)
 FNAME_RETRY_MAX            equ  0x03  ; initial query + 2 spaced retries
 FNAME_PENDING_DEADLINE_HI  equ  0x40
 FNAME_PENDING_DEADLINE_LO  equ  0x00
@@ -1111,4 +1112,7 @@ v172_fname_tmp_b2_phys           EQU  0x25C    ; physical address for movff/lfsr
 v172_fname_retry_b2              EQU  0x25D    ; phys 0x25D, bank 2, owner v172_fname_retry
 v172_fname_retry_b2_op           EQU  0x5D     ; 8-bit f operand for v172_fname_retry_b2
 v172_fname_retry_b2_phys         EQU  0x25D    ; physical address for movff/lfsr
+v173_row0_reassert_div_b2        EQU  0x25E    ; phys 0x25E, bank 2, owner v173_row0_reassert_div
+v173_row0_reassert_div_b2_op     EQU  0x5E     ; 8-bit f operand for v173_row0_reassert_div_b2
+v173_row0_reassert_div_b2_phys   EQU  0x25E    ; physical address for movff/lfsr
 ; --- RAM bank safety generated aliases: END ---

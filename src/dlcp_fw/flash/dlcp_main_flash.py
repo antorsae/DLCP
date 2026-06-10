@@ -1422,6 +1422,55 @@ def _wait_for_bootloader(
     )
 
 
+def _warn_if_profile_mismatch(snapshot, *, requested_label: str | None) -> None:
+    """Warn loudly when the device's persisted IR profile differs from the
+    requested/default one (2026-06-10 field incident: a unit silently on the
+    standard-RC5 profile leaves the Hypex remote's volume keys dead)."""
+    if requested_label is None:
+        requested_label = "hypex"
+    try:
+        current = snapshot.input_state.setup_profile
+    except Exception:
+        return
+    expected = IR_PROFILE_VALUES.get(requested_label)
+    if expected is None or current == expected:
+        return
+    names = {value: label for label, value in IR_PROFILE_VALUES.items()}
+    print(
+        f"WARNING: device IR profile is 0x{current:02X} "
+        f"({names.get(current, 'invalid/unknown')}), expected {requested_label} "
+        f"(0x{expected:02X}); remote keys may not match -- run with "
+        "--finalize-only --profile hypex to fix without reflashing"
+    )
+
+
+def _probe_path_is_app(path: bytes) -> bool:
+    """Identity-probe a HID device whose strings are unreadable.
+
+    macOS can enumerate the just-rebooted app with empty product/manufacturer
+    strings for several seconds; ``_device_mode`` then classifies it
+    ``unknown`` and a string-based wait never accepts it (2026-06-10 field
+    incident: both MAINs aborted post-flash finalize with
+    ``<no-product>:unknown``).  A successful cmd 0x06 version exchange is
+    authoritative proof the APP firmware is answering, independent of
+    enumeration strings.  The bootloader does not implement cmd 0x06.
+    """
+    try:
+        dev = _open_hid(path)
+    except Exception:
+        return False
+    try:
+        _probe_cmd06_version(dev, timeout_ms=400, attempts=1)
+        return True
+    except Exception:
+        return False
+    finally:
+        try:
+            dev.close()
+        except Exception:
+            pass
+
+
 def _wait_for_app(
     *,
     vid: int,
@@ -1431,11 +1480,27 @@ def _wait_for_app(
     previous_app_paths: set[bytes] | None = None,
     timeout_s: float,
 ) -> HidDeviceInfo:
-    deadline = time.time() + timeout_s
+    """Event-driven wait for the app to re-enumerate.
+
+    Returns as soon as the app is positively identified, so a generous
+    ``timeout_s`` ceiling costs nothing on success.  Classification is
+    string-based first, with an identity-probe promotion for devices whose
+    strings are not (yet) readable.  Progress is reported every ~5 s so a
+    slow boot (V3.4 cold boot runs the full rail-wait + DSP table apply
+    before servicing USB) is visibly distinct from a hang.
+    """
+    start = time.time()
+    deadline = start + timeout_s
     last_modes: List[str] = []
+    next_progress = start + 5.0
     while time.time() < deadline:
         devs = enumerate_devices(vid, pid)
         app_devs = [dev for dev in devs if _device_mode(dev) == "app"]
+        # Promote string-less devices that answer the app identity probe.
+        for dev in devs:
+            if _device_mode(dev) == "unknown" and dev.path is not None:
+                if _probe_path_is_app(dev.path):
+                    app_devs.append(dev)
         if path is not None:
             path_matches = [dev for dev in app_devs if dev.path == path]
             if len(path_matches) == 1:
@@ -1455,10 +1520,19 @@ def _wait_for_app(
         if path is None and len(app_devs) == 1:
             return app_devs[0]
         last_modes = [f"{dev.product_string or '<no-product>'}:{_device_mode(dev)}" for dev in devs]
+        now = time.time()
+        if now >= next_progress:
+            mode_text = ", ".join(last_modes) if last_modes else "<none>"
+            print(
+                f"waiting for app reconnect ({now - start:.0f}s elapsed); "
+                f"last seen devices: {mode_text}"
+            )
+            next_progress = now + 5.0
         time.sleep(0.2)
     mode_text = ", ".join(last_modes) if last_modes else "<none>"
     raise RuntimeError(
-        f"app did not reconnect within {timeout_s:.1f}s; last seen devices: {mode_text}"
+        f"app did not reconnect within {timeout_s:.1f}s; last seen devices: {mode_text}; "
+        "if the device is up, complete the aborted finalize with --finalize-only"
     )
 
 
@@ -1748,6 +1822,15 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="probe current device info and exit (no flashing)",
     )
     ap.add_argument(
+        "--finalize-only",
+        action="store_true",
+        help=(
+            "skip flashing; run only the post-flash IR profile finalize "
+            "(--profile) against the selected app device and exit.  Use to "
+            "complete a flash run whose post-flash reconnect/finalize aborted."
+        ),
+    )
+    ap.add_argument(
         "--no-info",
         action="store_true",
         help="skip default pre/post flash device info reporting",
@@ -1777,8 +1860,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument(
         "--reconnect-timeout-s",
         type=float,
-        default=10.0,
-        help="wait for bootloader reconnect after app 0x40 (default: 10s)",
+        default=60.0,
+        help=(
+            "ceiling for the event-driven bootloader/app reconnect waits; the "
+            "wait returns as soon as the device is positively identified "
+            "(default: 60s)"
+        ),
     )
     ap.add_argument(
         "--reconnect-settle-ms",
@@ -1789,8 +1876,12 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument(
         "--post-info-timeout-s",
         type=float,
-        default=10.0,
-        help="wait for app reconnect before post-flash info probe (default: 10s)",
+        default=60.0,
+        help=(
+            "ceiling for the post-flash app reconnect before the info probe / "
+            "finalize; event-driven, returns on first positive app identification "
+            "(default: 60s)"
+        ),
     )
     ap.add_argument("--no-verify", action="store_true", help="unsafe: skip CRC verify command (0x41)")
     ap.add_argument(
@@ -1808,9 +1899,35 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.info_only:
         info = _pick_device(args.vid, args.pid, args.path.encode("utf-8") if args.path else None)
-        _print_device_snapshot(
-            "device info:",
-            _probe_device_snapshot(info=info, vid=args.vid, pid=args.pid),
+        snapshot = _probe_device_snapshot(info=info, vid=args.vid, pid=args.pid)
+        _print_device_snapshot("device info:", snapshot)
+        _warn_if_profile_mismatch(snapshot, requested_label=args.profile)
+        return 0
+
+    if args.finalize_only:
+        if args.profile is None:
+            ap.error("--finalize-only requires --profile (default hypex applies when omitted explicitly)")
+        info = _pick_device(args.vid, args.pid, args.path.encode("utf-8") if args.path else None)
+        if _device_mode(info) != "app" and (
+            info.path is None or not _probe_path_is_app(info.path)
+        ):
+            raise RuntimeError(
+                "finalize-only requires a running app-mode MAIN; "
+                f"selected device classified as {_device_mode(info)!r}"
+            )
+        if info.path is None:
+            raise RuntimeError("selected device has no HID path")
+        before_profile, after_profile = _apply_ir_profile_ep0(
+            vid=args.vid,
+            pid=args.pid,
+            path=info.path,
+            profile_label=args.profile,
+        )
+        print(
+            "finalize-only IR profile:\n"
+            f"  requested profile: {args.profile} "
+            f"(0x{IR_PROFILE_VALUES[args.profile]:02X})\n"
+            f"  verified setup/profile: 0x{before_profile:02X} -> 0x{after_profile:02X}"
         )
         return 0
 

@@ -417,6 +417,7 @@ V3.4/V1.73 recommended refactoring release:
 - `test_v34_v173_compatibility.py` (V1.73/V3.4 native chain plus staged V1.73+V3.3, V1.72+V3.4, V1.73+V3.2, and V1.71+V3.4 compatibility; includes the bounded filename-retry timeout contract against old MAINs)
 - `test_v34_v173_exploratory_bug_regressions.py` (the five 2026-06-09 exploratory bug contracts: cmd 0x03 sole mute authority, WAITING IR re-arm + fresh reconnect status mask, Preset row-0 lifecycle invalidation, bounded filename retry, and preset-target record/defer independent of the USB filename gate — structural + behavioral)
 - `test_v173_wake_responsiveness.py` (standby->wake to responsive display under a 160M-tick bound on the native V1.73+V3.4 chain, first post-wake IR key works, and a structural pin that the WAITING entries never re-grow an open-loop banner delay)
+- `test_v34_field_bugs_20260610.py` (2026-06-10 field incident: flasher string-less-device identity-probe wait, event-driven reconnect ceilings, --finalize-only recovery, info-only profile-mismatch warning, serial cmd-0x1D profile-corruption pin, and the now-green FIELD-3/FIELD-4A/FIELD-4B firmware regressions)
 - `test_sim_reset_clock_monotonic.py` (rust facade: `apply_reset_all` keeps the universal clock and the TAS write-log observation artifacts monotonic across mid-run resets)
 - `test_ram_bank_safety.py` covers old+new RAM-safety targets: `main-v33`, `control-v172`, `main-v34`, and `control-v173`.
 
@@ -494,6 +495,7 @@ Top-level docs:
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/SIM_CHAIN_EXPLORATORY_STRESS_SPEC.md` (exploratory chain bug-hunt campaign spec: stimulus families, observation capture, and the oracle/bug-classifier rubric used by the LLM judge)
+- `docs/V34_FIELD_BUGS_20260610.md` (2026-06-10 live-flash field incident ledger — ALL FIXED 2026-06-11 in V3.4 rev 0x82 + V1.73 rev 0x43: flasher reconnect/finalize fix, RC5 profile recovery, Preset row-0 wake self-heal/re-assert, ACK-verified preset apply, volume-family row skip; includes the test-gap analysis and the 0x00D ISR/foreground collision addendum)
 - `docs/V34_V173_EXPLORATORY_BUGS.md` (2026-06-09 exploratory bug ledger for the V3.4/V1.73 pair — all five bugs fixed; per-bug regression tests and fix notes)
 - `docs/IMPL_V34_V173_EXPLORATORY_BUGS.md` (implementation plan + post-implementation evidence for the five exploratory bug fixes)
 - `docs/SIM_EXPLORATORY_BUG_TAXONOMY.md` (9-class intermittent-bug failure-mode taxonomy used as the oracle reference: preset/coeff desync, UI/MAIN disagreement, standby/wake, LCD glitch, mute leak, lost IR, liveness, fault-surfacing, protocol framing)

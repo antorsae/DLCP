@@ -85,6 +85,10 @@ def _append_common_args(argv: list[str], args: argparse.Namespace) -> None:
         argv.append("--preflight-only")
     if args.dry_run:
         argv.append("--dry-run")
+    if getattr(args, "finalize_only", False):
+        argv.append("--finalize-only")
+    if getattr(args, "reconnect_timeout_s", None) is not None:
+        argv.extend(["--reconnect-timeout-s", str(args.reconnect_timeout_s)])
     if args.verbose:
         argv.append("--verbose")
 
@@ -108,7 +112,7 @@ def build_forward_argv(
     argv: list[str] = []
     _append_common_args(argv, args)
 
-    if args.list or args.info_only:
+    if args.list or args.info_only or getattr(args, "finalize_only", False):
         return argv
 
     route = _resolve_route(args, parser)
@@ -183,6 +187,20 @@ def release_main(
     )
     ap.add_argument("--preflight-only", action="store_true", help="run preflight only; do not write over USB")
     ap.add_argument("--dry-run", action="store_true", help="parse/prepare only, no USB writes")
+    ap.add_argument(
+        "--finalize-only",
+        action="store_true",
+        help=(
+            "skip flashing; only run the post-flash IR profile finalize against "
+            "the selected app device (recovers an aborted post-flash finalize)"
+        ),
+    )
+    ap.add_argument(
+        "--reconnect-timeout-s",
+        type=float,
+        default=None,
+        help="ceiling for the event-driven reconnect waits (forwarded; flasher default 60s)",
+    )
     ap.add_argument(
         "--profile",
         choices=("hypex", "rc5"),

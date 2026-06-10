@@ -390,7 +390,11 @@ def test_v173_v34_chain_mute_survives_periodic_full_sync_refresh(
         _assert_user_muted_with_zero_volume_coeff(chain, unit=unit)
 
     chain.write_reg(CONTROL_FULL_SYNC_STEP, 0x01)
-    chain.write_reg(CONTROL_FULL_SYNC_LO, 0x20)
+    # Arm ONE BELOW the firmware's exact-equality fire value 0x4E20: poking
+    # the exact value races the per-pass increment (one increment between
+    # poke and compare misses the equality and waits a full 16-bit wrap).
+    # From 0x4E1F either ordering fires within two display-loop passes.
+    chain.write_reg(CONTROL_FULL_SYNC_LO, 0x1F)
     chain.write_reg(CONTROL_FULL_SYNC_HI, 0x4E)
     for unit in (0, 1):
         chain.reset_main_dsp_write_log(unit)

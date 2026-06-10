@@ -2568,7 +2568,7 @@ flow_main_core_service_1e88_20c2:
     clrf        stock_008_acc, ACCESS
     movlw       0x82
     movwf       stock_007_acc, ACCESS
-    movlw       0x81                            ; V3.4_RUNTIME_EEPROM_REV
+    movlw       0x82                            ; V3.4_RUNTIME_EEPROM_REV
     movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
@@ -5693,6 +5693,20 @@ preset_table_apply_entry_core:
     movlw       0x19                                ; >= 25 -> end-of-table sentinel
     subwf       stock_031_acc, W, ACCESS
     bc          preset_table_apply_entry_done
+    ; FIELD-4B: skip volume-family rows (TAS 0x30-0x36).  The volume engine
+    ; owns master + per-channel volumes and re-derives them right after
+    ; every switch anyway, so the capture-baked values were only ever a
+    ; transient overwrite -- but they played LIVE between the master-volume
+    ; restore and the engine's per-channel re-walk (2026-06-10 field
+    ; incident: loud bass on preset B), persistently if that walk stalled.
+    ; Skipping them keeps the user's channel volumes correct end-to-end.
+    movlw       0x30
+    subwf       stock_02F_acc, W, ACCESS            ; C=1 if reg >= 0x30
+    bnc         preset_table_apply_entry_not_vol
+    movlw       0x37
+    subwf       stock_02F_acc, W, ACCESS            ; C=1 if reg >= 0x37
+    bnc         preset_table_apply_entry_done       ; 0x30..0x36 -> benign skip
+preset_table_apply_entry_not_vol:
     movlw       0x04                                ; advance past header
     addwf       stock_013_acc, W, ACCESS
     movwf       stock_015_acc, ACCESS
@@ -9607,7 +9621,7 @@ cmd25_identity_query_handler:
     movwf       stock_006_acc, ACCESS
     movlw       0x08                        ; V3.4_IDENTITY_REV_HI
     movwf       stock_007_acc, ACCESS
-    movlw       0x01                        ; V3.4_IDENTITY_REV_LO
+    movlw       0x02                        ; V3.4_IDENTITY_REV_LO
     movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       stock_004_acc, ACCESS
@@ -9970,8 +9984,22 @@ preset_job_apply_i2c_recover:
     return      0
 
 preset_job_apply_i2c_entry:
+    ; FIELD-4A: the shared i2c_byte_tx engine latches dsp_fault_flags.2 on
+    ; any master-TX NACK.  Clear the latch before the entry and treat a
+    ; latched NACK exactly like a bounded timeout: C=1 -> the caller retries
+    ; THIS entry (recover/advertise runs in between).  Without this check a
+    ; NACKed coefficient write was silently skipped and the job COMMITted /
+    ; unmuted a wrong DSP image (2026-06-10 field incident: loud bass on
+    ; preset B -- wrong crossover at full volume).
+    movlb       0x0
+    bcf         dsp_fault_flags_b0, 2, BANKED
     call        preset_table_apply_entry_core, 0x0
     bc          preset_job_apply_i2c_timeout
+    movlb       0x0
+    btfss       dsp_fault_flags_b0, 2, BANKED
+    bra         preset_job_apply_i2c_done
+    bsf         STATUS, 0, ACCESS           ; NACKed entry -> C=1, retry it
+    bra         preset_job_apply_i2c_timeout
 preset_job_apply_i2c_done:
     bcf         STATUS, 0, ACCESS           ; C=0: success / benign no-op
     return      0
@@ -10787,7 +10815,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0x81, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x04, 0x82, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
