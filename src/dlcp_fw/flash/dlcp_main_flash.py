@@ -1501,6 +1501,7 @@ def _wait_for_app(
     path: bytes | None = None,
     previous_app_paths: set[bytes] | None = None,
     excluded_paths: set[bytes] | None = None,
+    expected_eeprom_version: Optional[EepromVersionInfo] = None,
     timeout_s: float,
 ) -> HidDeviceInfo:
     """Event-driven wait for the app to re-enumerate.
@@ -1558,12 +1559,32 @@ def _wait_for_app(
                 if dev.path is not None and dev.path not in excluded_paths
             ]
             if len(candidates) == 1:
-                print(
-                    "post-flash app identified by exclusion "
-                    "(string-less enumeration; precise path/serial matching "
-                    "unavailable)"
-                )
-                return candidates[0]
+                # codex review of e5003a6 (HIGH): topology exclusion alone
+                # could bless the UNFLASHED unit if it spontaneously
+                # re-enumerated onto a fresh path mid-wait.  The flashed
+                # unit is the one reporting the target hex's identity, so
+                # verify the EEPROM version tuple before accepting; a
+                # mismatching candidate keeps the wait running.
+                candidate = candidates[0]
+                if expected_eeprom_version is not None:
+                    try:
+                        probed = _probe_device_eeprom_version(info=candidate)
+                    except Exception:
+                        probed = None
+                    if probed != expected_eeprom_version:
+                        candidate = None
+                if candidate is not None:
+                    note = (
+                        " (identity verified against the target hex)"
+                        if expected_eeprom_version is not None
+                        else ""
+                    )
+                    print(
+                        "post-flash app identified by exclusion"
+                        f"{note} -- string-less enumeration; precise "
+                        "path/serial matching unavailable"
+                    )
+                    return candidate
         last_modes = [f"{dev.product_string or '<no-product>'}:{_device_mode(dev)}" for dev in devs]
         now = time.time()
         if now >= next_progress:
@@ -1827,6 +1848,7 @@ def flash_main(
                 path=boot_dev.path,
                 previous_app_paths=initial_app_paths,
                 excluded_paths=other_device_paths,
+                expected_eeprom_version=target_hex_eeprom_version,
                 timeout_s=post_info_timeout_s,
             )
             if post_dev.path is not None and initial_snapshot is not None:

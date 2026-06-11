@@ -511,6 +511,10 @@ def test_field1c_post_flash_wait_identifies_app_by_exclusion(
         main_flash, "enumerate_devices", lambda vid, pid: [flashed, other]
     )
     monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: True)
+    target_id = main_flash.EepromVersionInfo(major=3, minor=4, revision=0x83)
+    monkeypatch.setattr(
+        main_flash, "_probe_device_eeprom_version", lambda *, info, **k: target_id
+    )
     got = main_flash._wait_for_app(
         vid=0x04D8,
         pid=0xFF89,
@@ -518,6 +522,7 @@ def test_field1c_post_flash_wait_identifies_app_by_exclusion(
         path=b"/dev/hid-stale-bootloader-path",
         previous_app_paths=set(),
         excluded_paths={other.path},
+        expected_eeprom_version=target_id,
         timeout_s=2.0,
     )
     assert got is flashed
@@ -541,5 +546,40 @@ def test_field1c_exclusion_fallback_refuses_ambiguity(
             path=b"/dev/hid-stale",
             previous_app_paths=set(),
             excluded_paths=set(),
+            timeout_s=1.0,
+        )
+
+
+def test_field1c_exclusion_rejects_wrong_unit_by_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """codex review of e5003a6 (HIGH): if the UNFLASHED MAIN re-enumerates
+    onto a fresh path mid-wait, topology exclusion alone would bless it.
+    The identity gate must reject a candidate whose EEPROM version tuple
+    does not match the target hex, leaving the wait to time out rather
+    than restore/finalize against the wrong unit."""
+    wrong_unit = _Dev(b"/dev/hid-other-main-new-path", "")
+    monkeypatch.setattr(
+        main_flash, "enumerate_devices", lambda vid, pid: [wrong_unit]
+    )
+    monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: True)
+    monkeypatch.setattr(
+        main_flash,
+        "_probe_device_eeprom_version",
+        lambda *, info, **k: main_flash.EepromVersionInfo(
+            major=3, minor=4, revision=0x81   # the OLD image
+        ),
+    )
+    with pytest.raises(RuntimeError, match="did not reconnect"):
+        main_flash._wait_for_app(
+            vid=0x04D8,
+            pid=0xFF89,
+            serial_number="",
+            path=b"/dev/hid-stale",
+            previous_app_paths=set(),
+            excluded_paths={b"/dev/hid-other-main-old-path"},
+            expected_eeprom_version=main_flash.EepromVersionInfo(
+                major=3, minor=4, revision=0x83
+            ),
             timeout_s=1.0,
         )
