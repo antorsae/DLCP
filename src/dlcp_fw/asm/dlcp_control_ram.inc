@@ -556,6 +556,9 @@ v172_fname_tmp             equ  0x05C
 ; entry, so each page visit gets a fresh budget.
 v172_fname_retry           equ  0x05D
 v173_row0_reassert_div     equ  0x05E    ; bank2 0x25E: Preset row-0 re-assert pass divider (FIELD-3)
+v173_isr_decode_save       equ  0x060    ; bank2 0x260..0x26A: 11-byte save area for the foreground
+                                         ; scratch the blocking in-ISR RC5 decode clobbers
+                                         ; (0x005,0x008,0x00C,0x00D,0x00E,0x010..0x013,0x014,0x015)
 FNAME_RETRY_MAX            equ  0x03  ; initial query + 2 spaced retries
 FNAME_PENDING_DEADLINE_HI  equ  0x40
 FNAME_PENDING_DEADLINE_LO  equ  0x00
@@ -1115,4 +1118,7 @@ v172_fname_retry_b2_phys         EQU  0x25D    ; physical address for movff/lfsr
 v173_row0_reassert_div_b2        EQU  0x25E    ; phys 0x25E, bank 2, owner v173_row0_reassert_div
 v173_row0_reassert_div_b2_op     EQU  0x5E     ; 8-bit f operand for v173_row0_reassert_div_b2
 v173_row0_reassert_div_b2_phys   EQU  0x25E    ; physical address for movff/lfsr
+v173_isr_decode_save_b2          EQU  0x260    ; phys 0x260, bank 2, owner v173_isr_decode_save
+v173_isr_decode_save_b2_op       EQU  0x60     ; 8-bit f operand for v173_isr_decode_save_b2
+v173_isr_decode_save_b2_phys     EQU  0x260    ; physical address for movff/lfsr
 ; --- RAM bank safety generated aliases: END ---

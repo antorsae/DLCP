@@ -865,9 +865,42 @@ flow_app_cold_init_0414:                                                  ; addr
         ; V1.72 hardware fallback (2026-05-09): use the stock V1.6b
         ; in-ISR RC5 decoder.  The failed Timer1 sampler was removed so
         ; there is no dormant path that can arm TMR1IE without a handler.
+        ;
+        ; V1.73 ISR-scratch preservation (task #7): the blocking decode
+        ; (~7-10 ms) clobbers access-bank scratch shared with the
+        ; foreground LCD/delay helpers (0x005, 0x008, 0x00C..0x00E,
+        ; 0x010..0x013 sample buffer, 0x014/0x015).  A frame arriving
+        ; mid-LCD-sequence used to corrupt the interrupted draw (cursor /
+        ; delay-count garbage -- the historic LCD glitch class), which
+        ; V1.71 papered over by GIE-masking ITS new LCD patch at the cost
+        ; of dropping IR frames inside the mask.  Save the full set before
+        ; the decode and restore it after the result stores: the decode
+        ; logic itself is untouched (BUG-IR-01 hardware-validated path).
+        movff   (Common_RAM + 5),  v173_isr_decode_save_b2_phys + 0
+        movff   (Common_RAM + 8),  v173_isr_decode_save_b2_phys + 1
+        movff   (Common_RAM + 12), v173_isr_decode_save_b2_phys + 2
+        movff   (Common_RAM + 13), v173_isr_decode_save_b2_phys + 3
+        movff   (Common_RAM + 14), v173_isr_decode_save_b2_phys + 4
+        movff   (Common_RAM + 16), v173_isr_decode_save_b2_phys + 5
+        movff   (Common_RAM + 17), v173_isr_decode_save_b2_phys + 6
+        movff   (Common_RAM + 18), v173_isr_decode_save_b2_phys + 7
+        movff   (Common_RAM + 19), v173_isr_decode_save_b2_phys + 8
+        movff   (Common_RAM + 20), v173_isr_decode_save_b2_phys + 9
+        movff   (Common_RAM + 21), v173_isr_decode_save_b2_phys + 10
         rcall   ir_rc5_decode                                ; dest: 0x00021e
         movwf   ir_decoded_cmd_acc, A                        ; reg: 0x01d
         movff   (Common_RAM + 13), ir_decoded_addr        ; reg1: 0x00d, reg2: 0x01e
+        movff   v173_isr_decode_save_b2_phys + 0,  (Common_RAM + 5)
+        movff   v173_isr_decode_save_b2_phys + 1,  (Common_RAM + 8)
+        movff   v173_isr_decode_save_b2_phys + 2,  (Common_RAM + 12)
+        movff   v173_isr_decode_save_b2_phys + 3,  (Common_RAM + 13)
+        movff   v173_isr_decode_save_b2_phys + 4,  (Common_RAM + 14)
+        movff   v173_isr_decode_save_b2_phys + 5,  (Common_RAM + 16)
+        movff   v173_isr_decode_save_b2_phys + 6,  (Common_RAM + 17)
+        movff   v173_isr_decode_save_b2_phys + 7,  (Common_RAM + 18)
+        movff   v173_isr_decode_save_b2_phys + 8,  (Common_RAM + 19)
+        movff   v173_isr_decode_save_b2_phys + 9,  (Common_RAM + 20)
+        movff   v173_isr_decode_save_b2_phys + 10, (Common_RAM + 21)
         bcf     control_flags_acc, 0x0, A                   ; reg: 0x01f
 
 flow_app_cold_init_0434:                                                  ; address: 0x000434
@@ -5949,18 +5982,13 @@ v171_health_patch_suffix_top_level:
         bz      v171_health_patch_have_mask
         bsf     v171_health_suffix_mask_b1, 1, BANKED
 v171_health_patch_have_mask:
-        ; The LCD helpers use access-bank scratch cells also touched by the
-        ; RBIF/IR ISR.  Keep the five-byte suffix patch atomic so an interrupt
-        ; cannot corrupt the cursor command and land the clear at row-2 col 0.
-        ; Restore the prior GIE state instead of unconditionally enabling it:
-        ; this helper may be called from foreground paths that entered with
-        ; interrupts already masked.
-        movlb   0x01
-        clrf    v171_health_age_tmp_b1, BANKED
-        btfsc   INTCON, GIE, A
-        incf    v171_health_age_tmp_b1, F, BANKED
-        movlb   0x00
-        bcf     INTCON, GIE, A
+        ; V1.73 (task #7): the GIE mask that used to wrap this five-byte
+        ; suffix patch is retired.  It existed because the blocking in-ISR
+        ; RC5 decode clobbered the LCD helpers' access-bank scratch; the
+        ; ISR now saves/restores that scratch around the decode, so an IR
+        ; frame mid-patch decodes correctly AND the patch's cursor/delay
+        ; state survives.  Masking here only made the remote deaf for the
+        ; patch duration.
         movlw   0x80
         movwf   (Common_RAM + 1), A
         movlw   0xCC                                        ; row 2 col 13 (1-based)
@@ -6009,10 +6037,6 @@ v171_health_patch_clear:
         call    lcd_char_write, 0x0
 v171_health_patch_done:
         movlb   0x01
-        movf    v171_health_age_tmp_b1, F, BANKED
-        bz      v171_health_patch_gie_restored
-        bsf     INTCON, GIE, A
-v171_health_patch_gie_restored:
         bcf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         movlb   0x00
         return  0x0
@@ -8050,7 +8074,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x33, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x31, 0x00 ; "Rev x43 20260611"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x34, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x31, 0x00 ; "Rev x44 20260611"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -8058,7 +8082,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x43                    ; V1.73 + monotonic release revision
+        db      0x01, 0x07, 0x33, 0x44                    ; V1.73 + monotonic release revision
         db      0x20, 0x26, 0x06, 0x11                    ; build date 20260611 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
