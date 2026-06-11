@@ -113,12 +113,16 @@ def test_v173_v34_wake_to_responsive_under_bound(
 
 MAIN_ACTIVE_FLAGS = 0x05E
 MAIN_GATE_MASK = 0x08
-# Measured 2026-06-11 on the canonical pair: both gates open ~1M ticks after
-# the wake press (the logical gate opens early in the wake handler) and the
-# reconnect WAITING exits ~15M ticks later (the BF/05 fresh-status answer).
-# Bound = ~2.5x measured.
-WAITING_EXIT_AFTER_GATES_BOUND_TICKS = 40_000_000
-WAKE_TO_WAITING_EXIT_BOUND_TICKS = 60_000_000
+# Measured 2026-06-11 on the canonical pair, anchored at the wake press
+# EDGE (chain.press() hides ~100M ticks of hold+settle, so the original
+# press-anchored measurement only saw the 15M tail): the LOGICAL gates
+# open almost immediately in the wake handler, while the real WAITING
+# window -- the MAINs' blocking DSP bring-up plus the reconnect
+# fresh-status handshake -- runs ~65M ticks after the gates.  Bounds are
+# ~1.5x measured; the total stays inside the established 160M
+# wake-to-responsive budget.
+WAITING_EXIT_AFTER_GATES_BOUND_TICKS = 100_000_000
+WAKE_TO_WAITING_EXIT_BOUND_TICKS = 160_000_000
 
 
 def test_v173_connected_waiting_exit_bound_after_wake(
@@ -142,8 +146,14 @@ def test_v173_connected_waiting_exit_bound_after_wake(
 
     for cycle in range(2):
         chain.press("STBY")
-        chain.press("STBY")   # wake (returns after press+settle)
+        # Drive the wake press at the PIN level so wake_tick anchors the
+        # actual press edge: chain.press() advances ~100M ticks internally
+        # (hold+settle), which would hide any WAITING window that starts
+        # and clears inside the helper (codex review of f88fb95).
+        chain.set_control_pin("A", 3, False)
         wake_tick = chain.current_tick()
+        chain.step_ticks(50_000_000)
+        chain.set_control_pin("A", 3, True)
         gates_up_tick = None
         exit_tick = None
         for _ in range(120):
