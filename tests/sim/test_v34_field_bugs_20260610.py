@@ -409,3 +409,62 @@ def test_v34_frame_dispatches_with_preaccumulated_gap_watchdog(
         "mute frame silently discarded: the parser gap watchdog fired "
         f"mid-frame on a pre-accumulated counter (latch=0x{latch:02X})"
     )
+
+
+def test_field1b_preflash_mode_inference_uses_identity_probe(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """2026-06-11 field incident #2: the PRE-flash mode inference still
+    dead-ended on string-less enumeration ("unable to infer app vs
+    bootloader mode from HID product string") even though the cmd 0x06
+    identity probe answered in the same run.  A successful probe must be
+    accepted as app mode and proceed to the bootloader switch."""
+    dev = _Dev(b"/dev/hid-stringless", "")
+    switched = {}
+
+    monkeypatch.setattr(main_flash, "_pick_device", lambda *a, **k: dev)
+    monkeypatch.setattr(main_flash, "enumerate_devices", lambda vid, pid: [dev])
+    monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: True)
+
+    def fake_switch(**kwargs):
+        switched["info"] = kwargs["info"]
+        raise RuntimeError("stop-after-switch")  # cut the flow after the decision
+
+    monkeypatch.setattr(main_flash, "_switch_to_bootloader", fake_switch)
+    stream = bytes(main_flash.MAIN_PROG_END_EXCL - main_flash.MAIN_APP_START)
+    with pytest.raises(RuntimeError, match="stop-after-switch"):
+        main_flash.flash_main(
+            vid=0x04D8,
+            pid=0xFF89,
+            path=dev.path,
+            route_label=None,
+            stream=stream,
+            pace_ms=0,
+            reconnect_timeout_s=1.0,
+            reconnect_settle_ms=0,
+            verify=False,
+            skip_switch=False,
+            dry_run=False,
+            report_info=False,
+            need_post_app=False,
+            post_info_timeout_s=1.0,
+            target_hex_version=None,
+            target_hex_eeprom_version=None,
+            verbose=False,
+        )
+    assert switched["info"] is dev
+    assert "identity probe" in capsys.readouterr().out
+
+
+def test_field1b_bootloader_wait_accepts_stringless_non_app(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After the app->bootloader switch, a string-less device that does NOT
+    answer the app identity probe must be accepted as the bootloader."""
+    dev = _Dev(b"/dev/hid-stringless-boot", "")
+    monkeypatch.setattr(main_flash, "enumerate_devices", lambda vid, pid: [dev])
+    monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: False)
+    got = main_flash._wait_for_bootloader(
+        vid=0x04D8, pid=0xFF89, serial_number="", timeout_s=2.0
+    )
+    assert got is dev

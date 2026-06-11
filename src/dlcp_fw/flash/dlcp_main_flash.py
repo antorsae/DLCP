@@ -1408,6 +1408,17 @@ def _wait_for_bootloader(
     while time.time() < deadline:
         devs = enumerate_devices(vid, pid)
         boot_devs = [dev for dev in devs if _device_mode(dev) == "bootloader"]
+        # 2026-06-11 field incident #2: with macOS string-less enumeration the
+        # bootloader also classifies "unknown".  We just commanded the
+        # app->bootloader switch, so a string-less device at our VID/PID that
+        # does NOT answer the app identity probe is the bootloader.
+        for dev in devs:
+            if (
+                _device_mode(dev) == "unknown"
+                and dev.path is not None
+                and not _probe_path_is_app(dev.path)
+            ):
+                boot_devs.append(dev)
         if serial_number:
             serial_matches = [dev for dev in boot_devs if dev.serial_number == serial_number]
             if len(serial_matches) == 1:
@@ -1673,10 +1684,27 @@ def flash_main(
             reconnect_settle_ms=reconnect_settle_ms,
             verbose=verbose,
         )
+    elif initial.path is not None and _probe_path_is_app(initial.path):
+        # 2026-06-11 field incident #2: macOS can enumerate the app with NO
+        # strings at all (persistently, not just post-reboot), so the
+        # string-based mode inference dead-ends even though the cmd 0x06
+        # identity probe answers fine -- the same failure shape FIELD-1
+        # fixed for the post-flash wait.  A successful identity probe is
+        # authoritative proof of app mode.
+        print("device mode: app (identity probe; HID strings unavailable)")
+        boot_dev = _switch_to_bootloader(
+            info=initial,
+            vid=vid,
+            pid=pid,
+            reconnect_timeout_s=reconnect_timeout_s,
+            reconnect_settle_ms=reconnect_settle_ms,
+            verbose=verbose,
+        )
     else:
         raise RuntimeError(
-            "unable to infer app vs bootloader mode from HID product string; "
-            "use --list and reconnect in a clearer state"
+            "unable to infer app vs bootloader mode (no HID product string "
+            "and the app identity probe did not answer); use --list and "
+            "reconnect in a clearer state"
         )
 
     if boot_dev.path is None:
