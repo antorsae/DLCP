@@ -113,15 +113,15 @@ def test_v173_v34_wake_to_responsive_under_bound(
 
 MAIN_ACTIVE_FLAGS = 0x05E
 MAIN_GATE_MASK = 0x08
-# Measured 2026-06-11 on the canonical pair, anchored at the wake press
-# EDGE (chain.press() hides ~100M ticks of hold+settle, so the original
-# press-anchored measurement only saw the 15M tail): the LOGICAL gates
-# open almost immediately in the wake handler, while the real WAITING
-# window -- the MAINs' blocking DSP bring-up plus the reconnect
-# fresh-status handshake -- runs ~65M ticks after the gates.  Bounds are
-# ~1.5x measured; the total stays inside the established 160M
-# wake-to-responsive budget.
-WAITING_EXIT_AFTER_GATES_BOUND_TICKS = 100_000_000
+# Measured 2026-06-11 on the canonical pair, edge-anchored and sampled
+# THROUGH the press hold: the LOGICAL gates open within a few M ticks of
+# the press edge (the wake handler sets them long before the MAINs are
+# actually ready), so "after gates" is effectively the whole wake
+# bring-up -- the blocking DSP cold-init plus the reconnect fresh-status
+# handshake, measured ~115M ticks.  Both bounds therefore sit at the
+# established 160M wake-to-responsive budget; the contract's value is
+# that WAITING can never outlive that budget while both gates are up.
+WAITING_EXIT_AFTER_GATES_BOUND_TICKS = 160_000_000
 WAKE_TO_WAITING_EXIT_BOUND_TICKS = 160_000_000
 
 
@@ -152,11 +152,14 @@ def test_v173_connected_waiting_exit_bound_after_wake(
         # and clears inside the helper (codex review of f88fb95).
         chain.set_control_pin("A", 3, False)
         wake_tick = chain.current_tick()
-        chain.step_ticks(50_000_000)
-        chain.set_control_pin("A", 3, True)
         gates_up_tick = None
         exit_tick = None
-        for _ in range(120):
+        # Sample THROUGH the 50M-tick hold (codex review of ce67fa8: the
+        # gates can come up during the hold, so sampling only after the
+        # release would inflate gates_up_tick by up to the hold duration).
+        for step in range(200):
+            if step == 50:
+                chain.set_control_pin("A", 3, True)
             chain.step_ticks(1_000_000)
             gates_up = all(
                 chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS) & MAIN_GATE_MASK
