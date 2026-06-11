@@ -559,6 +559,8 @@ v173_row0_reassert_div     equ  0x05E    ; bank2 0x25E: Preset row-0 re-assert p
 v173_isr_decode_save       equ  0x060    ; bank2 0x260..0x26A: 11-byte save area for the foreground
                                          ; scratch the blocking in-ISR RC5 decode clobbers
                                          ; (0x005,0x008,0x00C,0x00D,0x00E,0x010..0x013,0x014,0x015)
+v173_mute_reassert_div     equ  0x06B    ; bank2 0x26B: health-poll divider for the periodic
+                                         ; idempotent mute re-assert (session-49 lost-frame heal)
 FNAME_RETRY_MAX            equ  0x03  ; initial query + 2 spaced retries
 FNAME_PENDING_DEADLINE_HI  equ  0x40
 FNAME_PENDING_DEADLINE_LO  equ  0x00
@@ -1121,4 +1123,7 @@ v173_row0_reassert_div_b2_phys   EQU  0x25E    ; physical address for movff/lfsr
 v173_isr_decode_save_b2          EQU  0x260    ; phys 0x260, bank 2, owner v173_isr_decode_save
 v173_isr_decode_save_b2_op       EQU  0x60     ; 8-bit f operand for v173_isr_decode_save_b2
 v173_isr_decode_save_b2_phys     EQU  0x260    ; physical address for movff/lfsr
+v173_mute_reassert_div_b2        EQU  0x26B    ; phys 0x26B, bank 2, owner v173_mute_reassert_div
+v173_mute_reassert_div_b2_op     EQU  0x6B     ; 8-bit f operand for v173_mute_reassert_div_b2
+v173_mute_reassert_div_b2_phys   EQU  0x26B    ; physical address for movff/lfsr
 ; --- RAM bank safety generated aliases: END ---

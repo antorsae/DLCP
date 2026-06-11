@@ -5921,6 +5921,28 @@ v171_health_send_query:
         call    tx_byte_enqueue, 0x0
         clrf    tx_data_staging_acc, A
         call    tx_byte_enqueue, 0x0
+        ; V1.73 session-49 fix: periodic idempotent mute re-assert.  A lost
+        ; B0/03/02 leaves a MAIN unmuted at full volume while CONTROL shows
+        ; Mute, with nothing to heal it: the cmd-03 echo path only syncs
+        ; CONTROL toward MAINs, and the full-sync mute step is postponed by
+        ; every volume frame.  Ride the health-poll cadence: every 2nd
+        ; successful poll enqueue WHILE MUTED, re-broadcast mute_on.  A
+        ; consistent MAIN no-ops the redundant frame; a diverged one
+        ; re-converges within ~2 poll cycles.  Gated on the muted state so
+        ; the idle/unmuted chain carries no extra traffic (keeps the wire
+        ; byte-stream identical to V1.73 rev 0x44 outside mute, and the
+        ; dangerous direction -- live audio against a muted UI -- is the
+        ; one that self-heals).
+        btfss   control_flags_acc, 0x5, A           ; only while MUTED
+        bra     v171_health_send_query_done
+        btfss   control_flags_acc, 0x1, A           ; only while CONNECTED
+        bra     v171_health_send_query_done
+        movlb   0x02
+        incf    v173_mute_reassert_div_b2, F, BANKED
+        btfss   v173_mute_reassert_div_b2, 0, BANKED
+        bra     v171_health_send_query_done
+        movlb   0x00
+        call    mute_frame_send, 0x0
 v171_health_send_query_done:
         movlb   0x00
         return  0x0
@@ -8074,7 +8096,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x34, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x31, 0x00 ; "Rev x44 20260611"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x36, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x31, 0x00 ; "Rev x46 20260611"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -8082,7 +8104,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x44                    ; V1.73 + monotonic release revision
+        db      0x01, 0x07, 0x33, 0x46                    ; V1.73 + monotonic release revision
         db      0x20, 0x26, 0x06, 0x11                    ; build date 20260611 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---

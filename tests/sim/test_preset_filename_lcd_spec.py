@@ -559,6 +559,24 @@ def _preset_filename_window(preset: str, slot_a: str, slot_b: str) -> str:
     return _window(name, tail_first=_start_cmd_for(name, other) == START_TAIL)
 
 
+def _preset_filename_windows(preset: str, slot_a: str, slot_b: str) -> set:
+    """All 16-char row-1 windows the scroller can legally show for the
+    preset's filename (head window for short names; every scroll rotation
+    for long ones).  The V1.73 periodic mute re-assert added background
+    chain traffic that shifts the scroll phase relative to a button press,
+    so exact-head waits became phase-sensitive; rotation-tolerant waits
+    keep the content contract while dropping the phase assumption."""
+    name = _preset_name(preset, slot_a, slot_b)
+    head = _preset_filename_window(preset, slot_a, slot_b)
+    if len(name) <= 16:
+        return {head}
+    pad = name + "  "
+    doubled = pad + pad
+    windows = {doubled[i : i + 16] for i in range(len(pad))}
+    windows.add(head)
+    return windows
+
+
 def _start_native_filename_chain(
     control_hex: Path,
     main_hex: Path,
@@ -701,12 +719,10 @@ def _drive_and_assert_native_preset_filename(
     chain.mark_ctl_rx_capture_point()
     _press(chain, step.key)
 
-    expected = (
-        _preset_row0(step.preset),
-        _preset_filename_window(step.preset, slot_a, slot_b),
-    )
-    lines = _wait_for_lcd(chain, lambda lcd: lcd == expected)
-    assert lines == expected
+    row0 = _preset_row0(step.preset)
+    row1_ok = _preset_filename_windows(step.preset, slot_a, slot_b)
+    lines = _wait_for_lcd(chain, lambda lcd: lcd[0] == row0 and lcd[1] in row1_ok)
+    assert lines[0] == row0 and lines[1] in row1_ok
     _assert_native_filename_query_completed(
         chain,
         preset=step.preset,
@@ -723,14 +739,12 @@ def _navigate_to_preset_and_assert_native_filename(
     slot_a: str,
     slot_b: str,
 ):  # type: ignore[no-untyped-def]
-    expected = (
-        _preset_row0(preset),
-        _preset_filename_window(preset, slot_a, slot_b),
-    )
+    row0 = _preset_row0(preset)
+    row1_ok = _preset_filename_windows(preset, slot_a, slot_b)
     for _ in range(8):
         if chain.lcd_lines()[0].startswith("Preset"):
-            lines = _wait_for_lcd(chain, lambda lcd: lcd == expected)
-            assert lines == expected
+            lines = _wait_for_lcd(chain, lambda lcd: lcd[0] == row0 and lcd[1] in row1_ok)
+            assert lines[0] == row0 and lines[1] in row1_ok
             _assert_native_filename_cache_or_query_completed(
                 chain,
                 preset=preset,
@@ -834,12 +848,12 @@ def _run_full_native_chain_preset_reentry_matrix(
     chain.mark_ctl_tx_capture_point()
     chain.mark_ctl_rx_capture_point()
     _press(chain, "LEFT")
-    expected = (
-        _preset_row0(final_preset),
-        _preset_filename_window(final_preset, PRESET_FILENAME_SLOT_A, PRESET_FILENAME_SLOT_B),
+    row0 = _preset_row0(final_preset)
+    row1_ok = _preset_filename_windows(
+        final_preset, PRESET_FILENAME_SLOT_A, PRESET_FILENAME_SLOT_B
     )
-    lines = _wait_for_lcd(chain, lambda lcd: lcd == expected)
-    assert lines == expected
+    lines = _wait_for_lcd(chain, lambda lcd: lcd[0] == row0 and lcd[1] in row1_ok)
+    assert lines[0] == row0 and lines[1] in row1_ok
     _assert_native_filename_cache_or_query_completed(
         chain,
         preset=final_preset,

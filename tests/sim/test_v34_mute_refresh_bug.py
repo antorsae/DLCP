@@ -412,6 +412,96 @@ def test_v173_v34_chain_mute_survives_periodic_full_sync_refresh(
         _assert_user_muted_with_zero_volume_coeff(chain, unit=unit)
 
 
+def test_v34_serial_remute_applies_after_recent_unmute(
+    v34_mute_hex: Path,
+) -> None:
+    """Session-49 escape (2026-06-11 exploratory run): a serial unmute
+    (B0/03/03) clears user-mute bit4 but leaves the forced-shadow bit5
+    stale for a pass; the per-pass mute reconciliation then armed the
+    one-shot cmd-03 HID-echo mode (stock_094.3), which silently ATE the
+    next legitimate serial mute (B0/03/02) -- one MAIN stayed unmuted at
+    full volume while CONTROL displayed Mute (a held SELECT's toggle
+    auto-repeat produces exactly this unmute-then-mute pair).  Contract:
+    a chain mute command must ALWAYS apply, regardless of how recently an
+    unmute was processed."""
+    chain = _boot_v173_v34_chain(v34_mute_hex)
+    for unit in (0, 1):
+        chain.reset_main_dsp_write_log(unit)
+    chain.inject_decoded_ir_event(addr=IR_ADDR_HYPEX, cmd=IR_CMD_HYPEX_MUTE)
+    chain.step_ticks(COMMAND_SETTLE_TICKS)
+    for unit in (0, 1):
+        _assert_user_muted_with_zero_volume_coeff(chain, unit=unit)
+
+    _inject_frame(chain, 0x03, 0x03)              # unmute (B0 forwards to both)
+    chain.step_ticks(4_000_000)                   # reconciliation pass runs
+    for unit in (0, 1):
+        chain.reset_main_dsp_write_log(unit)
+    _inject_frame(chain, 0x03, 0x02)              # re-mute: must always apply
+    chain.step_ticks(COMMAND_SETTLE_TICKS)
+
+    for unit in (0, 1):
+        latch = chain.read_main_reg(unit, USER_MUTE_LATCH)
+        assert latch & USER_MUTE_LATCH_MASK, (
+            f"unit {unit}: serial re-mute was eaten after a recent unmute "
+            f"(latch=0x{latch:02X})"
+        )
+        payloads = chain.read_main_dsp_write_payloads(unit, 0x30)
+        assert payloads and payloads[-1] == bytes(4), (
+            f"unit {unit}: TAS volume not re-zeroed by the re-mute "
+            f"(last={payloads[-1].hex() if payloads else None})"
+        )
+
+
+def test_v173_chain_mute_state_converges_after_lost_mute_frame(
+    v34_mute_hex: Path,
+) -> None:
+    """Session-49 escape, convergence contract: PB1 lost a B0/03/02 mute
+    frame under I2C-retry pressure (the frame reached its UART FIFO
+    byte-perfect but never dispatched), leaving CONTROL+PB2 muted while
+    PB1 played at full volume -- and NOTHING ever healed it: the cmd-03
+    echo path only syncs CONTROL toward MAINs, and the full-sync mute step
+    is postponed by every volume frame.  Contract: CONTROL periodically
+    re-asserts its mute state, so a diverged MAIN re-converges within a
+    bounded window (a few health-poll cycles) without user action."""
+    chain = _boot_v173_v34_chain(v34_mute_hex)
+    for unit in (0, 1):
+        chain.reset_main_dsp_write_log(unit)
+    chain.inject_decoded_ir_event(addr=IR_ADDR_HYPEX, cmd=IR_CMD_HYPEX_MUTE)
+    chain.step_ticks(COMMAND_SETTLE_TICKS)
+    for unit in (0, 1):
+        _assert_user_muted_with_zero_volume_coeff(chain, unit=unit)
+
+    # Simulate the eaten-frame end-state on PB2 only: user-mute latch and
+    # active-mute bits cleared, volume restored (exactly what a missed
+    # B0/03/02 after an applied unmute looks like).
+    latch = chain.read_main_reg(1, USER_MUTE_LATCH)
+    chain.write_main_reg(1, USER_MUTE_LATCH, latch & ~USER_MUTE_LATCH_MASK)
+    active = chain.read_main_reg(1, ACTIVE_FLAGS)
+    chain.write_main_reg(1, ACTIVE_FLAGS, active & ~0x30)
+    chain.write_main_reg(1, EVENT_FLAGS, chain.read_main_reg(1, EVENT_FLAGS) | 0x08)
+
+    # Convergence: CONTROL still believes the chain is muted; its periodic
+    # mute re-assert (riding the health-poll cadence) must re-mute PB2
+    # within a bound MUCH tighter than the ~17 s full-sync mute step (whose
+    # counter is reset by every volume frame, so session-49's host-volume
+    # traffic starved it indefinitely).  Pre-fix, the diverged state
+    # persisted forever; post-fix it heals so fast the unmuted window may
+    # close within the settle -- so assert the heal SEQUENCE (a nonzero
+    # restore followed by a final zero) plus the muted end state.
+    assert chain.read_reg(0x01F) & 0x20, "CONTROL lost its mute state in the fixture"
+    chain.step_ticks(150_000_000)   # a few health-poll cycles, < full-sync
+    latch = chain.read_main_reg(1, USER_MUTE_LATCH)
+    payloads = chain.read_main_dsp_write_payloads(1, 0x30)
+    assert any(pl != bytes(4) for pl in payloads), (
+        "divergence fixture never took effect: no unmuted volume restore "
+        f"observed ({[pl.hex() for pl in payloads]})"
+    )
+    assert latch & USER_MUTE_LATCH_MASK and payloads[-1] == bytes(4), (
+        "diverged MAIN never re-converged to CONTROL's mute state: "
+        f"latch=0x{latch:02X} tas30={payloads[-1].hex()}"
+    )
+
+
 def test_v173_v34_chain_volume_key_while_muted_unmutes_promptly(
     v34_mute_hex: Path,
 ) -> None:

@@ -30,6 +30,7 @@ from tests.sim.test_preset_filename_lcd_spec import (
     _seed_filename_slots,
     _start_native_filename_chain,
     _wait_for_lcd,
+    _preset_filename_windows,
 )
 
 
@@ -89,9 +90,13 @@ def test_mixed_new_old_filename_pairs_preserve_query_cache_and_reentry(
     _wait_for_lcd(chain, lambda lcd: lcd == ("Input:          ", "Auto Detect     "))
     chain.mark_ctl_tx_capture_point()
     _press(chain, "LEFT")
+    # Rotation-tolerant: background chain traffic (e.g. the V1.73 periodic
+    # mute re-assert) shifts the scroll phase, so pin the content (any
+    # legal scroll window of slot B) rather than one exact rotation.
+    row1_ok = _preset_filename_windows("B", PRESET_FILENAME_SLOT_A, PRESET_FILENAME_SLOT_B)
     _wait_for_lcd(
         chain,
-        lambda lcd: lcd == ("Preset         B", "521.4 22MG10F-v7"),
+        lambda lcd: lcd[0] == "Preset         B" and lcd[1] in row1_ok,
     )
     frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
     assert not any(frame[0] == 0xB1 and frame[1] == 0x26 for frame in frames), case_id

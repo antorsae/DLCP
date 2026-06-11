@@ -496,7 +496,7 @@ Top-level docs:
 - `docs/R_L_ROUTING.md` (MAIN/CONTROL/HFD routing semantics and `R-L` extension plan)
 - `docs/SIMULATION.md` (co-simulation architecture and usage)
 - `docs/SIM_CHAIN_EXPLORATORY_STRESS_SPEC.md` (exploratory chain bug-hunt campaign spec: stimulus families, observation capture, and the oracle/bug-classifier rubric used by the LLM judge)
-- `docs/V34_FIELD_BUGS_20260610.md` (2026-06-10 live-flash field incident ledger — ALL FIXED 2026-06-11 in V3.4 rev 0x82 + V1.73 rev 0x43: flasher reconnect/finalize fix, RC5 profile recovery, Preset row-0 wake self-heal/re-assert, ACK-verified preset apply, volume-family row skip; includes the test-gap analysis and the 0x00D ISR/foreground collision addendum)
+- `docs/V34_FIELD_BUGS_20260610.md` (2026-06-10 live-flash field incident ledger — ALL FIXED: flasher reconnect/finalize, RC5 profile recovery, Preset row-0 wake self-heal/re-assert, ACK-verified preset apply, volume-family row skip; addendum 1 = the blocking-ISR RC5 decode scratch preservation (V1.73 rev 0x44), addendum 2 = the session-49 lost-mute-frame convergence re-assert (V1.73 rev 0x46) with the parser-loss forensics)
 - `docs/V34_V173_EXPLORATORY_BUGS.md` (2026-06-09 exploratory bug ledger for the V3.4/V1.73 pair — all five bugs fixed; per-bug regression tests and fix notes)
 - `docs/IMPL_V34_V173_EXPLORATORY_BUGS.md` (implementation plan + post-implementation evidence for the five exploratory bug fixes)
 - `docs/SIM_EXPLORATORY_BUG_TAXONOMY.md` (9-class intermittent-bug failure-mode taxonomy used as the oracle reference: preset/coeff desync, UI/MAIN disagreement, standby/wake, LCD glitch, mute leak, lost IR, liveness, fault-surfacing, protocol framing)
