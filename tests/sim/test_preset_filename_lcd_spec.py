@@ -3487,3 +3487,100 @@ def test_hardware_preset_filename_confirm_requires_nonempty_pb1() -> None:
             "blank names are validated by protocol evidence",
         ],
     )
+
+
+# ---------------------------------------------------------------------------
+# Preset LCD suffix/filename atomicity matrix (exploratory residuals s0045 /
+# s0026 follow-up, 2026-06-11): continuous sampling across the preset
+# transition matrix with two invariants --
+#   INV-SUFFIX: a painted "Preset" row 0 must carry its A/B/! status cell
+#               (col 15) except for a bounded repaint transient;
+#   INV-ROW1:   row 1 must not sit blank while the filename cache is VALID
+#               on the Preset page, except for the same bounded transient.
+# Calibrated 2026-06-11: the worst observed transient on the canonical pair
+# is ONE 2M-tick sample; the bound allows four.
+# ---------------------------------------------------------------------------
+
+_ATOMICITY_PIN = {
+    "SELECT": ("A", 1),
+    "DOWN": ("A", 2),
+    "STBY": ("A", 3),
+    "RIGHT": ("A", 4),
+    "UP": ("C", 0),
+    "LEFT": ("C", 5),
+}
+_ATOMICITY_SAMPLE_TICKS = 2_000_000
+_ATOMICITY_MAX_TRANSIENT_SAMPLES = 4
+
+
+def test_v173_v34_preset_lcd_suffix_and_row1_atomicity_matrix(
+    v173_v34_filename_hexes: tuple[Path, Path],
+) -> None:
+    _require_rust()
+    control_hex, main_hex = v173_v34_filename_hexes
+    chain = _start_native_filename_chain(
+        control_hex,
+        main_hex,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset="A",
+    )
+
+    runs = {"bare-suffix": 0, "blank-row1": 0}
+    worst = {"bare-suffix": 0, "blank-row1": 0}
+    context = {"bare-suffix": None, "blank-row1": None}
+
+    def sample(step_label: str) -> None:
+        lcd0, lcd1 = chain.lcd_lines()
+        on_preset = lcd0.startswith("Preset")
+        conds = {
+            "bare-suffix": on_preset and lcd0[15] not in ("A", "B", "!"),
+            "blank-row1": (
+                on_preset
+                and bool(chain.read_reg(FNAME_FLAGS_PHYS) & 0x01)
+                and not lcd1.strip()
+            ),
+        }
+        for key, cond in conds.items():
+            runs[key] = runs[key] + 1 if cond else 0
+            if runs[key] > worst[key]:
+                worst[key] = runs[key]
+                context[key] = (step_label, chain.lcd_lines())
+
+    def hold(key: str, label: str) -> None:
+        port, bit = _ATOMICITY_PIN[key]
+        chain.set_control_pin(port, bit, False)
+        for _ in range(25):
+            chain.step_ticks(_ATOMICITY_SAMPLE_TICKS)
+            sample(label)
+        chain.set_control_pin(port, bit, True)
+        for _ in range(25):
+            chain.step_ticks(_ATOMICITY_SAMPLE_TICKS)
+            sample(label)
+
+    matrix = (
+        ("RIGHT", "entry-A"),
+        ("DOWN", "A-to-B"),
+        ("DOWN", "B-to-A"),
+        ("DOWN", "A-to-B-again"),
+        ("LEFT", "away-to-volume"),
+        ("RIGHT", "back-to-preset"),
+        ("STBY", "standby-parked"),
+        ("STBY", "wake-parked"),
+    )
+    for key, label in matrix:
+        hold(key, label)
+    for _ in range(40):
+        chain.step_ticks(_ATOMICITY_SAMPLE_TICKS)
+        sample("post-wake-settle")
+
+    for key in ("bare-suffix", "blank-row1"):
+        assert worst[key] <= _ATOMICITY_MAX_TRANSIENT_SAMPLES, (
+            f"{key} persisted for {worst[key]} consecutive samples "
+            f"({worst[key] * _ATOMICITY_SAMPLE_TICKS / 1e6:.0f}M ticks) at "
+            f"{context[key]}"
+        )
+    lcd0 = chain.lcd_lines()[0]
+    assert lcd0.startswith("Preset") and lcd0[15] in ("A", "B"), (
+        f"matrix did not settle on a healthy Preset page: {chain.lcd_lines()!r}"
+    )

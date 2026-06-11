@@ -111,6 +111,71 @@ def test_v173_v34_wake_to_responsive_under_bound(
     )
 
 
+MAIN_ACTIVE_FLAGS = 0x05E
+MAIN_GATE_MASK = 0x08
+# Measured 2026-06-11 on the canonical pair: both gates open ~1M ticks after
+# the wake press (the logical gate opens early in the wake handler) and the
+# reconnect WAITING exits ~15M ticks later (the BF/05 fresh-status answer).
+# Bound = ~2.5x measured.
+WAITING_EXIT_AFTER_GATES_BOUND_TICKS = 40_000_000
+WAKE_TO_WAITING_EXIT_BOUND_TICKS = 60_000_000
+
+
+def test_v173_connected_waiting_exit_bound_after_wake(
+    wake_chain_hexes: tuple[Path, Path],
+) -> None:
+    """Exit-bound contract for the exploratory "connected WAITING" class:
+    once both MAIN gates are up during a wake-triggered WAITING, CONTROL
+    must exit WAITING within a fixed small bound -- WAITING may only ever
+    be as long as the slowest MAIN's bring-up, never an open-ended UI
+    state.  This converts the seed-dependent exploratory observation
+    counts (86/23 in run 20260611_100415) into a deterministic pass/fail
+    contract, exercised across two consecutive standby/wake cycles."""
+    _require_rust()
+    control_hex, main_hex = wake_chain_hexes
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(control_hex),
+        main_hex_path=str(main_hex),
+    )
+    assert chain.run_until_connected(limit=300) < 300
+    chain.step_ticks(30_000_000)
+
+    for cycle in range(2):
+        chain.press("STBY")
+        chain.press("STBY")   # wake (returns after press+settle)
+        wake_tick = chain.current_tick()
+        gates_up_tick = None
+        exit_tick = None
+        for _ in range(120):
+            chain.step_ticks(1_000_000)
+            gates_up = all(
+                chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS) & MAIN_GATE_MASK
+                for unit in (0, 1)
+            )
+            if gates_up and gates_up_tick is None:
+                gates_up_tick = chain.current_tick()
+            if gates_up_tick is not None and not chain.is_waiting():
+                exit_tick = chain.current_tick()
+                break
+        assert gates_up_tick is not None, f"cycle {cycle}: MAIN gates never opened"
+        assert exit_tick is not None, (
+            f"cycle {cycle}: WAITING never exited after both gates were up "
+            f"(gates_up at +{(gates_up_tick - wake_tick) / 1e6:.0f}M)"
+        )
+        after_gates = exit_tick - gates_up_tick
+        total = exit_tick - wake_tick
+        assert after_gates <= WAITING_EXIT_AFTER_GATES_BOUND_TICKS, (
+            f"cycle {cycle}: WAITING lingered {after_gates / 1e6:.0f}M ticks "
+            f"after both gates were up (bound "
+            f"{WAITING_EXIT_AFTER_GATES_BOUND_TICKS / 1e6:.0f}M)"
+        )
+        assert total <= WAKE_TO_WAITING_EXIT_BOUND_TICKS, (
+            f"cycle {cycle}: wake->WAITING-exit took {total / 1e6:.0f}M ticks "
+            f"(bound {WAKE_TO_WAITING_EXIT_BOUND_TICKS / 1e6:.0f}M)"
+        )
+        chain.step_ticks(40_000_000)   # settle before the next cycle
+
+
 def test_v173_waiting_entries_have_no_blocking_banner_delay() -> None:
     """Structural pin: the two WAITING entries must not re-grow an open-loop
     `control_core_service_01BE` banner delay; the loops own the wait."""

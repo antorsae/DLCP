@@ -364,3 +364,48 @@ def test_field1_info_only_warns_on_rc5_profile(
     assert rc == 0
     out = capsys.readouterr().out
     assert "WARNING" in out and "0x03" in out and "finalize-only" in out
+
+
+# ---------------------------------------------------------------------------
+# Task #8 resolution (2026-06-11): the session-49 "parser loss" mechanism.
+# Single-instruction tracing on the run-era binary showed the V3.2 parser
+# stall watchdog (main_service_rx_frame_gap) firing MID-FRAME inside a
+# normal inter-byte gap: the stock parser idles at fpos=1 after every
+# dispatched frame, so the watchdog's 8-bit counter accumulates through
+# every inter-frame idle and is never reset when a real frame starts.
+# When the carried count is within one inter-byte gap of wrapping, it
+# expires between a frame's bytes, resets the frame phase, and the
+# remaining bytes are discarded as invalid routes -- the frame silently
+# vanishes (session 49 lost a B0/03/02 mute this way).
+# ---------------------------------------------------------------------------
+
+RX_FRAME_GAP_TIMEOUT = 0x2F1  # main_rx_frame_gap_timeout (bank2)
+
+
+def test_v34_frame_dispatches_with_preaccumulated_gap_watchdog(
+    field_main_hex: Path,
+) -> None:
+    """Contract: a frame whose bytes arrive with normal UART spacing must
+    dispatch even when the gap-watchdog counter carries a near-wrap value
+    from prior inter-frame idle accumulation."""
+    chain = _boot_v34_main(field_main_hex)
+    chain.step_ticks(8_000_000)
+    latch_before = chain.read_main_reg(0, 0x094)
+    assert not (latch_before & 0x20)
+
+    # Pre-accumulate the watchdog to the brink, exactly as a long idle does.
+    chain.write_main_reg(0, RX_FRAME_GAP_TIMEOUT, 0xFE)
+    # Deliver a mute frame with realistic inter-byte spacing (~320 us per
+    # byte at 31250 baud ~= 15.4k ticks) so the watchdog polls between bytes.
+    chain.inject_main_uart_rx_bytes(0, bytes([0xB0]))
+    chain.step_ticks(16_000)
+    chain.inject_main_uart_rx_bytes(0, bytes([0x03]))
+    chain.step_ticks(16_000)
+    chain.inject_main_uart_rx_bytes(0, bytes([0x02]))
+    chain.step_ticks(8_000_000)
+
+    latch = chain.read_main_reg(0, 0x094)
+    assert latch & 0x20, (
+        "mute frame silently discarded: the parser gap watchdog fired "
+        f"mid-frame on a pre-accumulated counter (latch=0x{latch:02X})"
+    )
