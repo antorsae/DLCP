@@ -570,9 +570,10 @@ def _preset_filename_windows(preset: str, slot_a: str, slot_b: str) -> set:
     head = _preset_filename_window(preset, slot_a, slot_b)
     if len(name) <= 16:
         return {head}
-    pad = name + "  "
-    doubled = pad + pad
-    windows = {doubled[i : i + 16] for i in range(len(pad))}
+    # The scroller BOUNCES between offsets 0..len-16 (no circular wrap), so
+    # the legal windows are exactly the contiguous 16-char substrings
+    # (codex review of b1f35d6 tightened this from circular rotations).
+    windows = {name[i : i + 16] for i in range(len(name) - 15)}
     windows.add(head)
     return windows
 

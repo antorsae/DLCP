@@ -5933,6 +5933,15 @@ v171_health_send_query:
         ; byte-stream identical to V1.73 rev 0x44 outside mute, and the
         ; dangerous direction -- live audio against a muted UI -- is the
         ; one that self-heals).
+        ;
+        ; The frame is enqueued with the same tx-ring primitives as the
+        ; poll itself, NOT via mute_frame_send: serial_tx_routed_frame
+        ; clears the full-sync countdown on success, so routing through it
+        ; every other muted poll would starve the volume/input/preset
+        ; full-sync convergence indefinitely (codex review of b1f35d6).
+        ; The hardcoded 0x02 data byte is safe: the bit5 gate above
+        ; guarantees CONTROL is muted here.  STATUS.C is forced back to
+        ; the poll's success result on every re-assert path.
         btfss   control_flags_acc, 0x5, A           ; only while MUTED
         bra     v171_health_send_query_done
         btfss   control_flags_acc, 0x1, A           ; only while CONNECTED
@@ -5940,9 +5949,24 @@ v171_health_send_query:
         movlb   0x02
         incf    v173_mute_reassert_div_b2, F, BANKED
         btfss   v173_mute_reassert_div_b2, 0, BANKED
-        bra     v171_health_send_query_done
+        bra     v173_mute_reassert_done_b2
         movlb   0x00
-        call    mute_frame_send, 0x0
+        call    tx_ring_reserve_3, 0x0
+        bc      v173_mute_reassert_clear_c          ; ring full: poll still OK
+        movlw   0xB0
+        movwf   tx_data_staging_acc, A
+        call    tx_byte_enqueue, 0x0
+        movlw   0x03
+        movwf   tx_data_staging_acc, A
+        call    tx_byte_enqueue, 0x0
+        movlw   0x02
+        movwf   tx_data_staging_acc, A
+        call    tx_byte_enqueue, 0x0
+v173_mute_reassert_clear_c:
+        bcf     STATUS, C, A                        ; poll enqueue succeeded
+        bra     v171_health_send_query_done
+v173_mute_reassert_done_b2:
+        movlb   0x00
 v171_health_send_query_done:
         movlb   0x00
         return  0x0
@@ -8096,7 +8120,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x36, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x31, 0x00 ; "Rev x46 20260611"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x37, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x31, 0x00 ; "Rev x47 20260611"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -8104,7 +8128,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x46                    ; V1.73 + monotonic release revision
+        db      0x01, 0x07, 0x33, 0x47                    ; V1.73 + monotonic release revision
         db      0x20, 0x26, 0x06, 0x11                    ; build date 20260611 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---

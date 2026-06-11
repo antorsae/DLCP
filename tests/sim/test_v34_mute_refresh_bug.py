@@ -502,6 +502,42 @@ def test_v173_chain_mute_state_converges_after_lost_mute_frame(
     )
 
 
+def test_v173_mute_reassert_does_not_starve_full_sync(
+    v34_mute_hex: Path,
+) -> None:
+    """codex review of b1f35d6 (HIGH): the first re-assert implementation
+    routed through mute_frame_send -> serial_tx_routed_frame, whose success
+    path clears the full-sync countdown -- so while muted, the mute
+    convergence loop starved the volume/input/preset full-sync convergence
+    indefinitely.  The re-assert now enqueues the frame with the raw
+    tx-ring primitives.  Contract: with the chain muted and re-asserts
+    flowing, an armed full-sync countdown still fires (B0/06 input frame
+    observed)."""
+    chain = _boot_v173_v34_chain(v34_mute_hex)
+    chain.inject_decoded_ir_event(addr=IR_ADDR_HYPEX, cmd=IR_CMD_HYPEX_MUTE)
+    chain.step_ticks(COMMAND_SETTLE_TICKS)
+
+    chain.write_reg(CONTROL_FULL_SYNC_STEP, 0x01)
+    # arm one below the exact-equality fire value (see the arming note in
+    # test_v173_v34_chain_mute_survives_periodic_full_sync_refresh)
+    chain.write_reg(CONTROL_FULL_SYNC_LO, 0x1F)
+    chain.write_reg(CONTROL_FULL_SYNC_HI, 0x4E)
+    chain.mark_ctl_tx_capture_point()
+    chain.step_ticks(ONE_SECOND_TICKS)
+
+    frames = [
+        tuple(chunk)
+        for chunk in zip(*[iter(chain.ctl_tx_record_since_last_capture())] * 3)
+    ]
+    assert any(frame == (0xB0, 0x03, 0x02) for frame in frames), (
+        "mute re-assert not active while muted -- fixture assumption broken"
+    )
+    assert any(frame[0] == 0xB0 and frame[1] == 0x06 for frame in frames), (
+        "armed full-sync never fired while muted: the mute re-assert is "
+        f"starving it ({frames[:12]})"
+    )
+
+
 def test_v173_v34_chain_volume_key_while_muted_unmutes_promptly(
     v34_mute_hex: Path,
 ) -> None:
