@@ -177,3 +177,26 @@ def test_isr_decode_wrap_saves_and_restores_foreground_scratch() -> None:
     assert "bcf     INTCON, GIE" not in patch_body, (
         "health-suffix patch still masks GIE (IR-deaf window)"
     )
+    # codex review of 00f654b: the text pin above cannot catch a wrong or
+    # overlapping save-area allocation, and the behavioral count check may
+    # skip.  Verify the RESOLVED alias range and its uniqueness directly.
+    import re
+
+    inc = V17_CONTROL_RAM_INC.read_text(encoding="utf-8", errors="replace")
+    m = re.search(
+        r"^v173_isr_decode_save_b2_phys\s+EQU\s+0x([0-9A-Fa-f]+)", inc, re.M
+    )
+    assert m, "missing generated v173_isr_decode_save_b2_phys alias"
+    base = int(m.group(1), 16)
+    assert base == 0x260, f"save area moved: 0x{base:04X}"
+    save_range = set(range(base, base + 11))
+    for em in re.finditer(r"^(\w+)\s+EQU\s+0x([0-9A-Fa-f]+)", inc, re.M):
+        name, value = em.group(1), int(em.group(2), 16)
+        if name.startswith("v173_isr_decode_save"):
+            continue
+        if not name.endswith(("_b2", "_b2_phys")):
+            continue
+        assert value not in save_range, (
+            f"{name} (0x{value:04X}) overlaps the ISR decode save area "
+            f"0x{base:04X}..0x{base + 10:04X}"
+        )
