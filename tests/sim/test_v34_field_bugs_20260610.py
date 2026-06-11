@@ -460,11 +460,35 @@ def test_field1b_bootloader_wait_accepts_stringless_non_app(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """After the app->bootloader switch, a string-less device that does NOT
-    answer the app identity probe must be accepted as the bootloader."""
+    answer the app identity probe must be accepted as the bootloader --
+    once the commanded app's enumeration has been seen to drop."""
     dev = _Dev(b"/dev/hid-stringless-boot", "")
     monkeypatch.setattr(main_flash, "enumerate_devices", lambda vid, pid: [dev])
     monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: False)
     got = main_flash._wait_for_bootloader(
-        vid=0x04D8, pid=0xFF89, serial_number="", timeout_s=2.0
+        vid=0x04D8,
+        pid=0xFF89,
+        serial_number="",
+        timeout_s=2.0,
+        switched_app_path=b"/dev/hid-old-app-path",   # absent => drop observed
     )
     assert got is dev
+
+
+def test_field1b_bootloader_wait_rejects_wedged_app_on_same_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """codex review of 83bf29f (MEDIUM): a WEDGED app -- string-less, no
+    longer answering cmd 0x06, still enumerated on its original path --
+    must NOT be accepted as the bootloader and streamed at."""
+    dev = _Dev(b"/dev/hid-wedged-app", "")
+    monkeypatch.setattr(main_flash, "enumerate_devices", lambda vid, pid: [dev])
+    monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: False)
+    with pytest.raises(RuntimeError, match="bootloader did not reconnect"):
+        main_flash._wait_for_bootloader(
+            vid=0x04D8,
+            pid=0xFF89,
+            serial_number="",
+            timeout_s=1.0,
+            switched_app_path=dev.path,   # same path, never seen absent
+        )

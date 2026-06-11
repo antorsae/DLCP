@@ -1402,20 +1402,31 @@ def _wait_for_bootloader(
     pid: int,
     serial_number: str,
     timeout_s: float,
+    switched_app_path: Optional[bytes] = None,
 ) -> HidDeviceInfo:
     deadline = time.time() + timeout_s
     last_modes: List[str] = []
+    app_path_seen_absent = switched_app_path is None
     while time.time() < deadline:
         devs = enumerate_devices(vid, pid)
+        if switched_app_path is not None and all(
+            dev.path != switched_app_path for dev in devs
+        ):
+            app_path_seen_absent = True
         boot_devs = [dev for dev in devs if _device_mode(dev) == "bootloader"]
         # 2026-06-11 field incident #2: with macOS string-less enumeration the
         # bootloader also classifies "unknown".  We just commanded the
         # app->bootloader switch, so a string-less device at our VID/PID that
-        # does NOT answer the app identity probe is the bootloader.
+        # does NOT answer the app identity probe is the bootloader -- but only
+        # once the commanded app's enumeration has been seen to DROP, or the
+        # candidate sits on a different path (codex review of 83bf29f: a
+        # WEDGED app that stops answering cmd 0x06 never re-enumerates, so it
+        # must not be mistaken for the bootloader and streamed at).
         for dev in devs:
             if (
                 _device_mode(dev) == "unknown"
                 and dev.path is not None
+                and (app_path_seen_absent or dev.path != switched_app_path)
                 and not _probe_path_is_app(dev.path)
             ):
                 boot_devs.append(dev)
@@ -1577,6 +1588,7 @@ def _switch_to_bootloader(
         pid=pid,
         serial_number=info.serial_number,
         timeout_s=reconnect_timeout_s,
+        switched_app_path=info.path,
     )
 
 
