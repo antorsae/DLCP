@@ -1500,6 +1500,7 @@ def _wait_for_app(
     serial_number: str,
     path: bytes | None = None,
     previous_app_paths: set[bytes] | None = None,
+    excluded_paths: set[bytes] | None = None,
     timeout_s: float,
 ) -> HidDeviceInfo:
     """Event-driven wait for the app to re-enumerate.
@@ -1541,6 +1542,28 @@ def _wait_for_app(
                 return serial_matches[0]
         if path is None and len(app_devs) == 1:
             return app_devs[0]
+        # 2026-06-11 field incident #3: with string-less enumeration EVERY
+        # precise branch above can be disabled at once -- the app may
+        # re-enumerate on a new path (path mismatch), previous_app_paths is
+        # empty (pre-flash apps classified "unknown"), and the serial is
+        # blank -- leaving a probe-confirmed app unreturnable for the whole
+        # budget.  Final fallback: among probe-confirmed apps, exclude the
+        # OTHER devices' known pre-flash paths (a multi-MAIN rig keeps its
+        # unflashed units on their original paths); a unique remainder is
+        # the flashed device.
+        if excluded_paths is not None and app_devs:
+            candidates = [
+                dev
+                for dev in app_devs
+                if dev.path is not None and dev.path not in excluded_paths
+            ]
+            if len(candidates) == 1:
+                print(
+                    "post-flash app identified by exclusion "
+                    "(string-less enumeration; precise path/serial matching "
+                    "unavailable)"
+                )
+                return candidates[0]
         last_modes = [f"{dev.product_string or '<no-product>'}:{_device_mode(dev)}" for dev in devs]
         now = time.time()
         if now >= next_progress:
@@ -1634,10 +1657,16 @@ def flash_main(
         return None
 
     initial = _pick_device(vid, pid, path, route_label=route_label)
+    pre_flash_devices = enumerate_devices(vid, pid)
     initial_app_paths = {
         dev.path
-        for dev in enumerate_devices(vid, pid)
+        for dev in pre_flash_devices
         if dev.path is not None and _device_mode(dev) == "app"
+    }
+    other_device_paths = {
+        dev.path
+        for dev in pre_flash_devices
+        if dev.path is not None and dev.path != initial.path
     }
     initial_mode = _device_mode(initial)
     if verbose:
@@ -1797,6 +1826,7 @@ def flash_main(
                 serial_number=boot_dev.serial_number,
                 path=boot_dev.path,
                 previous_app_paths=initial_app_paths,
+                excluded_paths=other_device_paths,
                 timeout_s=post_info_timeout_s,
             )
             if post_dev.path is not None and initial_snapshot is not None:

@@ -492,3 +492,54 @@ def test_field1b_bootloader_wait_rejects_wedged_app_on_same_path(
             timeout_s=1.0,
             switched_app_path=dev.path,   # same path, never seen absent
         )
+
+
+def test_field1c_post_flash_wait_identifies_app_by_exclusion(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """2026-06-11 field incident #3: with string-less enumeration the
+    post-flash wait's precise branches are ALL disabled at once (the app
+    re-enumerates on a new path, previous_app_paths is empty because
+    pre-flash apps classified "unknown", and the serial is blank) -- a
+    probe-confirmed app sat unreturnable for the full 60 s while
+    --info-only found it instantly.  On a two-MAIN rig the unflashed unit
+    keeps its pre-flash path, so excluding the other devices' known paths
+    identifies the flashed unit uniquely."""
+    flashed = _Dev(b"/dev/hid-new-path", "")
+    other = _Dev(b"/dev/hid-other-main", "")
+    monkeypatch.setattr(
+        main_flash, "enumerate_devices", lambda vid, pid: [flashed, other]
+    )
+    monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: True)
+    got = main_flash._wait_for_app(
+        vid=0x04D8,
+        pid=0xFF89,
+        serial_number="",
+        path=b"/dev/hid-stale-bootloader-path",
+        previous_app_paths=set(),
+        excluded_paths={other.path},
+        timeout_s=2.0,
+    )
+    assert got is flashed
+    assert "identified by exclusion" in capsys.readouterr().out
+
+
+def test_field1c_exclusion_fallback_refuses_ambiguity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If more than one probe-confirmed app sits outside the excluded set,
+    the wait must keep timing out rather than guess."""
+    a = _Dev(b"/dev/hid-new-a", "")
+    b = _Dev(b"/dev/hid-new-b", "")
+    monkeypatch.setattr(main_flash, "enumerate_devices", lambda vid, pid: [a, b])
+    monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: True)
+    with pytest.raises(RuntimeError, match="did not reconnect"):
+        main_flash._wait_for_app(
+            vid=0x04D8,
+            pid=0xFF89,
+            serial_number="",
+            path=b"/dev/hid-stale",
+            previous_app_paths=set(),
+            excluded_paths=set(),
+            timeout_s=1.0,
+        )
