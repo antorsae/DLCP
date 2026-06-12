@@ -56,6 +56,17 @@ diag_src_c                  EQU  0x3C2   ; C — SRC route changes applied (rout
 diag_src_t                  EQU  0x3C3   ; T — preset table walks (cold/wake/reconnect apply + async job COMMIT)
 diag_src_m                  EQU  0x3C4   ; M — DSP mute writes (clrf_i2c_coeff_0123_and_write entries)
 
+; chain_copy page scratch (size S1).  Bank 3 upper, beside the diag
+; counters: reachable by movff without BSR traffic, never touched by the
+; ISR, and not aliased by any stock bank-0/1/2 owner.  Live only inside
+; a single chain_copy call (loaded from the descriptor header, consumed
+; by the pair loop); no cross-call persistence is assumed.
+chain_copy_srch             EQU  0x3C5   ; source page (high byte) for the active descriptor
+chain_copy_dsth             EQU  0x3C6   ; destination page (high byte) for the active descriptor
+chain_copy_srcl             EQU  0x3C7   ; running source low byte for the active block
+chain_copy_dstl             EQU  0x3C8   ; running destination low byte for the active block
+chain_copy_cnt              EQU  0x3C9   ; remaining bytes in the active block
+
 ; --- Unnamed RAM variables ---
 ram_0x000                   EQU  0x000
 ram_0x003                   EQU  0x003
@@ -1955,6 +1966,21 @@ diag_src_t_b3_phys               EQU  0x3C3    ; physical address for movff/lfsr
 diag_src_m_b3                    EQU  0x3C4    ; phys 0x3C4, bank 3, owner diag_src_m
 diag_src_m_b3_op                 EQU  0xC4     ; 8-bit f operand for diag_src_m_b3
 diag_src_m_b3_phys               EQU  0x3C4    ; physical address for movff/lfsr
+chain_copy_srch_b3               EQU  0x3C5    ; phys 0x3C5, bank 3, owner chain_copy_srch
+chain_copy_srch_b3_op            EQU  0xC5     ; 8-bit f operand for chain_copy_srch_b3
+chain_copy_srch_b3_phys          EQU  0x3C5    ; physical address for movff/lfsr
+chain_copy_dsth_b3               EQU  0x3C6    ; phys 0x3C6, bank 3, owner chain_copy_dsth
+chain_copy_dsth_b3_op            EQU  0xC6     ; 8-bit f operand for chain_copy_dsth_b3
+chain_copy_dsth_b3_phys          EQU  0x3C6    ; physical address for movff/lfsr
+chain_copy_srcl_b3               EQU  0x3C7    ; phys 0x3C7, bank 3, owner chain_copy_srcl
+chain_copy_srcl_b3_op            EQU  0xC7     ; 8-bit f operand for chain_copy_srcl_b3
+chain_copy_srcl_b3_phys          EQU  0x3C7    ; physical address for movff/lfsr
+chain_copy_dstl_b3               EQU  0x3C8    ; phys 0x3C8, bank 3, owner chain_copy_dstl
+chain_copy_dstl_b3_op            EQU  0xC8     ; 8-bit f operand for chain_copy_dstl_b3
+chain_copy_dstl_b3_phys          EQU  0x3C8    ; physical address for movff/lfsr
+chain_copy_cnt_b3                EQU  0x3C9    ; phys 0x3C9, bank 3, owner chain_copy_cnt
+chain_copy_cnt_b3_op             EQU  0xC9     ; 8-bit f operand for chain_copy_cnt_b3
+chain_copy_cnt_b3_phys           EQU  0x3C9    ; physical address for movff/lfsr
 stock_400_b4                     EQU  0x400    ; phys 0x400, bank 4, owner stock-derived
 stock_400_b4_op                  EQU  0x00     ; 8-bit f operand for stock_400_b4
 stock_400_b4_phys                EQU  0x400    ; physical address for movff/lfsr

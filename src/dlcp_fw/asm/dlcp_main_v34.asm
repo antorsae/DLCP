@@ -587,18 +587,8 @@ flow_hid_command_dispatch_124a:
     movlb       0x0
     bsf         stock_0A4_b0, 5, BANKED
 flow_hid_command_dispatch_124e:
-    movff       stock_12C_b1_phys, stock_060_b0_phys
-    movff       stock_12D_b1_phys, stock_061_b0_phys
-    movff       stock_12E_b1_phys, stock_062_b0_phys
-    movff       stock_12F_b1_phys, stock_063_b0_phys
-    movff       stock_130_b1_phys, stock_064_b0_phys
-    movff       stock_131_b1_phys, stock_065_b0_phys
-    movff       stock_132_b1_phys, stock_05F_b0_phys
-    movff       stock_133_b1_phys, stock_09B_b0_phys
-    movff       stock_134_b1_phys, stock_09C_b0_phys
-    movff       stock_135_b1_phys, stock_09D_b0_phys
-    movff       stock_136_b1_phys, stock_09E_b0_phys
-    movff       stock_138_b1_phys, stock_0B4_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x01, 0x00, 0x2C, stock_060_b0_op, 0x06, 0x32, stock_05F_acc_op, 0x01, 0x33, stock_09B_b0_op, 0x04, 0x38, stock_0B4_b0_op, 0x01, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     movf        input_select_mirror_b0, W, BANKED
     xorwf       input_select_b0, W, BANKED
     btfss       STATUS, 2, ACCESS
@@ -696,18 +686,8 @@ flow_hid_command_dispatch_1324:
 flow_hid_command_dispatch_1342:
     bcf         active_flags_acc, 5, ACCESS
 flow_hid_command_dispatch_1344:
-    movff       stock_0A4_b0_phys, stock_0B0_b0_phys
-    movff       stock_060_b0_phys, stock_0A5_b0_phys
-    movff       stock_061_b0_phys, stock_0A6_b0_phys
-    movff       stock_062_b0_phys, stock_0A7_b0_phys
-    movff       stock_063_b0_phys, stock_0A8_b0_phys
-    movff       stock_064_b0_phys, stock_0A9_b0_phys
-    movff       stock_065_b0_phys, stock_0AA_b0_phys
-    movff       stock_0B4_b0_phys, stock_0B1_b0_phys
-    movff       stock_09B_b0_phys, stock_0AC_b0_phys
-    movff       stock_09C_b0_phys, stock_0AD_b0_phys
-    movff       stock_09D_b0_phys, stock_0AE_b0_phys
-    movff       stock_09E_b0_phys, stock_0AF_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_0A4_b0_op, stock_0B0_b0_op, 0x01, stock_060_b0_op, stock_0A5_b0_op, 0x06, stock_0B4_b0_op, stock_0B1_b0_op, 0x01, stock_09B_b0_op, stock_0AC_b0_op, 0x04, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
 flow_hid_command_dispatch_1374:
     movlw       0x05
     bra         flow_hid_command_dispatch_1384
@@ -1573,14 +1553,8 @@ flow_cmd_dispatch_gated_19e6:
     movlw       0x3D
     movwf       stock_019_acc, ACCESS
     call        main_core_service_2abc, 0x0
-    movff       stock_012_b0_phys, stock_0ED_b0_phys
-    movff       stock_013_b0_phys, stock_0EE_b0_phys
-    movff       stock_014_b0_phys, stock_0EF_b0_phys
-    movff       stock_015_b0_phys, stock_0F0_b0_phys
-    movff       stock_0ED_b0_phys, stock_02F_b0_phys
-    movff       stock_0EE_b0_phys, stock_030_b0_phys
-    movff       stock_0EF_b0_phys, stock_031_b0_phys
-    movff       stock_0F0_b0_phys, stock_032_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_012_acc_op, stock_0ED_b0_op, 0x04, stock_0ED_b0_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     call        main_core_service_297e, 0x0
     movff       stock_02F_b0_phys, i2c_coeff_0_b0_phys
     movff       stock_030_b0_phys, i2c_coeff_1_b0_phys
@@ -2359,49 +2333,8 @@ flow_main_uart_service_1be6_1e80:
 ; Notes   : Inferred core helper routine. Calls: eeprom_read_byte, main_flash_service_46de.
 ; ---------------------------------------------------------------------------
 main_core_service_1e88:
-    clrf        stock_004_acc, ACCESS
-    clrf        stock_003_acc, ACCESS
-    call        eeprom_read_byte, 0x0
-    movlb       0x0
-    movwf       computed_volume_3_b0, BANKED
-    movlw       0x01
-    rcall       eeprom_read_byte_W
-    movwf       computed_volume_2_b0, BANKED
-    movlw       0x02
-    rcall       eeprom_read_byte_W
-    movwf       computed_volume_1_b0, BANKED
-    movlw       0x03
-    rcall       eeprom_read_byte_W
-    movwf       computed_volume_b0, BANKED
-    movlw       0x04
-    rcall       eeprom_read_byte_W
-    movwf       input_select_b0, BANKED
-    movlw       0x07
-    rcall       eeprom_read_byte_W
-    movwf       stock_060_b0, BANKED
-    movlw       0x08
-    rcall       eeprom_read_byte_W
-    movwf       stock_061_b0, BANKED
-    movlw       0x09
-    rcall       eeprom_read_byte_W
-    movwf       stock_062_b0, BANKED
-    movlw       0x0A
-    rcall       eeprom_read_byte_W
-    movwf       stock_063_b0, BANKED
-    movlw       0x0B
-    rcall       eeprom_read_byte_W
-    movwf       stock_064_b0, BANKED
-    movlw       0x0C
-    rcall       eeprom_read_byte_W
-    movwf       stock_065_b0, BANKED
-    clrf        stock_004_acc, ACCESS
-    movlw       0x0D
-    movwf       stock_003_acc, ACCESS
-    call        eeprom_read_byte, 0x0
-    movwf       stock_05F_acc, ACCESS
-    movlw       0x14
-    rcall       eeprom_read_byte_W
-    movwf       stock_0C3_b0, BANKED
+    call        chain_copy, 0x0     ; size S2: EEPROM-sourced settings load
+    db          0xEE, 0x00, 0x00, computed_volume_3_b0_op, 0x01, 0x01, computed_volume_2_b0_op, 0x01, 0x02, computed_volume_1_b0_op, 0x01, 0x03, computed_volume_b0_op, 0x01, 0x04, input_select_b0_op, 0x01, 0x07, stock_060_b0_op, 0x06, 0x0D, stock_05F_acc_op, 0x01, 0x14, stock_0C3_b0_op, 0x01, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     movf        computed_volume_3_b0, W, BANKED
     xorlw       0x80
     addlw       0x80
@@ -2478,14 +2411,8 @@ flow_main_core_service_1e88_1fbc:
     movwf       stock_0C3_b0, BANKED
 flow_main_core_service_1e88_1fc6:
     call        copy_computed_volume_to_logical_volume, 0x0
-    movff       input_select_b0_phys, input_select_mirror_b0_phys
-    movff       stock_060_b0_phys, stock_0A5_b0_phys
-    movff       stock_061_b0_phys, stock_0A6_b0_phys
-    movff       stock_062_b0_phys, stock_0A7_b0_phys
-    movff       stock_063_b0_phys, stock_0A8_b0_phys
-    movff       stock_064_b0_phys, stock_0A9_b0_phys
-    movff       stock_065_b0_phys, stock_0AA_b0_phys
-    movff       stock_0C3_b0_phys, stock_0B2_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, input_select_b0_op, input_select_mirror_b0_op, 0x01, stock_060_b0_op, stock_0A5_b0_op, 0x06, stock_0C3_b0_op, stock_0B2_b0_op, 0x01, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     movlw       0x0F
     rcall       eeprom_read_byte_W
     movwf       stock_0B4_b0, BANKED
@@ -2508,18 +2435,8 @@ flow_main_core_service_1e88_2026:
     movlw       0x03
     movwf       stock_0B8_b0, BANKED
 flow_main_core_service_1e88_2030:
-    movlw       0x10
-    rcall       eeprom_read_byte_W
-    movwf       stock_09B_b0, BANKED
-    movlw       0x11
-    rcall       eeprom_read_byte_W
-    movwf       stock_09C_b0, BANKED
-    movlw       0x12
-    rcall       eeprom_read_byte_W
-    movwf       stock_09D_b0, BANKED
-    movlw       0x13
-    rcall       eeprom_read_byte_W
-    movwf       stock_09E_b0, BANKED
+    call        chain_copy, 0x0     ; size S2: EEPROM-sourced trim load
+    db          0xEE, 0x00, 0x10, stock_09B_b0_op, 0x04, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     movlw       0x12
     cpfsgt      stock_09B_b0, BANKED
     bra         flow_main_core_service_1e88_2070
@@ -2589,7 +2506,7 @@ flow_main_core_service_1e88_20c2:
     clrf        stock_008_acc, ACCESS
     movlw       0x82
     movwf       stock_007_acc, ACCESS
-    movlw       0x8A                            ; V3.4_RUNTIME_EEPROM_REV
+    movlw       0x90                            ; V3.4_RUNTIME_EEPROM_REV
     movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
@@ -2786,10 +2703,7 @@ flow_main_i2c_service_2100_22de:
     movff       stock_00F_b0_phys, i2c_coeff_2_b0_phys
     movff       stock_010_b0_phys, i2c_coeff_3_b0_phys
 flow_main_i2c_service_2100_22fc:
-    movff       i2c_coeff_0_b0_phys, stock_049_b0_phys
-    movff       i2c_coeff_1_b0_phys, stock_04A_b0_phys
-    movff       i2c_coeff_2_b0_phys, stock_04B_b0_phys
-    movff       i2c_coeff_3_b0_phys, stock_04C_b0_phys
+    call        s3_coeff_stage_049, 0x0  ; size S3 (out of rcall reach)
     call        main_i2c_service_39a6, 0x0
     incf        stock_05B_acc, F, ACCESS
     movlw       0x03
@@ -2947,13 +2861,8 @@ flow_main_core_service_2328_2380:
     movlw       0x01
     movlb       0x1
     movwf       stock_16A_b1, BANKED
-    movff       stock_060_b0_phys, stock_16C_b1_phys
-    movff       stock_061_b0_phys, stock_16D_b1_phys
-    movff       stock_062_b0_phys, stock_16E_b1_phys
-    movff       stock_063_b0_phys, stock_16F_b1_phys
-    movff       stock_064_b0_phys, stock_170_b1_phys
-    movff       stock_065_b0_phys, stock_171_b1_phys
-    movff       stock_0B4_b0_phys, stock_178_b1_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x01, stock_060_b0_op, 0x6C, 0x06, stock_0B4_b0_op, 0x78, 0x01, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     bra         flow_main_core_service_2328_24a6
 flow_main_core_service_2328_240c:
     movlw       0x03
@@ -3226,12 +3135,8 @@ flow_main_core_service_24c2_25f2:
     movlw       0x01
     movwf       stock_02C_acc, ACCESS
 flow_main_core_service_24c2_2610:
-    movff       stock_024_b0_phys, stock_003_b0_phys
-    movff       stock_025_b0_phys, stock_004_b0_phys
-    movff       stock_026_b0_phys, saved_w_b0_phys
-    movff       stock_027_b0_phys, stock_006_b0_phys
-    movff       stock_02E_b0_phys, stock_007_b0_phys
-    movff       stock_02C_b0_phys, stock_008_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_024_acc_op, stock_003_acc_op, 0x04, stock_02E_acc_op, stock_007_acc_op, 0x01, stock_02C_acc_op, stock_008_acc_op, 0x01, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     call        main_core_service_30d8, 0x0
     movff       stock_003_b0_phys, stock_020_b0_phys
     movff       stock_004_b0_phys, stock_021_b0_phys
@@ -3721,10 +3626,7 @@ main_core_service_297e:
     movlw       0x0A
     movwf       stock_011_acc, ACCESS
 flow_main_core_service_297e_apply_loop:
-    movff       stock_02F_b0_phys, stock_025_b0_phys
-    movff       stock_030_b0_phys, stock_026_b0_phys
-    movff       stock_031_b0_phys, stock_027_b0_phys
-    movff       stock_032_b0_phys, stock_028_b0_phys
+    rcall       s3_math_stage_025           ; size S3
     movlw       0x2F
     call        main_core_service_3ec4, 0x0
     decfsz      stock_011_acc, F, ACCESS
@@ -3822,12 +3724,8 @@ flow_main_core_service_2abc_2b52:
     rrcf        stock_01F_acc, F, ACCESS
     decfsz      stock_023_acc, F, ACCESS
     bra         flow_main_core_service_2abc_2b4a
-    movff       stock_01F_b0_phys, stock_003_b0_phys
-    movff       stock_020_b0_phys, stock_004_b0_phys
-    movff       stock_021_b0_phys, saved_w_b0_phys
-    movff       stock_022_b0_phys, stock_006_b0_phys
-    movff       stock_01E_b0_phys, stock_007_b0_phys
-    movff       stock_024_b0_phys, stock_008_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_01F_acc_op, stock_003_acc_op, 0x04, stock_01E_acc_op, stock_007_acc_op, 0x01, stock_024_acc_op, stock_008_acc_op, 0x01, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     rcall       main_core_service_30d8
     movff       stock_003_b0_phys, stock_012_b0_phys
     movff       stock_004_b0_phys, stock_013_b0_phys
@@ -4097,12 +3995,8 @@ flow_main_core_service_2ca8_2d44:
     rlcf        stock_010_acc, F, ACCESS
     decfsz      stock_01D_acc, F, ACCESS
     bra         flow_main_core_service_2ca8_2d16
-    movff       stock_019_b0_phys, stock_003_b0_phys
-    movff       stock_01A_b0_phys, stock_004_b0_phys
-    movff       stock_01B_b0_phys, saved_w_b0_phys
-    movff       stock_01C_b0_phys, stock_006_b0_phys
-    movff       stock_01E_b0_phys, stock_007_b0_phys
-    movff       stock_01F_b0_phys, stock_008_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_019_acc_op, stock_003_acc_op, 0x04, stock_01E_acc_op, stock_007_acc_op, 0x02, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     ; W04-E01: factor rcall+4 movff tail into main_core_service_30d8_with_save
     bra         main_core_service_30d8_with_save
 flow_main_core_service_2ca8_2d7e:
@@ -4114,6 +4008,95 @@ flow_main_core_service_2ca8_2d7e:
 ; Address : 0x2D80
 ; Notes   : Inferred core helper routine.
 ; ---------------------------------------------------------------------------
+; ---------------------------------------------------------------------------
+; chain_copy — table-driven replacement for straight movff copy runs (size S1)
+; ---------------------------------------------------------------------------
+; Call shape:
+;     call        chain_copy, 0x0
+;     db          srcPage, dstPage          ; phys high bytes (bank numbers)
+;     db          srcL0, dstL0, ...         ; one byte pair per copied cell
+;     db          0xFF, 0xFF                ; sentinel + even-PC pad
+; Copies each (srcPage:srcL -> dstPage:dstL) byte IN ORDER, then resumes
+; execution after the descriptor (return address is recomputed from TBLPTR,
+; which ends exactly past the pad byte; descriptor length 2+2N+2 is even, so
+; the resumed PC stays word-aligned).
+;
+; EEPROM-source mode (size S2): srcPage == 0xEE makes each pair's first
+; byte an EEPROM address instead of a RAM low byte; the value is fetched
+; through eeprom_read_byte_W (clobbers ram_0x003/004, leaves BSR=0 like
+; the inline rcall form it replaces).  0xEE cannot collide with a RAM
+; page (GPR banks end at 3) and EE addresses stay <= 0x7F, far from the
+; 0xFF sentinel.
+;
+; Clobbers: W, FSR0, TBLPTR (callers may not hold TBLPTR live — audited:
+; converted sites are core-service shuffles, not flash readers),
+; chain_copy_srch/dsth (BANK 3 page scratch, movff-only — PROD was REJECTED
+; here: it is live across the 19e6 volume chain's 2abc->297e math hand-off,
+; the session-0 runtime failure; the ISR touches none of these); EE mode
+; additionally clobbers ram_0x003/004 and forces BSR=0, matching the
+; eeprom_read_byte_W call runs it replaces.
+; STATUS is NOT preserved (unlike raw movff runs) — every converted site was
+; audited: no following instruction consumes pre-chain flags.
+; 0xFF is a safe sentinel: no converted descriptor copies cell 0xXFF.
+; ---------------------------------------------------------------------------
+chain_copy:
+    movff       TOSL, TBLPTRL
+    movff       TOSH, TBLPTRH
+    clrf        TBLPTRU, ACCESS             ; all callers live below 0x4C00
+    tblrd*+
+    movff       TABLAT, chain_copy_srch     ; src page (bank3 via movff)
+    tblrd*+
+    movff       TABLAT, chain_copy_dsth     ; dst page
+    movlb       0x03                        ; block counters live in bank 3
+chain_copy_block:
+    tblrd*+
+    incfsz      TABLAT, W, ACCESS           ; srcL == 0xFF -> done
+    bra         chain_copy_hdr
+    btfsc       TBLPTRL, 0, ACCESS          ; odd resume PC -> consume the pad
+    tblrd*+
+    movlb       0x00                        ; uniform exit contract: BSR = 0
+    movf        TBLPTRL, W, ACCESS          ; movff may not target TOSx
+    movwf       TOSL, ACCESS
+    movf        TBLPTRH, W, ACCESS
+    movwf       TOSH, ACCESS
+    return      0
+chain_copy_hdr:
+    movff       TABLAT, chain_copy_srcl_b3_phys ; block source low byte
+    tblrd*+
+    movff       TABLAT, chain_copy_dstl_b3_phys ; block destination low byte
+    tblrd*+
+    movff       TABLAT, chain_copy_cnt_b3_phys  ; block length (>= 1)
+chain_copy_byte:
+    movff       chain_copy_srcl_b3_phys, FSR0L
+    movff       chain_copy_srch, FSR0H
+    movf        FSR0H, W, ACCESS
+    xorlw       0xEE                        ; EEPROM-source descriptor?
+    bnz         chain_copy_ram_read
+    movf        FSR0L, W, ACCESS            ; W = EEPROM address
+    call        eeprom_read_byte_W, 0x0     ; W = value; BSR = 0 on return
+    movlb       0x03                        ; back to the counter bank
+    bra         chain_copy_store
+chain_copy_ram_read:
+    movf        INDF0, W, ACCESS
+chain_copy_store:
+    movff       chain_copy_dstl_b3_phys, FSR0L
+    movff       chain_copy_dsth, FSR0H
+    movwf       INDF0, ACCESS
+    incf        chain_copy_srcl_b3, F, BANKED
+    incf        chain_copy_dstl_b3, F, BANKED
+    decfsz      chain_copy_cnt_b3, F, BANKED
+    bra         chain_copy_byte
+    bra         chain_copy_block
+
+; s3_math_stage_025 — shared stock_02F..032 -> stock_025..028 operand staging
+; (size S3 dedup; W/STATUS-dead at both callers, audited).
+s3_math_stage_025:
+    movff       stock_02F_b0_phys, stock_025_b0_phys
+    movff       stock_030_b0_phys, stock_026_b0_phys
+    movff       stock_031_b0_phys, stock_027_b0_phys
+    movff       stock_032_b0_phys, stock_028_b0_phys
+    return      0
+
 main_core_service_2d80:
     bcf         STATUS, 0, ACCESS
     rrcf        stock_018_acc, F, ACCESS
@@ -4571,11 +4554,17 @@ flow_main_usb_service_2f4e_3018:
 ; Address : 0x301A
 ; Notes   : Inferred core helper routine. Calls: main_core_service_30cc.
 ; ---------------------------------------------------------------------------
-main_core_service_301a:
+; s3_math_stage_029 — shared stock_025..028 -> stock_029..02C operand copy
+; (size S3 dedup; W/STATUS-dead at both callers, audited).
+s3_math_stage_029:
     movff       stock_025_b0_phys, stock_029_b0_phys
     movff       stock_026_b0_phys, stock_02A_b0_phys
     movff       stock_027_b0_phys, stock_02B_b0_phys
     movff       stock_028_b0_phys, stock_02C_b0_phys
+    return      0
+
+main_core_service_301a:
+    rcall       s3_math_stage_029           ; size S3
     movlw       0x18
     bra         flow_main_core_service_301a_3030
 flow_main_core_service_301a_302e:
@@ -4594,10 +4583,7 @@ flow_main_core_service_301a_303c:
     clrf        stock_028_acc, ACCESS
     bra         flow_main_core_service_301a_30ca
 flow_main_core_service_301a_3046:
-    movff       stock_025_b0_phys, stock_029_b0_phys
-    movff       stock_026_b0_phys, stock_02A_b0_phys
-    movff       stock_027_b0_phys, stock_02B_b0_phys
-    movff       stock_028_b0_phys, stock_02C_b0_phys
+    rcall       s3_math_stage_029           ; size S3
     movlw       0x20
     bra         flow_main_core_service_301a_305c
 flow_main_core_service_301a_305a:
@@ -5095,24 +5081,15 @@ flow_main_core_service_3398_33cc:
     bnc         flow_main_core_service_3398_33e8
     bra         flow_main_core_service_3398_3430
 flow_main_core_service_3398_33e8:
-    movff       stock_02F_b0_phys, stock_025_b0_phys
-    movff       stock_030_b0_phys, stock_026_b0_phys
-    movff       stock_031_b0_phys, stock_027_b0_phys
-    movff       stock_032_b0_phys, stock_028_b0_phys
+    rcall       s3_math_stage_025           ; size S3
     rcall       main_core_service_301a
     movff       stock_025_b0_phys, stock_00D_b0_phys
     movff       stock_026_b0_phys, stock_00E_b0_phys
     movff       stock_027_b0_phys, stock_00F_b0_phys
     movff       stock_028_b0_phys, stock_010_b0_phys
     call        main_core_service_3e0a, 0x0
-    movff       stock_00D_b0_phys, stock_033_b0_phys
-    movff       stock_00E_b0_phys, stock_034_b0_phys
-    movff       stock_00F_b0_phys, stock_035_b0_phys
-    movff       stock_010_b0_phys, stock_036_b0_phys
-    movff       stock_033_b0_phys, stock_02F_b0_phys
-    movff       stock_034_b0_phys, stock_030_b0_phys
-    movff       stock_035_b0_phys, stock_031_b0_phys
-    movff       stock_036_b0_phys, stock_032_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_00D_acc_op, stock_033_acc_op, 0x04, stock_033_acc_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
 flow_main_core_service_3398_3430:
     return      0
 
@@ -5205,18 +5182,23 @@ flow_main_core_service_34c8_34d4:
     clrf        FSR2H, ACCESS
     clrf        INDF2, ACCESS
     decf        stock_011_acc, F, ACCESS
-flow_main_core_service_34c8_3504:
+    bra         flow_main_core_service_34c8_3504    ; jump the dedup body below
+; s3_adc_stage_427a — shared ADC sample parameter staging (00A/timeout_lo/
+; timeout_hi/00D -> 003/004/saved_w/006) (size S3 dedup; W/STATUS-dead at
+; both callers, audited).
+s3_adc_stage_427a:
     movff       stock_00A_b0_phys, stock_003_b0_phys
     movff       timeout_lo_b0_phys, stock_004_b0_phys
     movff       timeout_hi_b0_phys, saved_w_b0_phys
     movff       stock_00D_b0_phys, stock_006_b0_phys
+    return      0
+
+flow_main_core_service_34c8_3504:
+    rcall       s3_adc_stage_427a           ; size S3
     call        main_core_service_427a, 0x0
     movf        stock_003_acc, W, ACCESS
     movwf       stock_010_acc, ACCESS
-    movff       stock_00A_b0_phys, stock_003_b0_phys
-    movff       timeout_lo_b0_phys, stock_004_b0_phys
-    movff       timeout_hi_b0_phys, saved_w_b0_phys
-    movff       stock_00D_b0_phys, stock_006_b0_phys
+    rcall       s3_adc_stage_427a           ; size S3
     call        main_adc_service_4124, 0x0
     movff       stock_003_b0_phys, stock_00A_b0_phys
     movff       stock_004_b0_phys, timeout_lo_b0_phys
@@ -5803,28 +5785,16 @@ preset_table_apply_entry_pen_timeout:
 ; Notes   : Inferred core helper routine. Calls: main_core_service_3398, main_core_service_432e, main_core_service_3f1e.
 ; ---------------------------------------------------------------------------
 main_core_service_38a2:
-    movff       stock_041_b0_phys, stock_039_b0_phys
-    movff       stock_042_b0_phys, stock_03A_b0_phys
-    movff       stock_043_b0_phys, stock_03B_b0_phys
-    movff       stock_044_b0_phys, stock_03C_b0_phys
-    movff       stock_041_b0_phys, stock_02F_b0_phys
-    movff       stock_042_b0_phys, stock_030_b0_phys
-    movff       stock_043_b0_phys, stock_031_b0_phys
-    movff       stock_044_b0_phys, stock_032_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_041_acc_op, stock_039_acc_op, 0x04, stock_041_acc_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     rcall       main_core_service_3398
     movff       stock_02F_b0_phys, stock_03D_b0_phys
     movff       stock_030_b0_phys, stock_03E_b0_phys
     movff       stock_031_b0_phys, stock_03F_b0_phys
     movff       stock_032_b0_phys, stock_040_b0_phys
     call        main_core_service_432e, 0x0
-    movff       stock_039_b0_phys, stock_045_b0_phys
-    movff       stock_03A_b0_phys, stock_046_b0_phys
-    movff       stock_03B_b0_phys, stock_047_b0_phys
-    movff       stock_03C_b0_phys, stock_048_b0_phys
-    movff       stock_045_b0_phys, stock_02F_b0_phys
-    movff       stock_046_b0_phys, stock_030_b0_phys
-    movff       stock_047_b0_phys, stock_031_b0_phys
-    movff       stock_048_b0_phys, stock_032_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_039_acc_op, stock_045_acc_op, 0x04, stock_045_acc_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     movlw       0x41
     rcall       main_core_service_3f1e
     movff       stock_041_b0_phys, stock_02F_b0_phys
@@ -5922,6 +5892,17 @@ flow_adaptive_baud_select_3940:
 
 
 ; ---------------------------------------------------------------------------
+; s3_coeff_stage_049 — shared i2c_coeff_0..3 -> stock_049..04C staging
+; (size S3 dedup; W/STATUS-dead at both callers, audited).
+; ---------------------------------------------------------------------------
+s3_coeff_stage_049:
+    movff       i2c_coeff_0_b0_phys, stock_049_b0_phys
+    movff       i2c_coeff_1_b0_phys, stock_04A_b0_phys
+    movff       i2c_coeff_2_b0_phys, stock_04B_b0_phys
+    movff       i2c_coeff_3_b0_phys, stock_04C_b0_phys
+    return      0
+
+; ---------------------------------------------------------------------------
 ; Function: main_i2c_service_39a6
 ; Address : 0x39A6
 ; Notes   : Inferred i2c helper routine. Calls: main_core_service_2abc, main_core_service_38a2, main_core_service_301a.
@@ -5942,14 +5923,8 @@ main_i2c_service_39a6:
     movff       stock_014_b0_phys, stock_043_b0_phys
     movff       stock_015_b0_phys, stock_044_b0_phys
     rcall       main_core_service_38a2
-    movff       stock_041_b0_phys, stock_04D_b0_phys
-    movff       stock_042_b0_phys, stock_04E_b0_phys
-    movff       stock_043_b0_phys, stock_04F_b0_phys
-    movff       stock_044_b0_phys, stock_050_b0_phys
-    movff       stock_04D_b0_phys, stock_025_b0_phys
-    movff       stock_04E_b0_phys, stock_026_b0_phys
-    movff       stock_04F_b0_phys, stock_027_b0_phys
-    movff       stock_050_b0_phys, stock_028_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_041_acc_op, stock_04D_acc_op, 0x04, stock_04D_acc_op, stock_025_acc_op, 0x04, 0xFF, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     call        main_core_service_301a, 0x0
     movff       stock_025_b0_phys, stock_051_b0_phys
     movff       stock_026_b0_phys, stock_052_b0_phys
@@ -7546,14 +7521,8 @@ flow_main_usb_service_42f4_4316:
 main_core_service_432e:
     movlw       0x80
     xorwf       stock_040_acc, F, ACCESS
-    movff       stock_039_b0_phys, stock_020_b0_phys
-    movff       stock_03A_b0_phys, stock_021_b0_phys
-    movff       stock_03B_b0_phys, stock_022_b0_phys
-    movff       stock_03C_b0_phys, stock_023_b0_phys
-    movff       stock_03D_b0_phys, stock_024_b0_phys
-    movff       stock_03E_b0_phys, stock_025_b0_phys
-    movff       stock_03F_b0_phys, stock_026_b0_phys
-    movff       stock_040_b0_phys, stock_027_b0_phys
+    call        chain_copy, 0x0     ; size S1: table-driven copy run
+    db          0x00, 0x00, stock_039_acc_op, stock_020_acc_op, 0x08, 0xFF  ; chain_copy block descriptor (single db: gpasm pads per directive)
     call        main_core_service_24c2, 0x0
     movff       stock_020_b0_phys, stock_039_b0_phys
     movff       stock_021_b0_phys, stock_03A_b0_phys
@@ -7936,10 +7905,7 @@ i2c_tas3108_coeff_write:
     rcall       i2c_byte_tx
     movlw       0x30
     rcall       i2c_byte_tx
-    movff       i2c_coeff_0_b0_phys, stock_049_b0_phys
-    movff       i2c_coeff_1_b0_phys, stock_04A_b0_phys
-    movff       i2c_coeff_2_b0_phys, stock_04B_b0_phys
-    movff       i2c_coeff_3_b0_phys, stock_04C_b0_phys
+    call        s3_coeff_stage_049, 0x0  ; size S3 (out of rcall reach)
     call        main_i2c_service_39a6, 0x0
     bsf         SSPCON2, 2, ACCESS          ; stock STOP wait
     rcall       wait_pen_bounded
@@ -9704,9 +9670,9 @@ cmd25_identity_query_handler:
     movwf       stock_005_acc, ACCESS
     movlw       0x04                        ; V3.4 identity minor
     movwf       stock_006_acc, ACCESS
-    movlw       0x08                        ; V3.4_IDENTITY_REV_HI
+    movlw       0x09                        ; V3.4_IDENTITY_REV_HI
     movwf       stock_007_acc, ACCESS
-    movlw       0x0A                        ; V3.4_IDENTITY_REV_LO
+    movlw       0x00                        ; V3.4_IDENTITY_REV_LO
     movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       stock_004_acc, ACCESS
@@ -10917,7 +10883,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0x8A, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x04, 0x90, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
