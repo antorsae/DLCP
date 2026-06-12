@@ -2323,7 +2323,7 @@ def test_v34_v173_refactoring_layout_labels_are_pinned() -> None:
     # MAIN floor matches the canonical headroom gate in
     # test_v34_v173_refactoring_contracts.py (ratcheted 96 -> 24 on
     # 2026-06-12 for the SRC/DSP forensic counters; see the rationale there).
-    _assert_listing_fits_before(V34_MAIN_LST, 0x4C00, min_margin=24)
+    _assert_listing_fits_before(V34_MAIN_LST, 0x4C00, min_margin=200)
     _assert_listing_fits_before(V173_CONTROL_LST, 0x77B0, min_margin=64)
 
 

@@ -4011,17 +4011,19 @@ flow_main_core_service_2ca8_2d7e:
 ; ---------------------------------------------------------------------------
 ; chain_copy — table-driven replacement for straight movff copy runs (size S1)
 ; ---------------------------------------------------------------------------
-; Call shape:
+; Call shape (ONE db directive — gpasm pads each db to word alignment, so a
+; multi-line descriptor would gain phantom zeros that desync this parser):
 ;     call        chain_copy, 0x0
-;     db          srcPage, dstPage          ; phys high bytes (bank numbers)
-;     db          srcL0, dstL0, ...         ; one byte pair per copied cell
-;     db          0xFF, 0xFF                ; sentinel + even-PC pad
-; Copies each (srcPage:srcL -> dstPage:dstL) byte IN ORDER, then resumes
-; execution after the descriptor (return address is recomputed from TBLPTR,
-; which ends exactly past the pad byte; descriptor length 2+2N+2 is even, so
-; the resumed PC stays word-aligned).
+;     db          srcPage, dstPage, s0,d0,c0 [, s1,d1,c1 ...], 0xFF [, 0xFF]
+; header = phys high bytes (bank numbers); each (srcL, dstL, count) row
+; copies `count` consecutive bytes (srcPage:srcL+k -> dstPage:dstL+k);
+; 0xFF terminates.  Total descriptor length must be EVEN — append the
+; optional second 0xFF when header+rows+sentinel is odd; the exit path
+; consumes one pad byte iff the resume address is odd (btfsc TBLPTRL,0)
+; and rewrites TOS from TBLPTR so execution resumes word-aligned after
+; the descriptor.
 ;
-; EEPROM-source mode (size S2): srcPage == 0xEE makes each pair's first
+; EEPROM-source mode (size S2): srcPage == 0xEE makes each row's first
 ; byte an EEPROM address instead of a RAM low byte; the value is fetched
 ; through eeprom_read_byte_W (clobbers ram_0x003/004, leaves BSR=0 like
 ; the inline rcall form it replaces).  0xEE cannot collide with a RAM

@@ -103,15 +103,15 @@ def test_v34_v173_listing_size_gates_keep_refactoring_headroom() -> None:
     # ACK-verified preset table apply and the FIELD-4B volume-family row
     # skip (docs/V34_FIELD_BUGS_20260610.md) spent ~20 bytes of reserve on
     # a safety fix (live audio through a wrong/half-applied DSP image).
-    # Floor lowered again 96 -> 24 bytes on 2026-06-12: the SRC/DSP forensic
-    # counters (N/L/C/T/M + cmd 0x44 extension, tests/sim/
-    # test_v34_diag_src_counters.py) spent 78 bytes diagnosing the live
-    # spontaneous-filter-change incident — incident-response tooling, taken
-    # knowingly.  Current margin 30 bytes: ONE FIELD-4A-sized emergency fix
-    # remains before 0x4C00 is exhausted.  The size-reclaim pass
-    # (V32_SIZE_OPTIMIZATION successor) is now a BLOCKER for any further
-    # MAIN feature work.
-    _assert_listing_fits_before(v34_lst, 0x4C00, min_margin=24)
+    # Floor lowered 96 -> 24 on 2026-06-12 for the SRC/DSP forensic counters
+    # (N/L/C/T/M + cmd 0x44 extension) during the live spontaneous-filter
+    # incident, then RAISED 24 -> 200 the same day: the size-reclaim
+    # S-series (chain_copy S1/S2/S4 + S3 dedup,
+    # docs/V34_SIZE_OPTIMIZATION_FINDINGS.md) rebuilt the reserve to
+    # 252 bytes.  The 200 floor pins the user-mandated working reserve —
+    # do not lower it casually; reclaim candidates are inventoried in the
+    # findings doc.
+    _assert_listing_fits_before(v34_lst, 0x4C00, min_margin=200)
     _assert_listing_fits_before(v173_lst, 0x77B0, min_margin=128)
 
 
