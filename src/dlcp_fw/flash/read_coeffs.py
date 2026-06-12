@@ -237,25 +237,31 @@ class HidMemoryReader:
         _hid_write64(self._dev, report)
         deadline = time.monotonic() + (max(1, self._timeout_ms) / 1000.0)
         ignored: list[int] = []
+
+        def _timeout_error() -> RuntimeError:
+            if ignored:
+                ignored_text = ", ".join(f"0x{x:02X}" for x in ignored[:8])
+                return RuntimeError(
+                    "timed out waiting for diag memread response after ignoring "
+                    f"{len(ignored)} unrelated HID report(s): {ignored_text}"
+                )
+            return RuntimeError("timed out waiting for HID response")
+
         while True:
-            remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
-            if remaining_ms <= 0:
-                if ignored:
-                    ignored_text = ", ".join(f"0x{x:02X}" for x in ignored[:8])
-                    raise RuntimeError(
-                        "timed out waiting for diag memread response after ignoring "
-                        f"{len(ignored)} unrelated HID report(s): {ignored_text}"
-                    )
-                raise RuntimeError("timed out waiting for HID response")
-            resp = _hid_read64(self._dev, timeout_ms=remaining_ms)
+            # Enforce the deadline against the wall clock, not just via
+            # _hid_read64 returning None: a device chattering unrelated
+            # reports keeps the read returning data, and the old
+            # max(1, ...) clamp made the <= 0 branch unreachable
+            # (codex MEDIUM vs 540dc76 — livelock under continuous
+            # unrelated traffic).
+            remaining_s = deadline - time.monotonic()
+            if remaining_s <= 0:
+                raise _timeout_error()
+            resp = _hid_read64(
+                self._dev, timeout_ms=max(1, int(remaining_s * 1000))
+            )
             if resp is None:
-                if ignored:
-                    ignored_text = ", ".join(f"0x{x:02X}" for x in ignored[:8])
-                    raise RuntimeError(
-                        "timed out waiting for diag memread response after ignoring "
-                        f"{len(ignored)} unrelated HID report(s): {ignored_text}"
-                    )
-                raise RuntimeError("timed out waiting for HID response")
+                raise _timeout_error()
             if len(resp) == 64 and resp[0] == CMD_DIAG_MEMREAD:
                 return resp
             first = resp[0] if resp else -1

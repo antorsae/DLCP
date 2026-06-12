@@ -267,6 +267,64 @@ def test_exchange_drains_stale_pending_responses_before_write(monkeypatch) -> No
     assert events[0].startswith("read"), "drain must happen before the write"
 
 
+def test_exchange_deadline_holds_under_continuous_unrelated_chatter(monkeypatch) -> None:
+    """A device chattering unrelated reports must not livelock _exchange:
+    the deadline is enforced against the wall clock even though every read
+    returns data (codex MEDIUM vs 540dc76 — the old max(1, ...) clamp made
+    the timeout branch unreachable).
+    """
+    reader = object.__new__(HidMemoryReader)
+    reader._timeout_ms = 30
+    reader._dev = object()
+    wrote = False
+
+    def fake_write(dev, payload) -> None:  # noqa: ANN001
+        nonlocal wrote
+        wrote = True
+
+    def fake_read(dev, timeout_ms=1000):  # noqa: ANN001
+        # pre-write drain sees an empty queue; post-write the device
+        # chatters unrelated reports forever
+        return bytes([0x05]) + bytes(63) if wrote else None
+
+    monkeypatch.setattr("dlcp_fw.flash.read_coeffs._hid_write64", fake_write)
+    monkeypatch.setattr("dlcp_fw.flash.read_coeffs._hid_read64", fake_read)
+
+    with pytest.raises(RuntimeError, match="unrelated HID report"):
+        HidMemoryReader._exchange(reader, bytes([CMD_DIAG_MEMREAD]) + bytes(63))
+
+
+def test_drain_pending_is_bounded(monkeypatch) -> None:
+    """_drain_pending must stop at its bound even against a queue that never
+    empties, and read_chunk must still converge afterwards via the normal
+    exchange/retry semantics.
+    """
+    reader = _bare_reader()
+    stale = [_good_resp(2, fill=0x11)] * 12   # more stale junk than the bound
+    pending: list[bytes] = list(stale)
+    writes: list[bytes] = []
+
+    def fake_write(dev, payload) -> None:  # noqa: ANN001
+        writes.append(payload)
+        pending.append(_good_resp(4, fill=0x22))
+
+    def fake_read(dev, timeout_ms=1000):  # noqa: ANN001
+        return pending.pop(0) if pending else None
+
+    monkeypatch.setattr("dlcp_fw.flash.read_coeffs._hid_write64", fake_write)
+    monkeypatch.setattr("dlcp_fw.flash.read_coeffs._hid_read64", fake_read)
+    monkeypatch.setattr("dlcp_fw.flash.read_coeffs.time.sleep", lambda s: None)
+
+    drained = HidMemoryReader._drain_pending(reader)
+    assert drained == 8, "drain must stop at its bound"
+
+    # 4 stale reports remain; the exchange path must still converge: the
+    # next read_chunk drains what it can, skips/errors through the rest,
+    # and the bounded retry lands on the real response.
+    payload = HidMemoryReader.read_chunk(reader, region=0, addr=0x5600, length=4)
+    assert payload == bytes([0x22] * 4)
+
+
 def test_pick_device_requires_path_when_multiple_match(monkeypatch) -> None:
     dev_a = HidDeviceInfo(
         vendor_id=0x04D8,

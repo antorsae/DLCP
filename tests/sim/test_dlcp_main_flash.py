@@ -762,3 +762,36 @@ def test_build_v32_release_deletes_source_lst_if_none_existed_before(
         "build when no `.lst` existed before — next symbol lookup would "
         "silently consume it as canonical"
     )
+
+
+def test_open_hid_configures_nonblocking_handle(monkeypatch) -> None:
+    """Every consumer of _open_hid reads via the polling _hid_read64
+    primitive (dev.read(64, 0) against a monotonic deadline), which only
+    returns control on a NONBLOCKING handle.  The 2026-06-12 live finalize
+    hang and the codex MEDIUM vs 540dc76 (cmd 0x03/0x06 legs) both trace to
+    a blocking handle parking dev.read forever on macOS hidapi.
+    """
+    import sys as _sys
+
+    from dlcp_fw.flash import dlcp_main_flash as mf
+
+    calls: list[bool] = []
+
+    class _FakeDev:
+        def open_path(self, path) -> None:  # noqa: ANN001
+            pass
+
+        def set_nonblocking(self, flag) -> None:  # noqa: ANN001
+            calls.append(bool(flag))
+
+    class _FakeHidModule:
+        @staticmethod
+        def device() -> "_FakeDev":
+            return _FakeDev()
+
+    monkeypatch.setattr(mf, "_OPEN_HID_OVERRIDE", None)
+    monkeypatch.setitem(_sys.modules, "hid", _FakeHidModule())
+    mf._open_hid(b"fake-path")
+    assert calls == [True], (
+        f"_open_hid must configure the handle nonblocking (got {calls})"
+    )

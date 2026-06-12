@@ -546,7 +546,13 @@ def _open_hid(path: bytes):
         ) from exc
     dev = hid.device()
     dev.open_path(path)
-    dev.set_nonblocking(False)
+    # NONBLOCKING is load-bearing: every consumer of this handle reads via
+    # the polling _hid_read64 primitive (dev.read(64, 0) against a monotonic
+    # deadline), which only returns control on a nonblocking handle.  On a
+    # blocking handle macOS hidapi parks dev.read forever when a report goes
+    # missing (2026-06-12 live finalize hang; codex MEDIUM vs 540dc76 — the
+    # cmd 0x03/0x06 legs shared the hazard with the diag-memread reader).
+    dev.set_nonblocking(True)
     return dev
 
 
