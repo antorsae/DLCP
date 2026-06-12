@@ -1517,7 +1517,17 @@ flow_cmd_dispatch_gated_19d0:
     movff       stock_09E_b0_phys, stock_09A_b0_phys
     bra         flow_cmd_dispatch_gated_19e6
 flow_cmd_dispatch_gated_19d6:
-    movf        stock_093_b0, W, BANKED
+    ; V3.4 SAFETY (2026-06-12 live ~1 s loud-audio burst): select the
+    ; per-route volume trim by the APPLIED route shadow 0x0AB, never the
+    ; in-flux request 0x093 — the Auto-Detect scan walks 0x093 through
+    ; candidate values (and the RC0 stored-route override rewrites it), so
+    ; a volume-dirty pass sampling it mid-flux applied ANOTHER input's
+    ; HFD trim to the master volume (observed +8.8 dB over set volume)
+    ; until a later pass corrected it.  0x0AB changes only at reconcile,
+    ; and the route apply re-dirties volume, so the trim converges with
+    ; the route the DSP is actually playing.
+    ; (tests/sim/test_v34_detect_cycle_volume_excursion.py)
+    movf        stock_0AB_b0, W, BANKED
     bz          flow_cmd_dispatch_gated_19be
     xorlw       0x05
     bz          flow_cmd_dispatch_gated_19c4
@@ -1525,6 +1535,12 @@ flow_cmd_dispatch_gated_19d6:
     bz          flow_cmd_dispatch_gated_19ca
     xorlw       0x01
     bz          flow_cmd_dispatch_gated_19d0
+    ; Routes 1..4 (SRC receivers) carry no digital trim: clear the trim
+    ; scratch explicitly.  0x09A PERSISTS across passes, so without this a
+    ; route-0/5/6/7 pass (e.g. the no-route state during a detect loss)
+    ; loads its table trim into 0x09A and the next receiver-route volume
+    ; write inherits it — the second half of the +8.8 dB excursion.
+    clrf        stock_09A_b0, BANKED
 flow_cmd_dispatch_gated_19e6:
     movf        stock_09A_b0, W, BANKED
     addwf       computed_volume_b0, W, BANKED
@@ -2568,7 +2584,7 @@ flow_main_core_service_1e88_20c2:
     clrf        stock_008_acc, ACCESS
     movlw       0x82
     movwf       stock_007_acc, ACCESS
-    movlw       0x85                            ; V3.4_RUNTIME_EEPROM_REV
+    movlw       0x87                            ; V3.4_RUNTIME_EEPROM_REV
     movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
@@ -9678,7 +9694,7 @@ cmd25_identity_query_handler:
     movwf       stock_006_acc, ACCESS
     movlw       0x08                        ; V3.4_IDENTITY_REV_HI
     movwf       stock_007_acc, ACCESS
-    movlw       0x05                        ; V3.4_IDENTITY_REV_LO
+    movlw       0x07                        ; V3.4_IDENTITY_REV_LO
     movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       stock_004_acc, ACCESS
@@ -10889,7 +10905,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0x85, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x04, 0x87, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
