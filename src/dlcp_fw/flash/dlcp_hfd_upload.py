@@ -236,25 +236,27 @@ def _exchange_upload_report(
     _hid_write64(dev, report)
     deadline = time.monotonic() + (max(1, timeout_ms) / 1000.0)
     ignored: list[int] = []
+
+    def _timeout_error() -> RuntimeError:
+        if ignored:
+            ignored_text = ", ".join(f"0x{x:02X}" for x in ignored[:8])
+            return RuntimeError(
+                "timed out waiting for upload ack after ignoring "
+                f"{len(ignored)} unrelated HID report(s): {ignored_text}"
+            )
+        return RuntimeError("timed out waiting for upload ack")
+
     while True:
-        remaining_ms = max(1, int((deadline - time.monotonic()) * 1000))
-        if remaining_ms <= 0:
-            if ignored:
-                ignored_text = ", ".join(f"0x{x:02X}" for x in ignored[:8])
-                raise RuntimeError(
-                    "timed out waiting for upload ack after ignoring "
-                    f"{len(ignored)} unrelated HID report(s): {ignored_text}"
-                )
-            raise RuntimeError("timed out waiting for upload ack")
-        resp = _hid_read64(dev, timeout_ms=remaining_ms)
+        # Enforce the deadline against the wall clock, not just via
+        # _hid_read64 returning None — the old max(1, ...) clamp made the
+        # timeout branch unreachable under continuous unrelated-report
+        # chatter (codex MEDIUM vs 9f197b4; same shape as read_coeffs).
+        remaining_s = deadline - time.monotonic()
+        if remaining_s <= 0:
+            raise _timeout_error()
+        resp = _hid_read64(dev, timeout_ms=max(1, int(remaining_s * 1000)))
         if resp is None:
-            if ignored:
-                ignored_text = ", ".join(f"0x{x:02X}" for x in ignored[:8])
-                raise RuntimeError(
-                    "timed out waiting for upload ack after ignoring "
-                    f"{len(ignored)} unrelated HID report(s): {ignored_text}"
-                )
-            raise RuntimeError("timed out waiting for upload ack")
+            raise _timeout_error()
         if _looks_like_upload_ack(resp, expected_cmd=cmd):
             return resp
         first = resp[0] if resp else -1

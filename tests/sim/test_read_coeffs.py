@@ -295,13 +295,14 @@ def test_exchange_deadline_holds_under_continuous_unrelated_chatter(monkeypatch)
 
 
 def test_drain_pending_is_bounded(monkeypatch) -> None:
-    """_drain_pending must stop at its bound even against a queue that never
-    empties, and read_chunk must still converge afterwards via the normal
-    exchange/retry semantics.
+    """_drain_pending must stop at its bound even against a deeper stale
+    queue (standalone pin), and — codex LOW vs 9f197b4 — read_chunk must
+    converge when _exchange's OWN pre-write drain hits the bound and a
+    leftover stale 0x43 report aliases the request: parse fails on the
+    length echo, the bounded retry re-drains and lands on the real reply.
     """
     reader = _bare_reader()
-    stale = [_good_resp(2, fill=0x11)] * 12   # more stale junk than the bound
-    pending: list[bytes] = list(stale)
+    pending: list[bytes] = [_good_resp(2, fill=0x11)] * 12
     writes: list[bytes] = []
 
     def fake_write(dev, payload) -> None:  # noqa: ANN001
@@ -315,14 +316,20 @@ def test_drain_pending_is_bounded(monkeypatch) -> None:
     monkeypatch.setattr("dlcp_fw.flash.read_coeffs._hid_read64", fake_read)
     monkeypatch.setattr("dlcp_fw.flash.read_coeffs.time.sleep", lambda s: None)
 
+    # standalone bound pin
     drained = HidMemoryReader._drain_pending(reader)
     assert drained == 8, "drain must stop at its bound"
+    assert len(pending) == 4
 
-    # 4 stale reports remain; the exchange path must still converge: the
-    # next read_chunk drains what it can, skips/errors through the rest,
-    # and the bounded retry lands on the real response.
+    # refill past the bound so _exchange's own drain (8) leaves one stale
+    # 0x43 report in front of the real response
+    pending[:] = [_good_resp(2, fill=0x11)] * 9
     payload = HidMemoryReader.read_chunk(reader, region=0, addr=0x5600, length=4)
     assert payload == bytes([0x22] * 4)
+    assert len(writes) == 2, (
+        "attempt 1 must consume the over-bound stale report (length-echo "
+        "parse failure) and attempt 2 must converge on the real response"
+    )
 
 
 def test_pick_device_requires_path_when_multiple_match(monkeypatch) -> None:
