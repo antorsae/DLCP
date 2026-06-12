@@ -1857,7 +1857,9 @@ def _wait_for_app(
     mode_text = ", ".join(last_modes) if last_modes else "<none>"
     raise RuntimeError(
         f"app did not reconnect within {timeout_s:.1f}s; last seen devices: {mode_text}; "
-        "if the device is up, complete the aborted finalize with --finalize-only"
+        "if the device is up, re-run the release flash to complete the "
+        "aborted preset/channel finalize (--finalize-only only re-verifies "
+        "the IR profile)"
     )
 
 
