@@ -511,9 +511,14 @@ def test_field1c_post_flash_wait_identifies_app_by_exclusion(
         main_flash, "enumerate_devices", lambda vid, pid: [flashed, other]
     )
     monkeypatch.setattr(main_flash, "_probe_path_is_app", lambda path: True)
+    # 2026-06-12 live LEFT flash: the device EEPROM keeps the legacy 3.3
+    # major/minor while the hex declares 3.4 -- only the REVISION byte is
+    # comparable.  The stub returns the mismatching-minor tuple to pin
+    # revision-only matching.
+    device_id = main_flash.EepromVersionInfo(major=3, minor=3, revision=0x83)
     target_id = main_flash.EepromVersionInfo(major=3, minor=4, revision=0x83)
     monkeypatch.setattr(
-        main_flash, "_probe_device_eeprom_version", lambda *, info, **k: target_id
+        main_flash, "_probe_device_eeprom_version", lambda *, info, **k: device_id
     )
     got = main_flash._wait_for_app(
         vid=0x04D8,
@@ -567,7 +572,7 @@ def test_field1c_exclusion_rejects_wrong_unit_by_identity(
         main_flash,
         "_probe_device_eeprom_version",
         lambda *, info, **k: main_flash.EepromVersionInfo(
-            major=3, minor=4, revision=0x81   # the OLD image
+            major=3, minor=3, revision=0x81   # the OLD image (legacy minor)
         ),
     )
     with pytest.raises(RuntimeError, match="did not reconnect"):

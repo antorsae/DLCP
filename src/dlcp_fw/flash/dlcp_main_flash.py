@@ -1319,6 +1319,7 @@ def _probe_device_eeprom_version(
     verify_reads: int = 2,
     retries: int = 3,
     delay_s: float = 0.01,
+    progress: bool = True,
 ) -> EepromVersionInfo:
     from dlcp_fw.flash.read_coeffs import HidMemoryReader, REGION_EEPROM
 
@@ -1330,6 +1331,7 @@ def _probe_device_eeprom_version(
             verify_reads=max(1, verify_reads),
             retries=max(1, retries),
             delay_s=max(0.0, delay_s),
+            progress=progress,
         )
     if len(raw) != 3:
         raise RuntimeError(f"short EEPROM version tuple read: got {len(raw)} bytes")
@@ -1644,10 +1646,26 @@ def _wait_for_app(
                 candidate = candidates[0]
                 if expected_eeprom_version is not None:
                     try:
-                        probed = _probe_device_eeprom_version(info=candidate)
+                        probed = _probe_device_eeprom_version(
+                            info=candidate,
+                            timeout_ms=300,
+                            verify_reads=1,
+                            retries=1,
+                            progress=False,
+                        )
                     except Exception:
                         probed = None
-                    if probed != expected_eeprom_version:
+                    # Compare the REVISION byte only: the release builders
+                    # bump it every build and the boot identity migration
+                    # writes it, so it discriminates flashed vs unflashed.
+                    # The device EEPROM keeps the legacy 3.3 major/minor
+                    # while the hex declares 3.4 (2026-06-12 live LEFT
+                    # flash: a full-tuple compare could never match and
+                    # burned the whole wait budget).
+                    if (
+                        probed is None
+                        or probed.revision != expected_eeprom_version.revision
+                    ):
                         candidate = None
                 if candidate is not None:
                     note = (

@@ -267,6 +267,7 @@ class HidMemoryReader:
         verify_reads: int,
         retries: int,
         delay_s: float,
+        progress: bool = True,
     ) -> bytes:
         out = bytearray()
         remaining = size
@@ -293,8 +294,10 @@ class HidMemoryReader:
             cursor += chunk
             remaining -= chunk
             done += chunk
-            print(f"\rread 0x{done:04X}/0x{size:04X}", end="", flush=True)
-        print()
+            if progress:
+                print(f"\rread 0x{done:04X}/0x{size:04X}", end="", flush=True)
+        if progress:
+            print()
         return bytes(out)
 
 
