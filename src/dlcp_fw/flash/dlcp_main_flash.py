@@ -1160,6 +1160,7 @@ def _apply_ir_profile_ep0(
 
 CMD1D_ECHO_ARM_ADDR = 0x094
 CMD1D_ECHO_ARM_MASK = 0x10
+RX_RING_WR_ADDR = 0x0C7
 
 
 def _sync_profile_to_chain_control(
@@ -1185,11 +1186,13 @@ def _sync_profile_to_chain_control(
     with the profile intact proves CONTROL has been re-educated.  Without
     a CONTROL on the chain the bit never clears; warn and succeed -- the
     MAIN-side state is correct and nothing will fight it."""
-    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
     _ep0_or_byte(ep0, addr=CMD1D_ECHO_ARM_ADDR, mask=CMD1D_ECHO_ARM_MASK)
-    deadline = time.time() + budget_s
-    next_progress = time.time() + 10.0
-    while time.time() < deadline:
+    rx_wr_start = _ep0_read_byte(ep0, addr=RX_RING_WR_ADDR)
+    deadline = time.monotonic() + budget_s
+    chain_alive_deadline = time.monotonic() + min(8.0, budget_s)
+    next_progress = time.monotonic() + 10.0
+    while time.monotonic() < deadline:
         time.sleep(poll_s)
         arm = _ep0_read_byte(ep0, addr=CMD1D_ECHO_ARM_ADDR)
         value = _ep0_read_byte(ep0, addr=SETUP_PROFILE_RAM)
@@ -1204,16 +1207,27 @@ def _sync_profile_to_chain_control(
                 "(cmd-0x1D echo round-trip complete)"
             )
             return
-        if time.time() >= next_progress:
+        if time.monotonic() >= chain_alive_deadline:
+            # No chain traffic at all (CONTROL polls arrive ~1/s, advancing
+            # the RX ring write index) => bench MAIN, nothing will fight the
+            # profile.  Bail early instead of sitting out the full budget.
+            if _ep0_read_byte(ep0, addr=RX_RING_WR_ADDR) == rx_wr_start:
+                print(
+                    "no chain traffic observed (bench MAIN without a "
+                    "CONTROL); profile is set and nothing will contest it"
+                )
+                return
+            chain_alive_deadline = time.monotonic() + budget_s  # checked once
+        if time.monotonic() >= next_progress:
             print(
                 "waiting for the chain CONTROL's next cmd-0x1D sync to "
                 "adopt the profile..."
             )
-            next_progress = time.time() + 10.0
+            next_progress = time.monotonic() + 10.0
     print(
-        "WARNING: no CONTROL cmd-0x1D sync observed within "
-        f"{budget_s:.0f}s; if a CONTROL is connected it may revert the "
-        "profile until its cache adopts the new value"
+        "WARNING: no CONTROL cmd-0x1D adoption observed within "
+        f"{budget_s:.0f}s; the CONTROL may revert the profile until its "
+        "cache adopts the new value"
     )
 
 

@@ -597,16 +597,16 @@ def test_field1c_exclusion_rejects_wrong_unit_by_identity(
 # ---------------------------------------------------------------------------
 
 
-def _sync_ep0_stub(monkeypatch, reads):
-    """Install DlcpEp0/_ep0 stubs; `reads` yields (arm_byte, profile_byte)."""
+def _sync_ep0_stub(monkeypatch, reads, *, rx_advances: bool = True):
+    """Install EP0 factory/_ep0 stubs; `reads` yields (arm_byte, profile_byte).
+    ``rx_advances`` models chain traffic (CONTROL polls advancing the RX
+    ring write index); False models a bench MAIN with no CONTROL."""
     seq = iter(reads)
-    state = {"current": None, "ors": []}
+    state = {"current": None, "ors": [], "rx": 0}
 
-    class _Ep0:
-        def __init__(self, **kwargs):
-            pass
-
-    monkeypatch.setattr(main_flash, "DlcpEp0", _Ep0)
+    monkeypatch.setattr(
+        main_flash, "_make_dlcp_ep0", lambda **kwargs: object()
+    )
     monkeypatch.setattr(
         main_flash,
         "_ep0_or_byte",
@@ -614,6 +614,10 @@ def _sync_ep0_stub(monkeypatch, reads):
     )
 
     def read_byte(ep0, *, addr):
+        if addr == main_flash.RX_RING_WR_ADDR:
+            if rx_advances:
+                state["rx"] = (state["rx"] + 1) & 0xFF
+            return state["rx"]
         if state["current"] is None:
             state["current"] = next(seq)
         arm, value = state["current"]
@@ -655,17 +659,22 @@ def test_field1d_profile_sync_detects_reversion(
         )
 
 
-def test_field1d_profile_sync_warns_without_control(
+def test_field1d_profile_sync_bails_early_on_bench_main(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """codex review of aceca1f (MEDIUM): a bench MAIN without a CONTROL must
+    not sit out the full budget -- no chain traffic (RX ring write index
+    static) means nothing will contest the profile; bail early."""
     import itertools
 
-    state = _sync_ep0_stub(
-        monkeypatch, itertools.repeat((0x10, 0x04))  # never consumed
+    times = itertools.count(start=0.0, step=3.0)
+    monkeypatch.setattr(main_flash.time, "monotonic", lambda: next(times))
+    _sync_ep0_stub(
+        monkeypatch, itertools.repeat((0x10, 0x04)), rx_advances=False
     )
     main_flash._sync_profile_to_chain_control(
         vid=0x04D8, pid=0xFF89, path=b"/dev/x", profile_value=0x04,
-        budget_s=0.05, poll_s=0.0,
+        budget_s=90.0, poll_s=0.0,
     )
     out = capsys.readouterr().out
-    assert "WARNING: no CONTROL cmd-0x1D sync observed" in out
+    assert "no chain traffic observed" in out
