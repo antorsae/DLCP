@@ -465,3 +465,71 @@ def test_ep0_read_exact_without_pointer_does_not_blind_retry(monkeypatch) -> Non
         "without a stored window start there is no safe re-seek; "
         "a blind re-read could return misaligned data"
     )
+
+
+def test_ep0_read_recovery_reseeks_current_window_not_stale_start(monkeypatch) -> None:
+    """Streaming callers seek ONCE then loop read_exact(); recovery must
+    re-seek the CURRENT window's start (advanced by prior successful reads),
+    not the original set_pointer address — re-reading window 1's bytes for
+    window 2 would be silent duplicate-data corruption (codex HIGH vs
+    75cae7a).
+    """
+    ep0 = _bare_ep0()
+    device_ptr = {"value": 0}
+    fail_once = {"armed": False}
+
+    class _Dev:
+        def ctrl_transfer(self, bm, breq, wval, widx, data_or_len):
+            if bm == 0x00:
+                if widx == shadow.idx_for_addr(0x75):
+                    device_ptr["value"] = (device_ptr["value"] & 0xFF00) | wval
+                elif widx == shadow.idx_for_addr(0x76):
+                    device_ptr["value"] = (device_ptr["value"] & 0x00FF) | (wval << 8)
+                return None
+            if fail_once["armed"]:
+                fail_once["armed"] = False
+                raise _FakeUSBError("[Errno 5] Input/Output Error")
+            start = device_ptr["value"]
+            data = bytes((start + i) & 0xFF for i in range(data_or_len))
+            device_ptr["value"] = start + data_or_len
+            return data
+
+    ep0.dev = _Dev()
+    ep0._reopen = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(shadow.time, "sleep", lambda s: None)
+
+    shadow.DlcpEp0.set_pointer(ep0, 0x0100)
+    first = shadow.DlcpEp0.read_exact(ep0, 4)
+    assert first == bytes([0x00, 0x01, 0x02, 0x03])
+
+    fail_once["armed"] = True
+    second = shadow.DlcpEp0.read_exact(ep0, 4)
+    assert second == bytes([0x04, 0x05, 0x06, 0x07]), (
+        "recovery must resume at the CURRENT stream position; duplicated "
+        f"window-1 bytes would be silent corruption (got {second.hex()})"
+    )
+
+
+def test_ep0_reopen_failure_keeps_transport_classification(monkeypatch) -> None:
+    """If the recovery reopen itself fails (device mid-re-enumeration:
+    _resolve_usb_device raises plain RuntimeError), the surfaced error must
+    STAY an Ep0TransferError so the finalize fallback still degrades to the
+    HID verification (codex MEDIUM vs 75cae7a), with the reopen failure
+    chained for visibility.
+    """
+    ep0 = _bare_ep0()
+
+    class _Dev:
+        def ctrl_transfer(self, bm, breq, wval, widx, data_or_len):
+            raise _FakeUSBError("[Errno 5] Input/Output Error")
+
+    ep0.dev = _Dev()
+
+    def _reopen_fails() -> None:
+        raise RuntimeError("DLCP not found (VID:PID = 04D8:FF89)")
+
+    ep0._reopen = _reopen_fails  # type: ignore[method-assign]
+    monkeypatch.setattr(shadow.time, "sleep", lambda s: None)
+
+    with pytest.raises(shadow.Ep0TransferError, match="reopen"):
+        shadow.DlcpEp0._poke(ep0, 0x75, 0x12, in_dir=False)

@@ -74,6 +74,10 @@ _EP0_GUIDANCE = (
 
 
 class DlcpEp0:
+    # Class-level default so bare instances (tests construct via __new__)
+    # behave like "no recorded window start" until set_pointer runs.
+    _pointer: int | None = None
+
     def __init__(
         self,
         vid: int,
@@ -158,12 +162,27 @@ class DlcpEp0:
                     break
                 time.sleep(EP0_RETRY_DELAY_S)
                 if attempt == EP0_CTRL_ATTEMPTS - 2:
-                    self._reopen()
+                    self._reopen_keeping_classification(last_exc)
         assert last_exc is not None
         raise Ep0TransferError(
             f"USB control transfer failed after {EP0_CTRL_ATTEMPTS} attempts "
             f"(addr 0x{addr:02X}): {last_exc}\n{_EP0_GUIDANCE}"
         ) from last_exc
+
+    def _reopen_keeping_classification(self, transport_exc: Exception) -> None:
+        """Run the recovery reopen; if the reopen ITSELF fails (e.g. the
+        device is mid-re-enumeration and _resolve_usb_device raises a plain
+        RuntimeError), surface it AS an Ep0TransferError so callers'
+        transport-degradation paths still engage, with the original
+        transport error chained for the full story.
+        """
+        try:
+            self._reopen()
+        except Exception as exc:
+            raise Ep0TransferError(
+                f"EP0 recovery reopen failed: {exc} "
+                f"(after transport error: {transport_exc})\n{_EP0_GUIDANCE}"
+            ) from transport_exc
 
     def set_pointer(self, addr16: int) -> None:
         lo = addr16 & 0xFF
@@ -190,13 +209,22 @@ class DlcpEp0:
     def read_exact(self, n: int) -> bytes:
         if n <= 0:
             return b""
+        # Streaming callers seek once then loop read_exact(), so the safe
+        # restart address is THIS call's start position — the tracked pointer
+        # as advanced by prior successful reads — never the original
+        # set_pointer address (re-reading an earlier window would be silent
+        # duplicate-data corruption; codex HIGH vs 75cae7a).
+        start = self._pointer
         last_exc: Ep0TransferError | None = None
         for attempt in range(EP0_CTRL_ATTEMPTS):
             try:
-                return self._read_exact_once(n)
+                data = self._read_exact_once(n)
+                if start is not None:
+                    self._pointer = (start + n) & 0xFFFF
+                return data
             except Ep0TransferError as exc:
                 last_exc = exc
-                if self._pointer is None:
+                if start is None:
                     # no recorded window start -> no safe re-seek; a blind
                     # re-read could return misaligned data
                     raise
@@ -204,8 +232,8 @@ class DlcpEp0:
                     break
                 time.sleep(EP0_RETRY_DELAY_S)
                 if attempt == EP0_CTRL_ATTEMPTS - 2:
-                    self._reopen()
-                self.set_pointer(self._pointer)
+                    self._reopen_keeping_classification(last_exc)
+                self.set_pointer(start)
         assert last_exc is not None
         raise Ep0TransferError(
             f"EP0 window read failed after {EP0_CTRL_ATTEMPTS} attempts: {last_exc}"
