@@ -534,6 +534,7 @@ Top-level docs:
 - `docs/V31_SIZE_OPTIMIZATION_PROGRESS.md` (V3.1 size campaign ledger — **frozen 2026-04-21**)
 - `docs/V32_SIZE_OPTIMIZATION_SPEC_and_IMPL.md` (V3.2 MAIN size-reduction campaign — **active successor**)
 - `docs/V32_SIZE_OPTIMIZATION_PROGRESS.md` (V3.2 size campaign ledger — **active**)
+- `docs/V34_SIZE_OPTIMIZATION_FINDINGS.md` (V3.4 size-reclaim session-0 scouting: verified-exhausted mechanical classes, the chain_copy compressor postmortem + binding lessons, and the campaign backlog toward 200+ B free)
 - `docs/V32_MAIN_HANG_HARDENING_PLAN.md` (V3.2 MAIN hang-prevention and fail-safe hardening roadmap for two-MAIN chains)
 - `docs/V16B_SOURCE_REWRITE_SPEC.md` (V1.71 CONTROL feature-bearing source rewrite specification)
 - `docs/IMPL_V16B_SOURCE_REWRITE_SPEC.md` (V1.7 CONTROL byte-identical source rebuild — polished implementation, parent of V1.71)
