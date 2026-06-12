@@ -1536,10 +1536,13 @@ flow_cmd_dispatch_gated_19d6:
     xorlw       0x01
     bz          flow_cmd_dispatch_gated_19d0
     ; Routes 1..4 (SRC receivers) carry no digital trim: clear the trim
-    ; scratch explicitly.  0x09A PERSISTS across passes, so without this a
-    ; route-0/5/6/7 pass (e.g. the no-route state during a detect loss)
-    ; loads its table trim into 0x09A and the next receiver-route volume
-    ; write inherits it — the second half of the +8.8 dB excursion.
+    ; scratch explicitly rather than relying on ambient 0x09A state.
+    ; Empirically load-bearing: the deterministic detect-cycle excursion
+    ; (tests/sim/test_v34_detect_cycle_volume_excursion.py) still fired
+    ; with the 0x0AB dispatch alone and went green only with this clear —
+    ; a trim loaded by an 0x0AB==0/5/6/7 pass otherwise reaches a later
+    ; receiver-route volume write through a path the static single-entry
+    ; reading (ladder entry pre-clears 0x09A) does not capture.
     clrf        stock_09A_b0, BANKED
 flow_cmd_dispatch_gated_19e6:
     movf        stock_09A_b0, W, BANKED
@@ -2584,7 +2587,7 @@ flow_main_core_service_1e88_20c2:
     clrf        stock_008_acc, ACCESS
     movlw       0x82
     movwf       stock_007_acc, ACCESS
-    movlw       0x87                            ; V3.4_RUNTIME_EEPROM_REV
+    movlw       0x88                            ; V3.4_RUNTIME_EEPROM_REV
     movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
@@ -3531,11 +3534,18 @@ flow_main_i2c_service_27f0_ad_wait:
     bra         flow_main_i2c_service_27f0_290a
     movf        stock_0AB_b0, W, BANKED
     bz          flow_main_i2c_service_27f0_ad_scan_miss
+    ; V3.4 rev 0x88 hardening: 0x13.RXCKR is a recovered-clock rate
+    ; CLASSIFIER that reads 0 transiently (re-measure windows, jitter,
+    ; rate boundaries, source-side re-clocking) while audio passes.  The
+    ; stock-lineage 2-consecutive-miss confirm tore the route down on
+    ; sub-second status bursts (live 2026-06-12: L+5 in 20 min on a
+    ; continuous -60 dB source).  Require 6 consecutive misses (~2-3 s);
+    ; the held route stays applied through the confirmation window.
     movlb       0x02
-    tstfsz      src4382_loss_debounce_b2, BANKED
+    incf        src4382_loss_debounce_b2, F, BANKED
+    movlw       0x06
+    cpfslt      src4382_loss_debounce_b2, BANKED
     bra         flow_main_i2c_service_27f0_ad_loss_confirmed
-    movlw       0x01
-    movwf       src4382_loss_debounce_b2, BANKED
     movlb       0x0
     movff       stock_0AB_b0_phys, stock_093_b0_phys
     bra         flow_main_i2c_service_27f0_ad_monitor
@@ -9694,7 +9704,7 @@ cmd25_identity_query_handler:
     movwf       stock_006_acc, ACCESS
     movlw       0x08                        ; V3.4_IDENTITY_REV_HI
     movwf       stock_007_acc, ACCESS
-    movlw       0x07                        ; V3.4_IDENTITY_REV_LO
+    movlw       0x08                        ; V3.4_IDENTITY_REV_LO
     movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       stock_004_acc, ACCESS
@@ -10905,7 +10915,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0x87, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x04, 0x88, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

@@ -72,7 +72,10 @@ def test_detect_cycles_never_write_louder_master_volume(cycled_chain) -> None:
     offenders: list[tuple[int, str]] = []
     for cycle in range(DETECT_CYCLES):
         chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x00)
-        chain.step_ticks(2 * ONE_S)
+        # rev 0x88 widened the loss debounce to 6 consecutive samples; keep
+        # the loss phase long enough that every cycle still CONFIRMS and
+        # exercises the route-flux window this test guards
+        chain.step_ticks(5 * ONE_S)
         chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x01)
         chain.step_ticks(2 * ONE_S)
         for w in _master_volume_writes(chain):

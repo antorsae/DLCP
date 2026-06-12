@@ -39,7 +39,10 @@ TAS_REG_VOLUME_COEFF = 0x30
 
 BOOT_TCY = 16_000_000
 COMMAND_SETTLE_TICKS = 12_000_000
-INPUT_REFRESH_SETTLE_TICKS = 24_000_000
+# rev 0x88: input-refresh triggers that resolve through the Auto-Detect
+# LOSS path (no-source boots) now take ~6 monitor samples (~3 s) to
+# confirm -- the widened loss debounce; settle past it
+INPUT_REFRESH_SETTLE_TICKS = 240_000_000
 STANDBY_SETTLE_TICKS = 10_000_000
 ONE_SECOND_TICKS = 4_000_000
 
