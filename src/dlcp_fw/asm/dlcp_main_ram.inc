@@ -41,6 +41,21 @@ fname_tx_gap_hi             EQU  0x2FD
 chain_tx_emitted            EQU  0x2FE   ; pass-local chain arbitration flag
 fn_job_tmp                  EQU  0x2FF   ; local filename job scratch
 
+; --- V3.4 SRC/DSP forensic diag counters (BANK 3 upper, wipe-protected) ---
+; Physical 0x3C0..0x3C4 — first allocation in the BANK 3 upper region
+; (0x3C0..0x3FF, wipe-protected; see "RAM safety" below).  Cleared only by
+; the V3.4 cold-init forensic clear loop next to the BANK 2 diag clear.
+; All access is FSR0/INDF0 (diag_inc_sat_fsr0) or movff — never BANKED — so
+; no site depends on BSR=3 and the cells stay invisible to bank-safety
+; BANKED auditing by construction.
+; Visibility: extended USB HID cmd 0x44 payload only (length byte 0x10).
+; Chain burst / CONTROL LCD surfacing is deferred to the V1.74 stage.
+diag_src_n                  EQU  0x3C0   ; N — non-PCM mute episodes (active_flags.4 0->1 edges via SRC monitor)
+diag_src_l                  EQU  0x3C1   ; L — Auto-Detect loss-debounce confirmed source losses
+diag_src_c                  EQU  0x3C2   ; C — SRC route changes applied (route request != shadow)
+diag_src_t                  EQU  0x3C3   ; T — preset table walks (cold/wake/reconnect apply + async job COMMIT)
+diag_src_m                  EQU  0x3C4   ; M — DSP mute writes (clrf_i2c_coeff_0123_and_write entries)
+
 ; --- Unnamed RAM variables ---
 ram_0x000                   EQU  0x000
 ram_0x003                   EQU  0x003
@@ -1925,6 +1940,21 @@ fn_job_tmp_b2_phys               EQU  0x2FF    ; physical address for movff/lfsr
 stock_300_b3                     EQU  0x300    ; phys 0x300, bank 3, owner stock-derived
 stock_300_b3_op                  EQU  0x00     ; 8-bit f operand for stock_300_b3
 stock_300_b3_phys                EQU  0x300    ; physical address for movff/lfsr
+diag_src_n_b3                    EQU  0x3C0    ; phys 0x3C0, bank 3, owner diag_src_n
+diag_src_n_b3_op                 EQU  0xC0     ; 8-bit f operand for diag_src_n_b3
+diag_src_n_b3_phys               EQU  0x3C0    ; physical address for movff/lfsr
+diag_src_l_b3                    EQU  0x3C1    ; phys 0x3C1, bank 3, owner diag_src_l
+diag_src_l_b3_op                 EQU  0xC1     ; 8-bit f operand for diag_src_l_b3
+diag_src_l_b3_phys               EQU  0x3C1    ; physical address for movff/lfsr
+diag_src_c_b3                    EQU  0x3C2    ; phys 0x3C2, bank 3, owner diag_src_c
+diag_src_c_b3_op                 EQU  0xC2     ; 8-bit f operand for diag_src_c_b3
+diag_src_c_b3_phys               EQU  0x3C2    ; physical address for movff/lfsr
+diag_src_t_b3                    EQU  0x3C3    ; phys 0x3C3, bank 3, owner diag_src_t
+diag_src_t_b3_op                 EQU  0xC3     ; 8-bit f operand for diag_src_t_b3
+diag_src_t_b3_phys               EQU  0x3C3    ; physical address for movff/lfsr
+diag_src_m_b3                    EQU  0x3C4    ; phys 0x3C4, bank 3, owner diag_src_m
+diag_src_m_b3_op                 EQU  0xC4     ; 8-bit f operand for diag_src_m_b3
+diag_src_m_b3_phys               EQU  0x3C4    ; physical address for movff/lfsr
 stock_400_b4                     EQU  0x400    ; phys 0x400, bank 4, owner stock-derived
 stock_400_b4_op                  EQU  0x00     ; 8-bit f operand for stock_400_b4
 stock_400_b4_phys                EQU  0x400    ; physical address for movff/lfsr

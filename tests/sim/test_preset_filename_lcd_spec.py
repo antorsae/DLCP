@@ -2320,7 +2320,10 @@ def test_v34_v173_refactoring_layout_labels_are_pinned() -> None:
     assert _lst_symbol_address(V34_MAIN_LST, "preset_table_b") == 0x4C00
     assert _lst_symbol_address(V173_CONTROL_LST, "control_release_metadata") == 0x77B0
     assert _lst_symbol_address(V173_CONTROL_LST, "bootloader_entry") == 0x7800
-    _assert_listing_fits_before(V34_MAIN_LST, 0x4C00, min_margin=64)
+    # MAIN floor matches the canonical headroom gate in
+    # test_v34_v173_refactoring_contracts.py (ratcheted 96 -> 24 on
+    # 2026-06-12 for the SRC/DSP forensic counters; see the rationale there).
+    _assert_listing_fits_before(V34_MAIN_LST, 0x4C00, min_margin=24)
     _assert_listing_fits_before(V173_CONTROL_LST, 0x77B0, min_margin=64)
 
 

@@ -420,6 +420,7 @@ V3.4/V1.73 recommended refactoring release:
 - `test_v34_field_bugs_20260610.py` (2026-06-10 field incident: flasher string-less-device identity-probe wait, event-driven reconnect ceilings, --finalize-only recovery, info-only profile-mismatch warning, serial cmd-0x1D profile-corruption pin, the now-green FIELD-3/FIELD-4A/FIELD-4B firmware regressions, and the task-#8 gap-watchdog mid-frame loss regression)
 - `test_v17x_isr_scratch_collision.py` (blocking in-ISR RC5 decode vs foreground scratch -- FIXED: ISR save/restore of the shared set + retired health-patch GIE mask; baseline decode pin, decode-survives-foreground-delay contract, count-survival behavioral check, structural wrap pin)
 - `test_sim_reset_clock_monotonic.py` (rust facade: `apply_reset_all` keeps the universal clock and the TAS write-log observation artifacts monotonic across mid-run resets)
+- `test_v34_diag_src_counters.py` (V3.4 SRC/DSP forensic counters N/L/C/T/M at BANK 3 upper 0x3C0..0x3C4: non-PCM mute episodes, Auto-Detect loss confirmations, applied route changes, preset table walks, DSP mute writes; extended cmd 0x44 16-cell payload + dlcp_diag.py `SRC/DSP:` line with legacy 11-cell compatibility; added 2026-06-12 for the live spontaneous-filter-change incident)
 - `test_ram_bank_safety.py` covers old+new RAM-safety targets: `main-v33`, `control-v172`, `main-v34`, and `control-v173`.
 
 Version labels:
@@ -427,7 +428,7 @@ Version labels:
 
 Recent verification (latest 2026-06-08):
 
-- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v34_release.py` -> canonical `DLCP_Firmware_V3.4.hex` rebuilt; current canonical release identity is `V3.4 / rev 0x7D`
+- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v34_release.py` (2026-06-12) -> canonical `DLCP_Firmware_V3.4.hex` rebuilt with the SRC/DSP forensic counters; current canonical release identity is `V3.4 / rev 0x85`; MAIN listing margin before `0x4C00` is now 30 bytes (headroom gate floor ratcheted 96 -> 24 in `test_v34_v173_refactoring_contracts.py`; size-reclaim pass required before further MAIN features)
 - `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v173_release.py --build-date 20260608` -> canonical `DLCP_Control_V1.73.hex` rebuilt; current canonical release identity is `V1.73 / rev 0x40 / build 20260608`
 - V3.4/V1.73 listing headroom after the V3.4 lifecycle range-clear shrink: MAIN `listing_end=0x4B70`, `byte_margin=144`, `free_object_words=72` before `0x4C00`; CONTROL `listing_end=0x2D08`, `byte_margin=19112`, `free_object_words=9556` before `0x77B0`.
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v34_v173_release_builders.py tests/sim/test_dlcp_v34_release_flash.py tests/sim/test_ram_bank_safety.py tests/sim/test_dlcp_control_flash_safety.py::test_detect_static_hex_control_release_info_v173 tests/sim/test_dlcp_control_flash_safety.py::test_preflight_reports_v173_target_release tests/sim/test_dlcp_control_flash_safety.py::test_safe_control_wrapper_defaults_to_v173_release tests/sim/test_firmware_version_label.py::test_v34_usb_and_eeprom_version_match_release_identity tests/sim/test_v34_v173_refactoring_contracts.py tests/sim/test_v34_v173_i2c_recovery_contract.py` -> `44 passed in 1.04s`

@@ -477,10 +477,18 @@ directly.
 |---|---|---|
 | 0 | 0x44 | cmd echo |
 | 1 | status | 0x00 = OK, 0x01 = busy/error |
-| 2 | 0x0B | payload length (11 bytes — diag block only) |
+| 2 | 0x0B / 0x10 | payload length (0x0B = legacy 11 cells; 0x10 = 16 cells with the V3.4 SRC/DSP forensic extension) |
 | 3..9 | 7 bytes | runtime counters: I, D, S, B, R, A, P (0..0x0F) |
 | 10..13 | 4 bytes | reset-cause flags: O, V, W, X (each 0 or 1) |
-| 14..63 | undefined | observational only — firmware does NOT pad-fill, host MUST stop at byte 13 (length byte at [2] = 0x0B is authoritative) |
+| 14..18 | 5 bytes | V3.4 extension only (length 0x10): SRC/DSP forensic counters N, L, C, T, M (0..0x0F) — non-PCM mute episodes, Auto-Detect losses confirmed, route changes applied, preset table walks, DSP mute writes (cells `diag_src_n..diag_src_m`, BANK 3 upper 0x3C0..0x3C4) |
+| 19..63 | undefined | observational only — firmware does NOT pad-fill, host MUST stop at the offset implied by the length byte at [2] |
+
+The V3.4 SRC/DSP cells are appended AFTER the reset flags so legacy
+offsets stay stable; hosts written against the 11-cell layout keep
+working by honoring the length byte.  The extension cells are NOT part
+of the chain cmd 0x21/0x22 reply bursts (CONTROL LCD surfacing is a
+deferred V1.74 stage); they were added 2026-06-12 to diagnose the live
+spontaneous-filter-change incident (`tests/sim/test_v34_diag_src_counters.py`).
 
 Firmware revision metadata is NOT included in cmd 0x44 (round-5
 flash-budget tightening).  Hosts that need the rev number MUST

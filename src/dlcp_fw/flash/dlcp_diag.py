@@ -12,6 +12,12 @@ revision trailer was dropped to fit the PIC18F2455 flash budget.
 Hosts that need the rev tuple call the existing cmd 0x06 version
 probe separately (this module bundles both into :func:`query_diag`).
 
+V3.4 SRC/DSP forensic extension: newer MAINs reply with a 16-byte
+payload (length byte 0x10) appending five N/L/C/T/M counters (non-PCM
+mute episodes, Auto-Detect losses, route changes, preset table walks,
+DSP mute writes) after the reset flags.  This module accepts both
+layouts; legacy payloads parse with ``src_counters = None``.
+
 Status classification (see V32_DIAG_TIER1_SPEC.md §"Status
 classification") is advisory; raw counters in the snapshot are
 authoritative.
@@ -41,14 +47,18 @@ from dlcp_fw.flash.dlcp_main_flash import (
 
 
 CMD44_DIAG_SUBCMD = 0x00            # request subcmd byte (reserved future)
-CMD44_EXPECTED_LENGTH_BYTE = 0x0B   # response[2] -- 11 cells
-CMD44_PAYLOAD_OFFSET = 3            # response[3..13] holds the 11 cells
+CMD44_EXPECTED_LENGTH_BYTE = 0x0B   # response[2] -- legacy 11 cells
+CMD44_LENGTH_BYTE_V34 = 0x10        # response[2] -- 16 cells (V3.4 SRC/DSP ext)
+CMD44_PAYLOAD_OFFSET = 3            # response[3..] holds the cells
 CMD44_RUNTIME_COUNT = 7             # I D S B R A P
 CMD44_RESET_COUNT = 4               # O V W X
-CMD44_TOTAL_CELLS = CMD44_RUNTIME_COUNT + CMD44_RESET_COUNT  # 11
+CMD44_SRC_COUNT = 5                 # N L C T M (V3.4 extension)
+CMD44_TOTAL_CELLS = CMD44_RUNTIME_COUNT + CMD44_RESET_COUNT  # legacy 11
+CMD44_TOTAL_CELLS_V34 = CMD44_TOTAL_CELLS + CMD44_SRC_COUNT  # 16
 
 RUNTIME_LETTERS = ("I", "D", "S", "B", "R", "A", "P")
 RESET_LETTERS = ("O", "V", "W", "X")
+SRC_LETTERS = ("N", "L", "C", "T", "M")
 RESET_LABELS = {
     "O": "POR -- power-on",
     "V": "BOR -- brown-out",
@@ -84,6 +94,29 @@ class DiagSnapshot:
     diag_reset_bor: int
     diag_reset_wdt: int
     diag_reset_sw: int
+    # 5 V3.4 SRC/DSP forensic counters (N L C T M, each 0..0x0F).
+    # None on legacy 11-cell payloads (pre-SRC-extension firmware).
+    diag_src_n: Optional[int] = None
+    diag_src_l: Optional[int] = None
+    diag_src_c: Optional[int] = None
+    diag_src_t: Optional[int] = None
+    diag_src_m: Optional[int] = None
+
+    @property
+    def src_counters(self) -> Optional[Tuple[int, ...]]:
+        """The (N, L, C, T, M) tuple, or None when the firmware replied
+        with the legacy 11-cell payload (no SRC/DSP extension).
+        """
+        values = (
+            self.diag_src_n,
+            self.diag_src_l,
+            self.diag_src_c,
+            self.diag_src_t,
+            self.diag_src_m,
+        )
+        if any(v is None for v in values):
+            return None
+        return values  # type: ignore[return-value]
 
     @property
     def runtime_counters(self) -> Tuple[int, ...]:
@@ -151,16 +184,22 @@ def parse_cmd44_diag_response(resp: bytes) -> DiagSnapshot:
     if status != 0x00:
         raise RuntimeError(f"cmd 0x44 status byte non-zero: 0x{status:02X}")
     length_byte = resp[base + 2]
-    if length_byte != CMD44_EXPECTED_LENGTH_BYTE:
+    if length_byte not in (CMD44_EXPECTED_LENGTH_BYTE, CMD44_LENGTH_BYTE_V34):
         raise RuntimeError(
             f"cmd 0x44 length byte mismatch: got 0x{length_byte:02X}, "
-            f"expected 0x{CMD44_EXPECTED_LENGTH_BYTE:02X} -- the firmware "
-            f"may be a pre-rev-0x37 build that doesn't implement cmd 0x44 "
-            f"per V32_DIAG_TIER1_SPEC.md"
+            f"expected 0x{CMD44_EXPECTED_LENGTH_BYTE:02X} (legacy) or "
+            f"0x{CMD44_LENGTH_BYTE_V34:02X} (V3.4 SRC/DSP extension) -- the "
+            f"firmware may be a pre-rev-0x37 build that doesn't implement "
+            f"cmd 0x44 per V32_DIAG_TIER1_SPEC.md"
         )
+    total_cells = (
+        CMD44_TOTAL_CELLS_V34
+        if length_byte == CMD44_LENGTH_BYTE_V34
+        else CMD44_TOTAL_CELLS
+    )
     payload_start = base + CMD44_PAYLOAD_OFFSET
-    cells = resp[payload_start : payload_start + CMD44_TOTAL_CELLS]
-    if len(cells) < CMD44_TOTAL_CELLS:
+    cells = resp[payload_start : payload_start + total_cells]
+    if len(cells) < total_cells:
         raise RuntimeError(f"cmd 0x44 payload truncated: {len(cells)} cells")
     # Range checks per spec contract (codex LOW fix vs dc9647a).
     for letter, value in zip(RUNTIME_LETTERS, cells[:CMD44_RUNTIME_COUNT]):
@@ -171,13 +210,27 @@ def parse_cmd44_diag_response(resp: bytes) -> DiagSnapshot:
                 f"(diag_inc_sat saturates at 0x0F; values above suggest a "
                 f"misframed response or a corrupted MAIN diag block)"
             )
-    for letter, value in zip(RESET_LETTERS, cells[CMD44_RUNTIME_COUNT:]):
+    for letter, value in zip(
+        RESET_LETTERS,
+        cells[CMD44_RUNTIME_COUNT : CMD44_RUNTIME_COUNT + CMD44_RESET_COUNT],
+    ):
         if value not in (0, 1):
             raise RuntimeError(
                 f"cmd 0x44 reset-cause flag '{letter}' out of range: "
                 f"got 0x{value:02X}, expected 0 or 1 (cold-init writes "
                 f"exactly one flag per session per V32_DIAG_TIER1_SPEC)"
             )
+    src_cells: Tuple[Optional[int], ...] = (None,) * CMD44_SRC_COUNT
+    if total_cells == CMD44_TOTAL_CELLS_V34:
+        raw_src = cells[CMD44_TOTAL_CELLS:]
+        for letter, value in zip(SRC_LETTERS, raw_src):
+            if not 0 <= value <= SATURATED_VALUE:
+                raise RuntimeError(
+                    f"cmd 0x44 SRC/DSP counter '{letter}' out of range: "
+                    f"got 0x{value:02X}, expected 0..0x{SATURATED_VALUE:02X} "
+                    f"(diag_inc_sat saturates the V3.4 forensic cells too)"
+                )
+        src_cells = tuple(raw_src)
     return DiagSnapshot(
         diag_i=cells[0],
         diag_d=cells[1],
@@ -190,6 +243,11 @@ def parse_cmd44_diag_response(resp: bytes) -> DiagSnapshot:
         diag_reset_bor=cells[8],
         diag_reset_wdt=cells[9],
         diag_reset_sw=cells[10],
+        diag_src_n=src_cells[0],
+        diag_src_l=src_cells[1],
+        diag_src_c=src_cells[2],
+        diag_src_t=src_cells[3],
+        diag_src_m=src_cells[4],
     )
 
 
@@ -585,6 +643,15 @@ def _format_runtime_line(snapshot: DiagSnapshot) -> str:
     return "Runtime:   " + " ".join(parts)
 
 
+def _format_src_line(snapshot: DiagSnapshot) -> Optional[str]:
+    """The V3.4 SRC/DSP forensic counter line, or None on legacy payloads."""
+    src = snapshot.src_counters
+    if src is None:
+        return None
+    parts = [f"{letter}{value}" for letter, value in zip(SRC_LETTERS, src)]
+    return "SRC/DSP:   " + " ".join(parts)
+
+
 def _format_reset_line(snapshot: DiagSnapshot) -> str:
     parts = [f"{letter}{value}" for letter, value in zip(RESET_LETTERS, snapshot.reset_flags)]
     active = snapshot.active_reset_cause
@@ -690,6 +757,9 @@ def _format_human_report(
         if report.active_config_name:
             lines.append(f"  Config:    {report.active_config_name!r}")
         lines.append("  " + _format_runtime_line(report.snapshot))
+        src_line = _format_src_line(report.snapshot)
+        if src_line is not None:
+            lines.append("  " + src_line)
         lines.append("  " + _format_reset_line(report.snapshot))
         lines.append("  " + _format_status_line(report))
         lines.append("")
@@ -771,6 +841,17 @@ def _format_json_report(
                     "a": snap.diag_a,
                     "p": snap.diag_p,
                 },
+                "src_counters": (
+                    {
+                        "n": snap.diag_src_n,
+                        "l": snap.diag_src_l,
+                        "c": snap.diag_src_c,
+                        "t": snap.diag_src_t,
+                        "m": snap.diag_src_m,
+                    }
+                    if snap.src_counters is not None
+                    else None
+                ),
                 "reset_cause": {
                     "por": snap.diag_reset_por,
                     "bor": snap.diag_reset_bor,

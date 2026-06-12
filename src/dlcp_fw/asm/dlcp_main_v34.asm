@@ -2568,7 +2568,7 @@ flow_main_core_service_1e88_20c2:
     clrf        stock_008_acc, ACCESS
     movlw       0x82
     movwf       stock_007_acc, ACCESS
-    movlw       0x83                            ; V3.4_RUNTIME_EEPROM_REV
+    movlw       0x85                            ; V3.4_RUNTIME_EEPROM_REV
     movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
@@ -3525,6 +3525,9 @@ flow_main_i2c_service_27f0_ad_wait:
     bra         flow_main_i2c_service_27f0_ad_monitor
 flow_main_i2c_service_27f0_ad_loss_confirmed:
     clrf        src4382_loss_debounce_b2, BANKED
+    ; V3.4 forensic L: one count per debounce-confirmed Auto-Detect loss.
+    movlw       0x01                        ; index 1 = L
+    call        diag_src_inc_w, 0x0
     movlb       0x0
 flow_main_i2c_service_27f0_ad_scan_miss:
     clrf        stock_093_b0, BANKED
@@ -3584,6 +3587,14 @@ flow_main_i2c_service_27f0_292e:
     bcf         active_flags_acc, 4, ACCESS
     bra         flow_main_i2c_service_27f0_mute_status
 flow_main_i2c_service_27f0_nonpcm_mute:
+    ; V3.4 forensic N: count mute EPISODES (active_flags.4 0->1 edges), not
+    ; monitor passes — the monitor re-runs this branch every poll while
+    ; reg 0x12 stays non-PCM.
+    btfsc       active_flags_acc, 4, ACCESS
+    bra         flow_main_i2c_service_27f0_nonpcm_set
+    movlw       0x00                        ; index 0 = N
+    call        diag_src_inc_w, 0x0
+flow_main_i2c_service_27f0_nonpcm_set:
     bsf         active_flags_acc, 4, ACCESS
 flow_main_i2c_service_27f0_mute_status:
     movlw       0x01
@@ -3617,8 +3628,12 @@ flow_main_i2c_service_27f0_295c:
 flow_main_i2c_service_27f0_296c:
     movf        stock_0AB_b0, W, BANKED
     xorwf       stock_093_b0, W, BANKED
-    btfss       STATUS, 2, ACCESS
+    bz          flow_main_i2c_service_27f0_route_same
     bsf         event_flags_b0, 1, BANKED
+    ; V3.4 forensic C: each applied route change (incl. ->no-route on loss).
+    movlw       0x02                        ; index 2 = C
+    call        diag_src_inc_w, 0x0
+flow_main_i2c_service_27f0_route_same:
     movff       stock_093_b0_phys, stock_0AB_b0_phys
     bra         flow_main_i2c_service_27f0_297c
 flow_main_i2c_service_27f0_297a:
@@ -6515,6 +6530,17 @@ v34_runtime_bank2_clear_loop:
     decf        WREG, F, ACCESS
     bnz         v34_runtime_bank2_clear_loop
 
+    ; --- V3.4 SRC/DSP forensic counter clear (BANK 3 upper block) ---
+    ; diag_src_n..diag_src_m (0x3C0..0x3C4) live in wipe-protected BANK 3
+    ; upper, so this range clear is the only thing that ever zeroes them —
+    ; same unconditional-clear rationale as the BANK 2 diag block above.
+    lfsr        FSR0, diag_src_n
+    movlw       0x05
+v34_src_diag_clear_loop:
+    clrf        POSTINC0, ACCESS
+    decf        WREG, F, ACCESS
+    bnz         v34_src_diag_clear_loop
+
     ; --- V3.2 rev 0x37 Tier-1: zero reset-cause flag cells too ---
     ; Cold-init zeroes all four flags before classification picks one
     ; (V32_DIAG_TIER1_SPEC.md §"RAM layout").  The classification cascade
@@ -7830,15 +7856,18 @@ main_uart_service_44b2:
 ;                         volume_dsp_write's `return` back to the caller of
 ;                         preset_force_mute)
 ;
-; BSR/Z/W: helper only executes `clrf` on ACCESS registers before jumping;
-; BSR unchanged at entry to volume_dsp_write, STATUS.Z = 1 (last clrf),
-; W unchanged. All four callers immediately return/branch without relying on
-; post-pattern flags.
+; BSR/Z/W: BSR unchanged at entry to volume_dsp_write, STATUS.Z = 1 (last
+; clrf).  V3.4 forensic M sets W=0x0F and clobbers FSR0 via diag_inc_sat_fsr0
+; before the clrf pattern; all four callers immediately return/branch without
+; relying on W, FSR0, or post-pattern flags.
 ;
 ; Savings : (sites 1-3) 3 × (12 B -> 4 B) + (site 4) 1 × (12 B -> 2 B)
 ;           − 8 B helper = 24 + 10 − 8 = 26 B.
 ; ---------------------------------------------------------------------------
 clrf_i2c_coeff_0123_and_write:
+    ; V3.4 forensic M: every DSP mute write (TAS 0x30 <- 0) passes here.
+    movlw       0x04                        ; index 4 = M
+    rcall       diag_src_inc_w
     clrf        i2c_coeff_0_acc, ACCESS
     clrf        i2c_coeff_1_acc, ACCESS
     clrf        i2c_coeff_2_acc, ACCESS
@@ -7955,6 +7984,22 @@ diag_inc_sat_check_low:
     return      0                         ; counter == 0x0F: saturate
     incf        INDF0, F, ACCESS          ; counter < 0x0F: increment
     return      0
+
+; ---------------------------------------------------------------------------
+; diag_src_inc_w — V3.4 SRC/DSP forensic counter increment by index
+; ---------------------------------------------------------------------------
+; in : W = counter index 0..4 (N L C T M order, diag_src_n..diag_src_m)
+; out: same contract as diag_inc_sat_fsr0 (W=0x0F, FSR0 -> cell, BSR
+;      unchanged).  The five cells are contiguous in BANK 3 upper
+;      (0x3C0..0x3C4) so the FSR0L add never carries into FSR0H.
+; Shared indexed entry instead of per-site lfsr pairs: each call site is
+; movlw+call (3 words) / movlw+rcall (2 words) — the flash margin before
+; the 0x4C00 preset tables is the binding constraint for V3.4.
+; ---------------------------------------------------------------------------
+diag_src_inc_w:
+    lfsr        FSR0, diag_src_n
+    addwf       FSR0L, F, ACCESS
+    bra         diag_inc_sat_fsr0
 
 ; ---------------------------------------------------------------------------
 ; Function: uart_fifo_drain_2              (drain both hardware RX FIFO slots)
@@ -8130,6 +8175,10 @@ uart_config:
 ; Notes   : Inferred core helper routine. Calls: main_i2c_service_381c.
 ; ---------------------------------------------------------------------------
 main_core_service_4574:
+    ; V3.4 forensic T: every full blocking preset-table walk (cold init,
+    ; wake bring-up, EP0/reconnect reapply) enters here.
+    movlw       0x03                        ; index 3 = T
+    rcall       diag_src_inc_w
     movlw       0x56
     movwf       stock_033_acc, ACCESS
     clrf        stock_032_acc, ACCESS
@@ -9629,7 +9678,7 @@ cmd25_identity_query_handler:
     movwf       stock_006_acc, ACCESS
     movlw       0x08                        ; V3.4_IDENTITY_REV_HI
     movwf       stock_007_acc, ACCESS
-    movlw       0x03                        ; V3.4_IDENTITY_REV_LO
+    movlw       0x05                        ; V3.4_IDENTITY_REV_LO
     movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       stock_004_acc, ACCESS
@@ -10278,6 +10327,10 @@ preset_job_apply_final:
     rcall       preset_job_apply_i2c_entry
     bc          preset_job_apply_retry      ; timeout: stay in APPLY, keep final entry pending
 
+    ; V3.4 forensic T: async table walk completed (advancing to COMMIT).
+    movlw       0x03                        ; index 3 = T
+    call        diag_src_inc_w, 0x0
+
     ; Advance to COMMIT
     movlb       0x2
     movlw       0x04
@@ -10443,7 +10496,8 @@ hid_cmd_diag_snapshot:
     movlw       0x44                        ; [0] cmd echo
     movwf       POSTINC2, ACCESS
     clrf        POSTINC2, ACCESS            ; [1] status = OK
-    movlw       0x0B                        ; [2] payload length = 11 cells
+    movlw       0x10                        ; [2] payload length = 16 cells
+                                            ; (V3.4 SRC/DSP forensic ext)
     movwf       POSTINC2, ACCESS
     ; [3..9] = 7 runtime counters from diag_i..diag_p (0x2E5..0x2EB).
     ; FSR0 walks the diag block; FSR2 walks the HID IN buffer.
@@ -10466,8 +10520,20 @@ hid_diag_snap_flag:
     movwf       POSTINC2, ACCESS
     decfsz      i2c_coeff_3_acc, F, ACCESS
     bra         hid_diag_snap_flag
-    ; [14..63] = padding — host sees length byte at [2]=0x0B so it
-    ; stops parsing at offset 13.  Firmware version metadata is
+    ; [14..18] = 5 V3.4 SRC/DSP forensic counters (N L C T M) from
+    ; diag_src_n..diag_src_m (0x3C0..0x3C4, BANK 3 upper) — appended
+    ; AFTER the reset flags so the legacy 11-cell offsets stay stable
+    ; for older hosts.
+    lfsr        FSR0, diag_src_n
+    movlw       0x05
+    movwf       i2c_coeff_3_acc, ACCESS
+hid_diag_snap_src:
+    movf        POSTINC0, W, ACCESS
+    movwf       POSTINC2, ACCESS
+    decfsz      i2c_coeff_3_acc, F, ACCESS
+    bra         hid_diag_snap_src
+    ; [19..63] = padding — host sees length byte at [2]=0x10 so it
+    ; stops parsing at offset 18.  Firmware version metadata is
     ; available via the existing cmd 0x06 probe (see hid_dispatch);
     ; cmd 0x44 stays focused on the diag block to keep the handler
     ; small enough to fit before the DSP preset tables at 0x4C00.
@@ -10823,7 +10889,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0x83, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x04, 0x85, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
