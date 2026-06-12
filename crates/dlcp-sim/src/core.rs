@@ -189,6 +189,17 @@ pub struct Core {
     irq_context_depth: usize,
     wdt_counter_tcy: u64,
     wdt_timeout_pending: bool,
+    /// SW write to TOSL/TOSH/TOSU staged by the data-memory write
+    /// path (exec::write_addr_masked), drained by exec::step into
+    /// stack::write_tos_byte after the instruction retires.  The
+    /// Stack lives outside Core, so the write site cannot patch the
+    /// stack entry directly; without this write-through, firmware
+    /// computed-return sequences (MOVWF TOSL/TOSH then RETURN, per
+    /// DS39632E §5.1.2.1) silently popped the STALE entry while the
+    /// SFR mirror read back the new value (V3.4 size-campaign
+    /// chain_copy postmortem, 2026-06-13).
+    #[serde(default)]
+    tos_sw_write_pending: Option<(u16, u8)>,
     /// Optional cycle-level probe used by research scaffolding
     /// (e.g. P3.6b research step 2, task #62) to count exact
     /// per-instruction PC entries to a labelled flash range AND
@@ -493,6 +504,7 @@ impl Core {
             irq_context_depth: 0,
             wdt_counter_tcy: 0,
             wdt_timeout_pending: false,
+            tos_sw_write_pending: None,
             cycle_probe: None,
         }
     }
@@ -661,12 +673,23 @@ impl Core {
         self.run_state = RunState::Running;
         self.clear_irq_context();
         self.clear_wdt();
+        self.tos_sw_write_pending = None;
     }
 
     pub fn take_wdt_timeout_pending(&mut self) -> bool {
         let pending = self.wdt_timeout_pending;
         self.wdt_timeout_pending = false;
         pending
+    }
+
+    /// Stage a firmware SW write to a TOS SFR (0xFFD..0xFFF) for
+    /// post-instruction write-through into the hardware stack.
+    pub fn stage_tos_sw_write(&mut self, addr: u16, value: u8) {
+        self.tos_sw_write_pending = Some((addr, value));
+    }
+
+    pub fn take_tos_sw_write_pending(&mut self) -> Option<(u16, u8)> {
+        self.tos_sw_write_pending.take()
     }
 
     pub fn advance_halted_cycles(&mut self, n: u32) {

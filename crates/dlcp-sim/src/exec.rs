@@ -787,6 +787,17 @@ fn write_addr_masked(core: &mut Core, target: Address, value: u8) {
     let old = core.memory.read_raw(target);
     let new_value = apply_sfr_sw_write(old, value, target.as_u16());
     core.memory.write_raw(target, new_value);
+    // TOS SFRs are readable AND writable on real silicon (DS39632E
+    // §5.1.2.1: computed returns patch TOSL/TOSH then RETURN).  The
+    // Stack lives outside Core, so stage the write here and let
+    // step() drain it into stack::write_tos_byte after the
+    // instruction retires.  (MOVFF to TOSx is architecturally
+    // forbidden and rejected at assembly, so single-writer staging
+    // is sufficient.)
+    let a = target.as_u16();
+    if (crate::stack::TOSL_ADDR..=crate::stack::TOSU_ADDR).contains(&a) {
+        core.stage_tos_sw_write(a, new_value);
+    }
     core.peripherals
         .on_sfr_write(target.as_u16(), value, &mut core.memory);
     if target.as_u16() == crate::peripherals::eeprom::EECON1_ADDR {
@@ -949,6 +960,12 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
         None
     };
     let result = step_inner(core, stack);
+    if let Some((addr, value)) = core.take_tos_sw_write_pending() {
+        if result.is_ok() {
+            crate::stack::write_tos_byte(stack, addr, value);
+            stack.mirror_to_sfrs(&mut core.memory);
+        }
+    }
     if result.is_ok() && core.take_wdt_timeout_pending() {
         apply_reset(core, stack, ResetSource::Wdt);
     }
@@ -3121,6 +3138,51 @@ mod tests {
 
     // ---- stack-manipulating control flow (CALL / RCALL /
     // RETURN / RETLW / RETFIE / PUSH / POP) ----
+
+    #[test]
+    fn movwf_tos_write_through_patches_computed_return() {
+        // The V3.4 chain_copy pattern (DS39632E §5.1.2.1 computed
+        // return): CALL a helper, helper rewrites TOSL/TOSH via
+        // MOVLW/MOVWF, RETURN must land at the PATCHED address --
+        // 2026-06-13 postmortem: the SFR mirror updated but the pop
+        // used the stale stack entry, sending execution into inline
+        // descriptor data.
+        //
+        // Program (byte addresses):
+        //   0x0000: CALL 0x0008          (pushes 0x0004)
+        //   0x0004: NOP                  (skipped if patch works)
+        //   0x0006: NOP
+        //   0x0008: MOVLW 0x10
+        //   0x000A: MOVWF TOSL (0xFD, access)
+        //   0x000C: RETURN               -> must jump to 0x0010
+        //   0x000E: NOP
+        //   0x0010: (landing pad)
+        let mut core = k20_core_with_flash(&[
+            0x04, 0xEC, 0x00, 0xF0, // CALL 0x0008 (word addr 0x4)
+            0x00, 0x00, 0x00, 0x00, // NOP, NOP
+            0x10, 0x0E, // MOVLW 0x10
+            0xFD, 0x6E, // MOVWF 0xFD, access (TOSL)
+            0x12, 0x00, // RETURN
+            0x00, 0x00, // NOP
+        ]);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap(); // CALL
+        assert_eq!(stack.top(), 0x0004);
+        step(&mut core, &mut stack).unwrap(); // MOVLW
+        step(&mut core, &mut stack).unwrap(); // MOVWF TOSL
+        assert_eq!(
+            stack.top(),
+            0x0010,
+            "SW TOSL write must write through to the stack entry"
+        );
+        step(&mut core, &mut stack).unwrap(); // RETURN
+        assert_eq!(
+            core.pc(),
+            0x0010,
+            "computed return must land at the patched address"
+        );
+        assert_eq!(stack.depth(), 0);
+    }
 
     #[test]
     fn call_pushes_return_addr_and_jumps_to_target() {
