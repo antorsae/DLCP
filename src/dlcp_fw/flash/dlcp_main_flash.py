@@ -882,6 +882,13 @@ def _probe_active_preset_hid(info, overlays) -> Optional[str]:
     reading the active filename RAM slot (cmd 0x03) and matching it against
     the baked overlay name slots.  Returns 'A'/'B' on a unique match, None
     when ambiguous (no match, or several overlays share the name).
+
+    KNOWN LIMITATION (codex LOW vs 4395665, tracked): with a PARTIAL overlay
+    set, the unmatched preset's live filename is unknowable over HID (cmd
+    0x03 reads the ACTIVE slot only), so if the other preset happens to
+    carry the same name as a provided overlay this can misidentify the
+    active preset and skip a needed switch.  The standard deployment bakes
+    both presets with distinct names, where the match is unambiguous.
     """
     dev = _open_hid(info.path)
     try:
@@ -913,7 +920,9 @@ def _probe_active_preset_with_hid_fallback(*, vid, pid, post_dev, overlays) -> s
                 "EP0 transport is unavailable and the active preset could "
                 "not be identified over HID (active filename matches no "
                 "baked overlay uniquely); fix the USB link (replug / swap "
-                "cable / direct port) and re-run --finalize-only"
+                "cable / direct port) and re-run the release flash to "
+                "complete the preset finalize (--finalize-only only covers "
+                "the IR profile, not the overlay ceremony)"
             ) from exc
         print(
             "  warning: EP0 unavailable; active preset identified over HID "
@@ -936,7 +945,9 @@ def _switch_active_preset_for_finalize(*, vid, pid, preset, path) -> str:
             f"EP0 transport is unavailable and the preset {preset} finalize "
             "requires an active-preset switch, which has no HID path. "
             "Replug the USB link (or swap cable / direct port) and re-run "
-            "--finalize-only"
+            "the release flash to complete the preset finalize "
+            "(--finalize-only only covers the IR profile, not the overlay "
+            "ceremony)"
         ) from exc
 
 
@@ -2523,8 +2534,7 @@ def main(argv: Optional[List[str]] = None) -> int:
                         f"  warning: EP0 unavailable ({first_line}); the unit "
                         f"is left on preset {current_preset} instead of "
                         f"{initial_preset} -- switch back via the front "
-                        "panel/remote, or re-run --finalize-only after fixing "
-                        "the USB link"
+                        "panel/remote"
                     )
                 else:
                     print(

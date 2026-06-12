@@ -120,12 +120,23 @@ class DlcpEp0:
         device enumeration.  The default context caches device state; after
         a firmware reflash re-enumerates the MAIN at a new address, transfers
         through the stale cached handle fail with EIO until re-enumerated.
-        Returns None when unavailable (pyusb falls back to the default).
+
+        NOTE: ``get_backend()`` does NOT do this — pyusb 1.3.x caches the
+        module-level ``_lib_object`` and returns the same backend (and
+        libusb context) every call (codex MEDIUM vs 4395665).  A genuinely
+        fresh context requires constructing ``_LibUSB`` directly; each
+        instance runs ``libusb_init`` in ``__init__`` and ``libusb_exit``
+        in ``__del__``, so per-reopen instances do not leak.  Returns None
+        when unavailable (pyusb then falls back to the default backend).
         """
         try:
-            import usb.backend.libusb1  # type: ignore[import-not-found]
+            import usb.backend.libusb1 as libusb1  # type: ignore[import-not-found]
 
-            return usb.backend.libusb1.get_backend()
+            if libusb1._lib is None:
+                libusb1.get_backend()  # load the shared library once
+            if libusb1._lib is None:
+                return None
+            return libusb1._LibUSB(libusb1._lib)
         except Exception:
             return None
 

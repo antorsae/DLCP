@@ -922,7 +922,7 @@ def test_probe_active_preset_fallback_ambiguous_raises_actionable(monkeypatch) -
     post_dev = type("I", (), {"path": b"p"})()
     import pytest as _pytest
 
-    with _pytest.raises(RuntimeError, match="re-run --finalize-only"):
+    with _pytest.raises(RuntimeError, match="re-run the release flash"):
         mf._probe_active_preset_with_hid_fallback(
             vid=1, pid=2, post_dev=post_dev, overlays=[]
         )
