@@ -33,6 +33,7 @@ import pathlib
 import plistlib
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 
 from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo, enumerate_devices
@@ -52,6 +53,26 @@ def idx_for_addr(addr: int) -> int:
     return (addr - 0xEC) & 0xFF
 
 
+class Ep0TransferError(RuntimeError):
+    """An EP0 control transfer failed at the TRANSPORT level (libusb/IOKit),
+    after the bounded retries below.  Distinct from semantic failures (e.g.
+    a verify mismatch) so callers can degrade gracefully on flaky links —
+    this Mac/MAIN combo has never even delivered string descriptors, so EP0
+    flakiness is an expected operating condition, not an exception.
+    """
+
+
+EP0_CTRL_ATTEMPTS = 3
+EP0_RETRY_DELAY_S = 0.1
+
+_EP0_GUIDANCE = (
+    "Try:\n"
+    "  1) quit HFD and any app using DLCP USB\n"
+    "  2) replug DLCP (or swap cable / use a direct port)\n"
+    "  3) run via sudo"
+)
+
+
 class DlcpEp0:
     def __init__(
         self,
@@ -68,21 +89,38 @@ class DlcpEp0:
             ) from exc
 
         self._usb_core = usb.core
+        self._vid = vid
+        self._pid = pid
+        self._path = path
+        self._hid_info = hid_info
+        self._pointer: int | None = None
+        self.dev = self._resolve_and_prepare()
+
+    def _resolve_and_prepare(self):
         dev = _resolve_usb_device(
             usb_core=self._usb_core,
-            vid=vid,
-            pid=pid,
-            path=path,
-            hid_info=hid_info,
+            vid=self._vid,
+            pid=self._pid,
+            path=self._path,
+            hid_info=self._hid_info,
         )
-        self.dev = dev
-        self._prepare()
-
-    def _prepare(self) -> None:
         try:
-            self.dev.set_configuration()
+            dev.set_configuration()
         except self._usb_core.USBError:
             pass
+        return dev
+
+    def _reopen(self) -> None:
+        """Dispose the current libusb handle and re-resolve the device —
+        recovers macOS IOKit handles left sour by an interrupted session.
+        """
+        try:
+            import usb.util  # type: ignore[import-not-found]
+
+            usb.util.dispose_resources(self.dev)
+        except Exception:
+            pass  # disposal is best-effort; the re-resolve below is the fix
+        self.dev = self._resolve_and_prepare()
 
     def _poke(self, addr: int, value: int, in_dir: bool, read_len: int = 0) -> bytes:
         if not (0 <= value <= 0xFF):
@@ -92,30 +130,49 @@ class DlcpEp0:
         b_request = 0x0B
         w_value = value
         w_index = idx_for_addr(addr)
-        try:
-            if in_dir:
+
+        if in_dir:
+            # IN transfers advance the device-side autoincrement pointer, so a
+            # failed read cannot be blindly re-issued here (alignment unknown).
+            # read_exact owns recovery: it re-seeks the window start and
+            # restarts the whole read.
+            try:
                 data = self.dev.ctrl_transfer(bm, b_request, w_value, w_index, read_len)
                 return bytes(data)
-            self.dev.ctrl_transfer(bm, b_request, w_value, w_index, None)
-            return b""
-        except self._usb_core.USBError as exc:
-            raise RuntimeError(
-                f"USB control transfer failed: {exc}\n"
-                "Try:\n"
-                "  1) quit HFD and any app using DLCP USB\n"
-                "  2) replug DLCP\n"
-                "  3) run via sudo"
-            ) from exc
+            except self._usb_core.USBError as exc:
+                raise Ep0TransferError(
+                    f"USB control transfer failed: {exc}\n{_EP0_GUIDANCE}"
+                ) from exc
+
+        # OUT transfers (pointer seeks, RAM byte writes) are idempotent:
+        # re-issuing the same value to the same address is safe, so retry
+        # bounded here, with one handle reopen before the final attempt.
+        last_exc: Exception | None = None
+        for attempt in range(EP0_CTRL_ATTEMPTS):
+            try:
+                self.dev.ctrl_transfer(bm, b_request, w_value, w_index, None)
+                return b""
+            except self._usb_core.USBError as exc:
+                last_exc = exc
+                if attempt + 1 >= EP0_CTRL_ATTEMPTS:
+                    break
+                time.sleep(EP0_RETRY_DELAY_S)
+                if attempt == EP0_CTRL_ATTEMPTS - 2:
+                    self._reopen()
+        assert last_exc is not None
+        raise Ep0TransferError(
+            f"USB control transfer failed after {EP0_CTRL_ATTEMPTS} attempts "
+            f"(addr 0x{addr:02X}): {last_exc}\n{_EP0_GUIDANCE}"
+        ) from last_exc
 
     def set_pointer(self, addr16: int) -> None:
         lo = addr16 & 0xFF
         hi = (addr16 >> 8) & 0xFF
         self._poke(0x75, lo, in_dir=False)
         self._poke(0x76, hi, in_dir=False)
+        self._pointer = addr16 & 0xFFFF
 
-    def read_exact(self, n: int) -> bytes:
-        if n <= 0:
-            return b""
+    def _read_exact_once(self, n: int) -> bytes:
         # Keep EEPROM shadow dumps on the stable 0xE7 path as well.
         out = bytearray()
         remaining = n
@@ -123,10 +180,36 @@ class DlcpEp0:
             chunk = min(remaining, 0xFF)
             data = self._poke(0xE7, chunk, in_dir=True, read_len=chunk)
             if len(data) != chunk:
-                raise RuntimeError(f"short read: expected {chunk}, got {len(data)}")
+                raise Ep0TransferError(
+                    f"short read: expected {chunk}, got {len(data)}"
+                )
             out.extend(data)
             remaining -= chunk
         return bytes(out)
+
+    def read_exact(self, n: int) -> bytes:
+        if n <= 0:
+            return b""
+        last_exc: Ep0TransferError | None = None
+        for attempt in range(EP0_CTRL_ATTEMPTS):
+            try:
+                return self._read_exact_once(n)
+            except Ep0TransferError as exc:
+                last_exc = exc
+                if self._pointer is None:
+                    # no recorded window start -> no safe re-seek; a blind
+                    # re-read could return misaligned data
+                    raise
+                if attempt + 1 >= EP0_CTRL_ATTEMPTS:
+                    break
+                time.sleep(EP0_RETRY_DELAY_S)
+                if attempt == EP0_CTRL_ATTEMPTS - 2:
+                    self._reopen()
+                self.set_pointer(self._pointer)
+        assert last_exc is not None
+        raise Ep0TransferError(
+            f"EP0 window read failed after {EP0_CTRL_ATTEMPTS} attempts: {last_exc}"
+        ) from last_exc
 
 
 def _path_text(path: bytes | None) -> str:

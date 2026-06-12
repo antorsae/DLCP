@@ -1164,6 +1164,72 @@ def _apply_ir_profile_ep0(
     return current.setup_profile, after.setup_profile
 
 
+# IR profile persisted location (the FIELD-2 byte; see _warn_if_profile_mismatch).
+EEPROM_PROFILE_ADDR = 0x0E
+
+
+def _read_eeprom_byte_hid(info, addr: int) -> int:
+    """Read one EEPROM byte over the HID diag-memread path (cmd 0x43).
+
+    Used as the EP0-down fallback: on this rig the HID side is routinely
+    healthy while EP0 control transfers fail (the same marginal-link
+    condition that produces the permanent string-less enumeration).
+    """
+    # local import: read_coeffs imports from this module (cycle otherwise)
+    from dlcp_fw.flash.read_coeffs import HidMemoryReader
+
+    with HidMemoryReader(info=info, timeout_ms=1500) as reader:
+        return reader.read_chunk(region=1, addr=addr, length=1)[0]
+
+
+def _apply_ir_profile_with_hid_fallback(
+    *,
+    vid: int,
+    pid: int,
+    path: bytes | None,
+    profile_label: str,
+    hid_info,
+) -> tuple[int | None, int]:
+    """Run the EP0 profile finalize; on EP0 TRANSPORT failure, degrade to a
+    read-only HID EEPROM verification instead of aborting a finalize whose
+    writes already succeeded.
+
+    Returns (before, after); before is None on the degraded path.  Semantic
+    failures (verify mismatch after a successful EP0 restore) still raise —
+    only Ep0TransferError degrades, and only when the persisted profile
+    byte already matches the request.
+    """
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    try:
+        return _apply_ir_profile_ep0(
+            vid=vid, pid=pid, path=path, profile_label=profile_label
+        )
+    except Ep0TransferError as exc:
+        expected = IR_PROFILE_VALUES[profile_label]
+        stored = _read_eeprom_byte_hid(hid_info, EEPROM_PROFILE_ADDR)
+        if stored != expected:
+            raise RuntimeError(
+                "EP0 transport is unavailable AND the HID EEPROM profile "
+                f"mismatch persists: EEPROM[0x{EEPROM_PROFILE_ADDR:02X}]="
+                f"0x{stored:02X}, expected 0x{expected:02X} ({profile_label}). "
+                "Fix the USB link (replug / swap cable / direct port) and "
+                "re-run --finalize-only"
+            ) from exc
+        print(
+            "WARNING: EP0 control transfers are unavailable "
+            f"({exc.args[0].splitlines()[0] if exc.args else 'transport error'}); "
+            "degraded to a read-only HID verification:\n"
+            f"  EEPROM[0x{EEPROM_PROFILE_ADDR:02X}] profile = 0x{stored:02X} "
+            f"({profile_label}) -- matches the request.\n"
+            "  Skipped: RAM setup/profile mirror check and the CONTROL "
+            "chain-sync re-education.\n"
+            "  After fixing the USB link (replug / swap cable / direct "
+            "port), re-run --finalize-only for full EP0 verification."
+        )
+        return None, expected
+
+
 CMD1D_ECHO_ARM_ADDR = 0x094
 CMD1D_ECHO_ARM_MASK = 0x10
 RX_RING_WR_ADDR = 0x0C7
@@ -2109,17 +2175,22 @@ def main(argv: Optional[List[str]] = None) -> int:
             )
         if info.path is None:
             raise RuntimeError("selected device has no HID path")
-        before_profile, after_profile = _apply_ir_profile_ep0(
+        before_profile, after_profile = _apply_ir_profile_with_hid_fallback(
             vid=args.vid,
             pid=args.pid,
             path=info.path,
             profile_label=args.profile,
+            hid_info=info,
+        )
+        before_text = (
+            f"0x{before_profile:02X}" if before_profile is not None
+            else "<EP0 unavailable>"
         )
         print(
             "finalize-only IR profile:\n"
             f"  requested profile: {args.profile} "
             f"(0x{IR_PROFILE_VALUES[args.profile]:02X})\n"
-            f"  verified setup/profile: 0x{before_profile:02X} -> 0x{after_profile:02X}"
+            f"  verified setup/profile: {before_text} -> 0x{after_profile:02X}"
         )
         return 0
 
@@ -2376,17 +2447,22 @@ def main(argv: Optional[List[str]] = None) -> int:
                 input_state=pre_finalize_snapshot.input_state,
             )
 
-        before_profile, after_profile = _apply_ir_profile_ep0(
+        before_profile, after_profile = _apply_ir_profile_with_hid_fallback(
             vid=args.vid,
             pid=args.pid,
             path=post_dev.path,
             profile_label=args.profile,
+            hid_info=post_dev,
+        )
+        before_text = (
+            f"0x{before_profile:02X}" if before_profile is not None
+            else "<EP0 unavailable>"
         )
         print(
             "post-flash IR profile finalize:\n"
             f"  requested profile: {args.profile} "
             f"(0x{IR_PROFILE_VALUES[args.profile]:02X})\n"
-            f"  verified setup/profile: 0x{before_profile:02X} -> 0x{after_profile:02X}"
+            f"  verified setup/profile: {before_text} -> 0x{after_profile:02X}"
         )
 
     return 0

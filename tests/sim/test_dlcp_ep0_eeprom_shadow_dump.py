@@ -346,3 +346,122 @@ def test_resolve_usb_device_matches_selected_hid_topology_when_serial_missing(mo
     )
 
     assert result is usb_b
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-12 EP0 hardening: bounded ctrl-transfer retries, reopen-on-error,
+# re-seek-and-restart reads (run-3 live failure: one Errno-5 EIO instantly
+# killed the finalize while the HID side was perfectly healthy).
+# ---------------------------------------------------------------------------
+
+
+class _FakeUSBError(Exception):
+    pass
+
+
+class _FakeUsbCore:
+    USBError = _FakeUSBError
+
+
+def _bare_ep0() -> shadow.DlcpEp0:
+    ep0 = shadow.DlcpEp0.__new__(shadow.DlcpEp0)
+    ep0._usb_core = _FakeUsbCore
+    ep0._pointer = None
+    return ep0
+
+
+def test_ep0_out_poke_retries_transient_usberror(monkeypatch) -> None:
+    ep0 = _bare_ep0()
+    calls: list[tuple] = []
+
+    class _Dev:
+        def ctrl_transfer(self, bm, breq, wval, widx, data_or_len):
+            calls.append((bm, breq, wval, widx))
+            if len(calls) == 1:
+                raise _FakeUSBError("[Errno 5] Input/Output Error")
+            return None
+
+    ep0.dev = _Dev()
+    reopens: list[bool] = []
+    ep0._reopen = lambda: reopens.append(True)  # type: ignore[method-assign]
+    monkeypatch.setattr(shadow.time, "sleep", lambda s: None)
+
+    shadow.DlcpEp0._poke(ep0, 0x75, 0x12, in_dir=False)
+    assert len(calls) == 2, "transient OUT failure must be re-issued"
+    assert reopens == [], "no reopen needed for a single transient"
+
+
+def test_ep0_out_poke_reopens_once_then_raises_when_persistent(monkeypatch) -> None:
+    ep0 = _bare_ep0()
+    calls: list[int] = []
+
+    class _Dev:
+        def ctrl_transfer(self, bm, breq, wval, widx, data_or_len):
+            calls.append(1)
+            raise _FakeUSBError("[Errno 5] Input/Output Error")
+
+    ep0.dev = _Dev()
+    reopens: list[bool] = []
+    ep0._reopen = lambda: reopens.append(True)  # type: ignore[method-assign]
+    monkeypatch.setattr(shadow.time, "sleep", lambda s: None)
+
+    with pytest.raises(RuntimeError, match="after 3 attempts"):
+        shadow.DlcpEp0._poke(ep0, 0x75, 0x12, in_dir=False)
+    assert len(calls) == 3, "OUT retry must be bounded"
+    assert reopens == [True], "one reopen attempt before the final try"
+
+
+def test_ep0_read_exact_reseeks_and_restarts_after_transfer_failure(monkeypatch) -> None:
+    """A failed IN transfer leaves the device-side autoincrement pointer in an
+    unknown state; blindly re-reading would misalign the stream.  read_exact
+    must re-seek to the stored window start and restart the whole read.
+    """
+    ep0 = _bare_ep0()
+    outs: list[tuple[int, int]] = []
+    in_calls: list[int] = []
+
+    class _Dev:
+        def ctrl_transfer(self, bm, breq, wval, widx, data_or_len):
+            if bm == 0x00:
+                outs.append((widx, wval))
+                return None
+            in_calls.append(1)
+            if len(in_calls) == 1:
+                raise _FakeUSBError("[Errno 5] Input/Output Error")
+            return bytes([0xAB]) * data_or_len
+
+    ep0.dev = _Dev()
+    ep0._reopen = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(shadow.time, "sleep", lambda s: None)
+
+    shadow.DlcpEp0.set_pointer(ep0, 0x0123)
+    seek_count_after_first = len(outs)
+    data = shadow.DlcpEp0.read_exact(ep0, 4)
+    assert data == bytes([0xAB]) * 4
+    assert len(in_calls) == 2
+    assert len(outs) == seek_count_after_first * 2, (
+        "recovery must re-seek the window start before re-reading"
+    )
+    # the re-seek must target the SAME address (lo, hi pair repeated)
+    assert outs[:seek_count_after_first] == outs[seek_count_after_first:]
+
+
+def test_ep0_read_exact_without_pointer_does_not_blind_retry(monkeypatch) -> None:
+    ep0 = _bare_ep0()
+    in_calls: list[int] = []
+
+    class _Dev:
+        def ctrl_transfer(self, bm, breq, wval, widx, data_or_len):
+            in_calls.append(1)
+            raise _FakeUSBError("[Errno 5] Input/Output Error")
+
+    ep0.dev = _Dev()
+    ep0._reopen = lambda: None  # type: ignore[method-assign]
+    monkeypatch.setattr(shadow.time, "sleep", lambda s: None)
+
+    with pytest.raises(RuntimeError):
+        shadow.DlcpEp0.read_exact(ep0, 4)
+    assert len(in_calls) == 1, (
+        "without a stored window start there is no safe re-seek; "
+        "a blind re-read could return misaligned data"
+    )

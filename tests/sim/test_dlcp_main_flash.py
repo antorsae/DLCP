@@ -795,3 +795,61 @@ def test_open_hid_configures_nonblocking_handle(monkeypatch) -> None:
     assert calls == [True], (
         f"_open_hid must configure the handle nonblocking (got {calls})"
     )
+
+
+def test_finalize_profile_falls_back_to_hid_eeprom_verify(monkeypatch, capsys) -> None:
+    """EP0-dead finalize must not abort when the profile can be verified over
+    the healthy HID path: EEPROM[0x0E] == expected -> warn + continue
+    (RAM mirror + chain-sync skipped, re-run hint printed)."""
+    from dlcp_fw.flash import dlcp_main_flash as mf
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    def _boom(**kwargs):
+        raise Ep0TransferError("USB control transfer failed: [Errno 5] Input/Output Error")
+
+    monkeypatch.setattr(mf, "_apply_ir_profile_ep0", _boom)
+    monkeypatch.setattr(mf, "_read_eeprom_byte_hid", lambda info, addr: 0x04)
+
+    info = object()
+    before, after = mf._apply_ir_profile_with_hid_fallback(
+        vid=0x04D8, pid=0xFF89, path=b"p", profile_label="hypex", hid_info=info
+    )
+    assert before is None and after == 0x04
+    out = capsys.readouterr().out
+    assert "WARNING" in out and "EP0" in out and "finalize-only" in out
+
+
+def test_finalize_profile_fallback_mismatch_reraises(monkeypatch) -> None:
+    from dlcp_fw.flash import dlcp_main_flash as mf
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    def _boom(**kwargs):
+        raise Ep0TransferError("USB control transfer failed: [Errno 5] Input/Output Error")
+
+    monkeypatch.setattr(mf, "_apply_ir_profile_ep0", _boom)
+    monkeypatch.setattr(mf, "_read_eeprom_byte_hid", lambda info, addr: 0x03)
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="EEPROM profile mismatch"):
+        mf._apply_ir_profile_with_hid_fallback(
+            vid=0x04D8, pid=0xFF89, path=b"p", profile_label="hypex", hid_info=object()
+        )
+
+
+def test_finalize_profile_non_transport_errors_still_raise(monkeypatch) -> None:
+    """Only EP0 TRANSPORT failures degrade; a real verify failure (profile
+    didn't stick) must stay fatal even though it's also a RuntimeError."""
+    from dlcp_fw.flash import dlcp_main_flash as mf
+
+    def _verify_fail(**kwargs):
+        raise RuntimeError("IR profile verify failed after EP0 restore")
+
+    monkeypatch.setattr(mf, "_apply_ir_profile_ep0", _verify_fail)
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="verify failed"):
+        mf._apply_ir_profile_with_hid_fallback(
+            vid=0x04D8, pid=0xFF89, path=b"p", profile_label="hypex", hid_info=object()
+        )
