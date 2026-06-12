@@ -1152,7 +1152,69 @@ def _apply_ir_profile_ep0(
             "IR profile verify failed after EP0 restore: "
             f"expected 0x{profile_value:02X}, got 0x{after.setup_profile:02X}"
         )
+    _sync_profile_to_chain_control(
+        vid=vid, pid=pid, path=path, profile_value=profile_value
+    )
     return current.setup_profile, after.setup_profile
+
+
+CMD1D_ECHO_ARM_ADDR = 0x094
+CMD1D_ECHO_ARM_MASK = 0x10
+
+
+def _sync_profile_to_chain_control(
+    *,
+    vid: int,
+    pid: int,
+    path: bytes | None,
+    profile_value: int,
+    budget_s: float = 90.0,
+    poll_s: float = 2.0,
+) -> None:
+    """Push the freshly-written setup/profile byte to a connected CONTROL.
+
+    2026-06-12 field incident #4: the EP0 profile write verified, then
+    reverted within seconds -- a connected CONTROL's periodic full-sync
+    re-broadcasts its CACHED ``B0/1D/<old>`` and the MAIN's cmd-0x1D
+    handler stores it right back.  The firmware's own fix for this is the
+    ``stock_094.4`` query-arm (set by the HID settings import, bypassed by
+    the raw EP0 write): with the bit armed, the NEXT incoming cmd-0x1D is
+    consumed as a QUERY -- the stale value is NOT applied, and the BF/1D
+    reply carries the new value back, which CONTROL ADOPTS into its cache.
+    Arm the bit, then wait (bounded) for the round-trip: the bit clearing
+    with the profile intact proves CONTROL has been re-educated.  Without
+    a CONTROL on the chain the bit never clears; warn and succeed -- the
+    MAIN-side state is correct and nothing will fight it."""
+    ep0 = DlcpEp0(vid=vid, pid=pid, path=path)
+    _ep0_or_byte(ep0, addr=CMD1D_ECHO_ARM_ADDR, mask=CMD1D_ECHO_ARM_MASK)
+    deadline = time.time() + budget_s
+    next_progress = time.time() + 10.0
+    while time.time() < deadline:
+        time.sleep(poll_s)
+        arm = _ep0_read_byte(ep0, addr=CMD1D_ECHO_ARM_ADDR)
+        value = _ep0_read_byte(ep0, addr=SETUP_PROFILE_RAM)
+        if value != profile_value:
+            raise RuntimeError(
+                "profile reverted while waiting for the chain CONTROL to "
+                f"adopt it (0x{value:02X}); re-run --finalize-only"
+            )
+        if not (arm & CMD1D_ECHO_ARM_MASK):
+            print(
+                "chain CONTROL adopted the new IR profile "
+                "(cmd-0x1D echo round-trip complete)"
+            )
+            return
+        if time.time() >= next_progress:
+            print(
+                "waiting for the chain CONTROL's next cmd-0x1D sync to "
+                "adopt the profile..."
+            )
+            next_progress = time.time() + 10.0
+    print(
+        "WARNING: no CONTROL cmd-0x1D sync observed within "
+        f"{budget_s:.0f}s; if a CONTROL is connected it may revert the "
+        "profile until its cache adopts the new value"
+    )
 
 
 def _force_active_filename_persist(

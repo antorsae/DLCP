@@ -583,3 +583,89 @@ def test_field1c_exclusion_rejects_wrong_unit_by_identity(
             ),
             timeout_s=1.0,
         )
+
+
+# ---------------------------------------------------------------------------
+# 2026-06-12 field incident #4: the EP0 profile finalize verified 0x04 and
+# reverted to 0x03 within seconds -- a connected CONTROL's periodic full-sync
+# re-broadcasts its CACHED B0/1D/<old> and the MAIN's cmd-0x1D handler stores
+# it back.  The fix arms the firmware's stock_094.4 cmd-1D query-echo (the
+# next incoming cmd-1D is consumed as a query and the BF/1D reply carries the
+# new value back, which CONTROL adopts) and waits for the round-trip.
+# Live-validated on the rig 2026-06-12: profile held through multiple
+# CONTROL sync cycles after adoption.
+# ---------------------------------------------------------------------------
+
+
+def _sync_ep0_stub(monkeypatch, reads):
+    """Install DlcpEp0/_ep0 stubs; `reads` yields (arm_byte, profile_byte)."""
+    seq = iter(reads)
+    state = {"current": None, "ors": []}
+
+    class _Ep0:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setattr(main_flash, "DlcpEp0", _Ep0)
+    monkeypatch.setattr(
+        main_flash,
+        "_ep0_or_byte",
+        lambda ep0, *, addr, mask: state["ors"].append((addr, mask)) or 0,
+    )
+
+    def read_byte(ep0, *, addr):
+        if state["current"] is None:
+            state["current"] = next(seq)
+        arm, value = state["current"]
+        if addr == main_flash.CMD1D_ECHO_ARM_ADDR:
+            return arm
+        if addr == main_flash.SETUP_PROFILE_RAM:
+            state["current"] = None
+            return value
+        raise AssertionError(f"unexpected read 0x{addr:03X}")
+
+    monkeypatch.setattr(main_flash, "_ep0_read_byte", read_byte)
+    monkeypatch.setattr(main_flash.time, "sleep", lambda s: None)
+    return state
+
+
+def test_field1d_profile_sync_arms_echo_and_confirms_adoption(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    state = _sync_ep0_stub(
+        monkeypatch,
+        [(0x10, 0x04), (0x10, 0x04), (0x00, 0x04)],  # armed, armed, consumed
+    )
+    main_flash._sync_profile_to_chain_control(
+        vid=0x04D8, pid=0xFF89, path=b"/dev/x", profile_value=0x04,
+        budget_s=10.0, poll_s=0.0,
+    )
+    assert (main_flash.CMD1D_ECHO_ARM_ADDR, main_flash.CMD1D_ECHO_ARM_MASK) in state["ors"]
+    assert "adopted the new IR profile" in capsys.readouterr().out
+
+
+def test_field1d_profile_sync_detects_reversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _sync_ep0_stub(monkeypatch, [(0x10, 0x04), (0x10, 0x03)])  # reverted
+    with pytest.raises(RuntimeError, match="reverted"):
+        main_flash._sync_profile_to_chain_control(
+            vid=0x04D8, pid=0xFF89, path=b"/dev/x", profile_value=0x04,
+            budget_s=10.0, poll_s=0.0,
+        )
+
+
+def test_field1d_profile_sync_warns_without_control(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    import itertools
+
+    state = _sync_ep0_stub(
+        monkeypatch, itertools.repeat((0x10, 0x04))  # never consumed
+    )
+    main_flash._sync_profile_to_chain_control(
+        vid=0x04D8, pid=0xFF89, path=b"/dev/x", profile_value=0x04,
+        budget_s=0.05, poll_s=0.0,
+    )
+    out = capsys.readouterr().out
+    assert "WARNING: no CONTROL cmd-0x1D sync observed" in out

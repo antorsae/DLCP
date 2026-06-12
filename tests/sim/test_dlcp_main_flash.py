@@ -121,6 +121,11 @@ def test_preflight_accepts_rc5_ir_profile(stock_main_hex, capsys) -> None:
 
 
 def test_apply_ir_profile_ep0_preserves_input_and_sets_profile(monkeypatch) -> None:
+    import dlcp_fw.flash.dlcp_main_flash as _mf
+
+    monkeypatch.setattr(
+        _mf, "_sync_profile_to_chain_control", lambda **kwargs: None
+    )
     probes = [
         InputRuntimeInfo(input_select=0x02, input_mirror=0x02, setup_profile=0x03),
         InputRuntimeInfo(input_select=0x02, input_mirror=0x02, setup_profile=0x04),
