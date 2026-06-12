@@ -100,13 +100,14 @@ class DlcpEp0:
         self._pointer: int | None = None
         self.dev = self._resolve_and_prepare()
 
-    def _resolve_and_prepare(self):
+    def _resolve_and_prepare(self, backend=None):
         dev = _resolve_usb_device(
             usb_core=self._usb_core,
             vid=self._vid,
             pid=self._pid,
             path=self._path,
             hid_info=self._hid_info,
+            backend=backend,
         )
         try:
             dev.set_configuration()
@@ -114,9 +115,24 @@ class DlcpEp0:
             pass
         return dev
 
+    def _fresh_backend(self):
+        """A NEW libusb backend instance = a NEW libusb context = a fresh
+        device enumeration.  The default context caches device state; after
+        a firmware reflash re-enumerates the MAIN at a new address, transfers
+        through the stale cached handle fail with EIO until re-enumerated.
+        Returns None when unavailable (pyusb falls back to the default).
+        """
+        try:
+            import usb.backend.libusb1  # type: ignore[import-not-found]
+
+            return usb.backend.libusb1.get_backend()
+        except Exception:
+            return None
+
     def _reopen(self) -> None:
-        """Dispose the current libusb handle and re-resolve the device —
-        recovers macOS IOKit handles left sour by an interrupted session.
+        """Dispose the current libusb handle and re-resolve the device on a
+        FRESH libusb context — recovers both sour IOKit handles from
+        interrupted sessions and stale post-reflash enumeration state.
         """
         try:
             import usb.util  # type: ignore[import-not-found]
@@ -124,7 +140,7 @@ class DlcpEp0:
             usb.util.dispose_resources(self.dev)
         except Exception:
             pass  # disposal is best-effort; the re-resolve below is the fix
-        self.dev = self._resolve_and_prepare()
+        self.dev = self._resolve_and_prepare(backend=self._fresh_backend())
 
     def _poke(self, addr: int, value: int, in_dir: bool, read_len: int = 0) -> bytes:
         if not (0 <= value <= 0xFF):
@@ -357,8 +373,14 @@ def _resolve_usb_device(
     pid: int,
     path: bytes | None,
     hid_info: HidDeviceInfo | None,
+    backend=None,
 ):
-    matches = list(usb_core.find(find_all=True, idVendor=vid, idProduct=pid))
+    find_kwargs = {"find_all": True, "idVendor": vid, "idProduct": pid}
+    if backend is not None:
+        # fresh libusb context (recovery path) instead of the default
+        # context's cached enumeration
+        find_kwargs["backend"] = backend
+    matches = list(usb_core.find(**find_kwargs))
     if not matches:
         raise RuntimeError(f"DLCP not found (VID:PID = {vid:04X}:{pid:04X})")
     if hid_info is None and path is None and len(matches) == 1:

@@ -877,6 +877,88 @@ def _probe_active_preset_ep0(*, vid: int, pid: int, path: bytes | None = None) -
     return _active_preset_from_flags(_read_active_flags_ep0(vid=vid, pid=pid, path=path))
 
 
+def _probe_active_preset_hid(info, overlays) -> Optional[str]:
+    """EP0-down fallback: identify the active preset over pure HID by
+    reading the active filename RAM slot (cmd 0x03) and matching it against
+    the baked overlay name slots.  Returns 'A'/'B' on a unique match, None
+    when ambiguous (no match, or several overlays share the name).
+    """
+    dev = _open_hid(info.path)
+    try:
+        live = bytes(_cmd03_read_filename_slot(dev))
+    finally:
+        dev.close()
+    matches = [o.preset for o in overlays if bytes(o.name_slot) == live]
+    if len(matches) == 1:
+        return matches[0]
+    return None
+
+
+def _probe_active_preset_with_hid_fallback(*, vid, pid, post_dev, overlays) -> str:
+    """Post-flash active-preset detection that survives a dead EP0.
+
+    EP0 is routinely dead right after the post-reflash re-enumeration on
+    this rig while HID stays healthy.  On Ep0TransferError, fall back to
+    the HID filename match; if that is ambiguous too, raise an actionable
+    error instead of a transport traceback.
+    """
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    try:
+        return _probe_active_preset_ep0(vid=vid, pid=pid, path=post_dev.path)
+    except Ep0TransferError as exc:
+        fallback = _probe_active_preset_hid(post_dev, overlays)
+        if fallback is None:
+            raise RuntimeError(
+                "EP0 transport is unavailable and the active preset could "
+                "not be identified over HID (active filename matches no "
+                "baked overlay uniquely); fix the USB link (replug / swap "
+                "cable / direct port) and re-run --finalize-only"
+            ) from exc
+        print(
+            "  warning: EP0 unavailable; active preset identified over HID "
+            f"filename match as {fallback}"
+        )
+        return fallback
+
+
+def _switch_active_preset_for_finalize(*, vid, pid, preset, path) -> str:
+    """Preset switch wrapper for the finalize ceremony: there is NO HID
+    switch path (cmd 0x20 is serial/EP0-only), so a dead EP0 here is a
+    hard stop — but an actionable one, not a transport traceback.
+    """
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    try:
+        return _switch_active_preset_ep0(vid=vid, pid=pid, preset=preset, path=path)
+    except Ep0TransferError as exc:
+        raise RuntimeError(
+            f"EP0 transport is unavailable and the preset {preset} finalize "
+            "requires an active-preset switch, which has no HID path. "
+            "Replug the USB link (or swap cable / direct port) and re-run "
+            "--finalize-only"
+        ) from exc
+
+
+def _restore_runtime_settings_best_effort(**kwargs) -> None:
+    """Runtime volume/input restore that degrades to a warning on a dead
+    EP0: the persisted settings live in EEPROM and re-load on the next
+    power-cycle, so skipping the RUNTIME restore is a cosmetic loss, not a
+    correctness one.
+    """
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    try:
+        _restore_runtime_settings_ep0(**kwargs)
+    except Ep0TransferError as exc:
+        first_line = exc.args[0].splitlines()[0] if exc.args else "transport error"
+        print(
+            f"warning: EP0 unavailable; skipped the runtime volume/input "
+            f"restore ({first_line}); persisted EEPROM settings re-load on "
+            "the next power-cycle"
+        )
+
+
 def _request_active_preset_switch_ep0(
     *,
     vid: int,
@@ -2343,16 +2425,17 @@ def main(argv: Optional[List[str]] = None) -> int:
             raise RuntimeError("post-flash app device has no HID path")
 
         if overlays:
-            initial_preset = _probe_active_preset_ep0(
+            initial_preset = _probe_active_preset_with_hid_fallback(
                 vid=args.vid,
                 pid=args.pid,
-                path=post_dev.path,
+                post_dev=post_dev,
+                overlays=overlays,
             )
             current_preset = initial_preset
             for overlay in overlays:
                 print(f"post-flash preset {overlay.preset} finalize:")
                 if current_preset != overlay.preset:
-                    confirmed = _switch_active_preset_ep0(
+                    confirmed = _switch_active_preset_for_finalize(
                         vid=args.vid,
                         pid=args.pid,
                         preset=overlay.preset,
@@ -2419,13 +2502,34 @@ def main(argv: Optional[List[str]] = None) -> int:
                     print(f"  preset {overlay.preset} verify: OK")
 
             if current_preset != initial_preset:
-                restored = _switch_active_preset_ep0(
-                    vid=args.vid,
-                    pid=args.pid,
-                    preset=initial_preset,
-                    path=post_dev.path,
-                )
-                print(f"post-flash preset restore:\n  restored active preset: {restored}")
+                # cosmetic restoration (put the unit back on its pre-finalize
+                # preset) — degrade to a warning on a dead EP0 rather than
+                # failing a finalize whose real work already succeeded
+                from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+                try:
+                    restored = _switch_active_preset_ep0(
+                        vid=args.vid,
+                        pid=args.pid,
+                        preset=initial_preset,
+                        path=post_dev.path,
+                    )
+                except Ep0TransferError as exc:
+                    first_line = (
+                        exc.args[0].splitlines()[0] if exc.args else "transport error"
+                    )
+                    print(
+                        "post-flash preset restore:\n"
+                        f"  warning: EP0 unavailable ({first_line}); the unit "
+                        f"is left on preset {current_preset} instead of "
+                        f"{initial_preset} -- switch back via the front "
+                        "panel/remote, or re-run --finalize-only after fixing "
+                        "the USB link"
+                    )
+                else:
+                    print(
+                        f"post-flash preset restore:\n  restored active preset: {restored}"
+                    )
 
         if args.all_ch is not None:
             print("post-flash channel mapping finalize:")
@@ -2439,7 +2543,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  verified mappings: {format_route_entries(routes)}")
 
         if pre_finalize_snapshot is not None:
-            _restore_runtime_settings_ep0(
+            _restore_runtime_settings_best_effort(
                 vid=args.vid,
                 pid=args.pid,
                 path=post_dev.path,

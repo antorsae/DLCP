@@ -853,3 +853,106 @@ def test_finalize_profile_non_transport_errors_still_raise(monkeypatch) -> None:
         mf._apply_ir_profile_with_hid_fallback(
             vid=0x04D8, pid=0xFF89, path=b"p", profile_label="hypex", hid_info=object()
         )
+
+
+def _mk_overlay(preset: str, name: str):
+    from dlcp_fw.flash import dlcp_main_flash as mf
+
+    return mf.CaptureOverlay(
+        preset=preset,
+        table=b"",
+        name_slot=mf._encode_name_slot(name),
+        config_name=name,
+        flash_base=0x5600,
+    )
+
+
+def test_probe_active_preset_hid_matches_unique_overlay(monkeypatch) -> None:
+    from dlcp_fw.flash import dlcp_main_flash as mf
+
+    overlays = [_mk_overlay("A", "LX521.4 v5"), _mk_overlay("B", "LX521.4 v7")]
+
+    class _Dev:
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(mf, "_open_hid", lambda path: _Dev())
+    monkeypatch.setattr(
+        mf, "_cmd03_read_filename_slot", lambda dev: overlays[1].name_slot
+    )
+
+    info = type("I", (), {"path": b"p"})()
+    assert mf._probe_active_preset_hid(info, overlays) == "B"
+
+    # ambiguous: live name matches nothing
+    monkeypatch.setattr(
+        mf, "_cmd03_read_filename_slot", lambda dev: mf._encode_name_slot("other")
+    )
+    assert mf._probe_active_preset_hid(info, overlays) is None
+
+
+def test_probe_active_preset_fallback_degrades_and_warns(monkeypatch, capsys) -> None:
+    from dlcp_fw.flash import dlcp_main_flash as mf
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    def _boom(**kwargs):
+        raise Ep0TransferError("USB control transfer failed after 3 attempts")
+
+    monkeypatch.setattr(mf, "_probe_active_preset_ep0", _boom)
+    monkeypatch.setattr(mf, "_probe_active_preset_hid", lambda info, overlays: "A")
+
+    post_dev = type("I", (), {"path": b"p"})()
+    got = mf._probe_active_preset_with_hid_fallback(
+        vid=1, pid=2, post_dev=post_dev, overlays=[]
+    )
+    assert got == "A"
+    assert "EP0 unavailable" in capsys.readouterr().out
+
+
+def test_probe_active_preset_fallback_ambiguous_raises_actionable(monkeypatch) -> None:
+    from dlcp_fw.flash import dlcp_main_flash as mf
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    def _boom(**kwargs):
+        raise Ep0TransferError("USB control transfer failed after 3 attempts")
+
+    monkeypatch.setattr(mf, "_probe_active_preset_ep0", _boom)
+    monkeypatch.setattr(mf, "_probe_active_preset_hid", lambda info, overlays: None)
+
+    post_dev = type("I", (), {"path": b"p"})()
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="re-run --finalize-only"):
+        mf._probe_active_preset_with_hid_fallback(
+            vid=1, pid=2, post_dev=post_dev, overlays=[]
+        )
+
+
+def test_switch_for_finalize_dead_ep0_raises_actionable(monkeypatch) -> None:
+    from dlcp_fw.flash import dlcp_main_flash as mf
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    def _boom(**kwargs):
+        raise Ep0TransferError("USB control transfer failed after 3 attempts")
+
+    monkeypatch.setattr(mf, "_switch_active_preset_ep0", _boom)
+
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="no HID path"):
+        mf._switch_active_preset_for_finalize(vid=1, pid=2, preset="B", path=b"p")
+
+
+def test_restore_runtime_settings_best_effort_warns(monkeypatch, capsys) -> None:
+    from dlcp_fw.flash import dlcp_main_flash as mf
+    from dlcp_fw.flash.dlcp_ep0_eeprom_shadow_dump import Ep0TransferError
+
+    def _boom(**kwargs):
+        raise Ep0TransferError("USB control transfer failed after 3 attempts")
+
+    monkeypatch.setattr(mf, "_restore_runtime_settings_ep0", _boom)
+    mf._restore_runtime_settings_best_effort(
+        vid=1, pid=2, path=b"p", volume_state=None, input_state=None
+    )
+    out = capsys.readouterr().out
+    assert "warning" in out and "power-cycle" in out
