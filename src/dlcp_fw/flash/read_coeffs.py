@@ -195,7 +195,13 @@ class HidMemoryReader:
         self._hid = hid
         self._dev = hid.device()
         self._dev.open_path(info.path)
-        self._dev.set_nonblocking(False)
+        # NONBLOCKING is load-bearing: the shared _hid_read64 primitive polls
+        # dev.read(64, 0) against a monotonic deadline, which only returns
+        # control on a nonblocking handle.  On a blocking handle macOS hidapi
+        # parks dev.read forever when a report goes missing (2026-06-12 live
+        # finalize hang at `read 0x06AC/0x0A00`); see the identical note in
+        # dlcp_control_flash.
+        self._dev.set_nonblocking(True)
 
     @property
     def path_text(self) -> str:
@@ -210,9 +216,24 @@ class HidMemoryReader:
     def __exit__(self, exc_type, exc, tb) -> None:
         self.close()
 
+    def _drain_pending(self, *, max_reports: int = 8) -> int:
+        """Consume any stale HID IN reports left by an interrupted prior
+        session (e.g. a Ctrl-C'd verify): accepting a stale response for the
+        next request shifts every later exchange off by one.  Bounded so a
+        chattering device cannot spin us forever.
+        """
+        drained = 0
+        while drained < max_reports:
+            resp = _hid_read64(self._dev, timeout_ms=0)
+            if resp is None:
+                break
+            drained += 1
+        return drained
+
     def _exchange(self, report: bytes) -> bytes:
         if len(report) != 64:
             raise ValueError("report must be exactly 64 bytes")
+        self._drain_pending()
         _hid_write64(self._dev, report)
         deadline = time.monotonic() + (max(1, self._timeout_ms) / 1000.0)
         ignored: list[int] = []
@@ -240,6 +261,14 @@ class HidMemoryReader:
             first = resp[0] if resp else -1
             ignored.append(first & 0xFF)
 
+    # Bounded per-chunk exchange retry: one glitched USB exchange (stale or
+    # corrupted report -> bad status / wrong length echo / timeout) must not
+    # abort a multi-KB verify.  The 2026-06-12 live finalize died on a single
+    # transient 'bad-region' reply mid-window.  Persistent failures still
+    # raise, with the last underlying error chained.
+    READ_CHUNK_ATTEMPTS = 3
+    READ_CHUNK_RETRY_DELAY_S = 0.05
+
     def read_chunk(self, *, region: int, addr: int, length: int) -> bytes:
         if not (0 <= region <= 1):
             raise ValueError("region must be 0 (flash) or 1 (EEPROM)")
@@ -255,8 +284,20 @@ class HidMemoryReader:
         report[3] = (addr >> 8) & 0xFF
         report[4] = length & 0xFF
 
-        resp = self._exchange(bytes(report))
-        return _parse_diag_memread_response(resp, length=length)
+        last_exc: RuntimeError | None = None
+        for attempt in range(self.READ_CHUNK_ATTEMPTS):
+            try:
+                resp = self._exchange(bytes(report))
+                return _parse_diag_memread_response(resp, length=length)
+            except RuntimeError as exc:
+                last_exc = exc
+                if attempt + 1 < self.READ_CHUNK_ATTEMPTS:
+                    time.sleep(self.READ_CHUNK_RETRY_DELAY_S)
+        assert last_exc is not None
+        raise RuntimeError(
+            f"diag memread chunk at 0x{addr:04X} (region {region}, len {length}) "
+            f"failed after {self.READ_CHUNK_ATTEMPTS} attempts: {last_exc}"
+        ) from last_exc
 
     def read_window_verified(
         self,
@@ -273,29 +314,35 @@ class HidMemoryReader:
         remaining = size
         cursor = addr
         done = 0
-        while remaining:
-            chunk = min(MAX_CHUNK, remaining)
-            stable: bytes | None = None
-            for attempt in range(retries):
-                reads = [
-                    self.read_chunk(region=region, addr=cursor, length=chunk)
-                    for _ in range(max(1, verify_reads))
-                ]
-                first = reads[0]
-                if all(candidate == first for candidate in reads[1:]):
-                    stable = first
-                    break
-                time.sleep(delay_s)
-            if stable is None:
-                raise RuntimeError(
-                    f"unable to stabilize chunk at 0x{cursor:04X} after {retries} retries"
-                )
-            out.extend(stable)
-            cursor += chunk
-            remaining -= chunk
-            done += chunk
+        try:
+            while remaining:
+                chunk = min(MAX_CHUNK, remaining)
+                stable: bytes | None = None
+                for attempt in range(retries):
+                    reads = [
+                        self.read_chunk(region=region, addr=cursor, length=chunk)
+                        for _ in range(max(1, verify_reads))
+                    ]
+                    first = reads[0]
+                    if all(candidate == first for candidate in reads[1:]):
+                        stable = first
+                        break
+                    time.sleep(delay_s)
+                if stable is None:
+                    raise RuntimeError(
+                        f"unable to stabilize chunk at 0x{cursor:04X} after {retries} retries"
+                    )
+                out.extend(stable)
+                cursor += chunk
+                remaining -= chunk
+                done += chunk
+                if progress:
+                    print(f"\rread 0x{done:04X}/0x{size:04X}", end="", flush=True)
+        except BaseException:
             if progress:
-                print(f"\rread 0x{done:04X}/0x{size:04X}", end="", flush=True)
+                # terminate the \r progress line so errors don't glue to it
+                print(flush=True)
+            raise
         if progress:
             print()
         return bytes(out)
