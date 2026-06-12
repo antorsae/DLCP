@@ -769,7 +769,26 @@ class Chain:
         ``frames`` is a list of 3-element byte sequences
         (route, cmd, data).  ``fifo_limit`` is capped at 191;
         gpsim tests typically pass ``fifo_limit=47``.
+
+        Injection is deferred (bounded) while MAIN0 is inside its
+        ISR (INTCON.GIEH==0) or an RX byte is pending (PIR1.RCIF==1):
+        the firmware's RX ISR caches ``rx_ring_wr`` in W across its
+        enqueue sequence, so writing the ring underneath a mid-flight
+        enqueue lets the ISR overwrite the injected route byte at the
+        stale index (proven 2026-06-12: an injected ``B0`` became the
+        ISR's ``B1`` and the frame parsed as addressed-not-broadcast,
+        silently breaking the PB1->PB2 forward).  On real hardware
+        this interleave cannot occur -- CONTROL's bytes serialize
+        through the same UART the ISR services.
         """
+        deferred = 0
+        while deferred < 256:
+            intcon = int(self._inner.read_main_reg(0, 0xFF2))
+            pir1 = int(self._inner.read_main_reg(0, 0xF9E))
+            if (intcon & 0x80) and not (pir1 & 0x20):
+                break
+            self._inner.step_ticks(2_000)
+            deferred += 1
         py_frames = [[int(b) & 0xFF for b in f] for f in frames]
         return tuple(self._inner.inject_main_frames_fifo(
             py_frames, int(fifo_limit),
