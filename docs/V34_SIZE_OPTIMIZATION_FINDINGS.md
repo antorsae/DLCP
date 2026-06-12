@@ -1,7 +1,8 @@
 # V3.4 Size-Reclaim Campaign — Findings and Landed Result
 
 Status: **target met 2026-06-12**.  Margin before the `0x4C00` preset-table
-wall: **252 bytes** (headroom gate floor 24), from a 28-byte starting point.
+wall: **250 bytes by the headroom-gate measure** (raw listing scan: 252;
+the gate convention is authoritative), from a 28-byte starting point.
 Landed as the S-series (S1 pair-copy helper, S2 EEPROM-source mode,
 S3 duplicate-run subroutines, S4 block descriptors) in `dlcp_main_v34.asm`
 rev 0x90.
@@ -55,7 +56,7 @@ S3: four duplicated 4-cell movff runs factored into plain subroutines
 | S1 pair-mode chain_copy, 14 sites | 74 B |
 | S2 EEPROM-source mode, 2 sites (+pins) | 120 B |
 | S3 duplicate-run subroutines, 4 pairs | 154 B |
-| S4 block descriptors + single-db packing | **252 B** |
+| S4 block descriptors + single-db packing | **250 B** (gate measure) |
 
 ## Root causes found on the way (all fixed)
 

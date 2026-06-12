@@ -108,7 +108,7 @@ def test_v34_v173_listing_size_gates_keep_refactoring_headroom() -> None:
     # incident, then RAISED 24 -> 200 the same day: the size-reclaim
     # S-series (chain_copy S1/S2/S4 + S3 dedup,
     # docs/V34_SIZE_OPTIMIZATION_FINDINGS.md) rebuilt the reserve to
-    # 252 bytes.  The 200 floor pins the user-mandated working reserve —
+    # 250 bytes (gate measure).  The 200 floor pins the user-mandated working reserve —
     # do not lower it casually; reclaim candidates are inventoried in the
     # findings doc.
     _assert_listing_fits_before(v34_lst, 0x4C00, min_margin=200)
