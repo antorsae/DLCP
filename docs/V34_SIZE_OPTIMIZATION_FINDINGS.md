@@ -1,11 +1,16 @@
 # V3.4 Size-Reclaim Campaign — Findings and Landed Result
 
-Status: **target met 2026-06-12**.  Margin before the `0x4C00` preset-table
-wall: **250 bytes by the headroom-gate measure** (raw listing scan: 252;
-the gate convention is authoritative), from a 28-byte starting point.
-Landed as the S-series (S1 pair-copy helper, S2 EEPROM-source mode,
-S3 duplicate-run subroutines, S4 block descriptors) in `dlcp_main_v34.asm`
-rev 0x90.
+Status: **target met 2026-06-12** by the original S-series, then refreshed
+**2026-06-14** after the FIELD safety fixes had spent the reserve down to the
+user-relaxed 10-byte floor.  Current MAIN V3.4 rev `0xA5` margin before the
+`0x4C00` preset-table wall: **102 bytes** (`listing_app_end=0x4B9A`), from
+the immediate pre-campaign 10-byte floor (`listing_app_end=0x4BF6`).
+
+Historical 2026-06-12 result: margin was **250 bytes by the headroom-gate
+measure** (raw listing scan: 252; the gate convention is authoritative), from
+a 28-byte starting point.  Landed as the S-series (S1 pair-copy helper, S2
+EEPROM-source mode, S3 duplicate-run subroutines, S4 block descriptors) in
+`dlcp_main_v34.asm` rev 0x90.
 
 ## Verified-exhausted mechanical classes
 
@@ -57,6 +62,86 @@ S3: four duplicated 4-cell movff runs factored into plain subroutines
 | S2 EEPROM-source mode, 2 sites (+pins) | 120 B |
 | S3 duplicate-run subroutines, 4 pairs | 154 B |
 | S4 block descriptors + single-db packing | **250 B** (gate measure) |
+| FIELD safety/counter work through rev 0xA4 | 10 B |
+| T1 SRC4382 secondary-write table walker, rev 0xA5 | **102 B** |
+
+## T1 SRC4382 secondary-write table walker — landed 2026-06-14
+
+Scope:
+
+- `main_i2c_service_32f8`: the ordered SRC4382/cfg71 cold-init write stream
+  was converted from 16 inline `(value -> stock_006, register -> write)`
+  blocks to `main_i2c_service_32f8_table` plus `i2c_secondary_write_rows`.
+- `hw_standby_shutdown`: the three rail-drop writes
+  `(0x00,0x1B)`, `(0x00,0x1C)`, `(0x00,0x1D)` reuse the same row walker via
+  `hw_standby_shutdown_i2c_table`.
+
+Measured result:
+
+- Before T1: `listing_app_end=0x4BF6`, free bytes before `0x4C00` = 10.
+- After T1 canonical rebuild: `listing_app_end=0x4B9A`, free bytes before
+  `0x4C00` = 102.
+- Net reclaim: **+92 bytes** of margin.
+- Canonical build: `scripts/build_v34_release.py`, EEPROM rev
+  `0xA4 -> 0xA5`.
+
+Behavior-preservation proof:
+
+- The cold-init table is pinned by
+  `test_v34_src4382_cold_init_table_preserves_exact_ordered_writes`.
+- The standby rail-drop table is pinned by
+  `test_v34_standby_shutdown_secondary_write_table_preserves_rail_drop_order`.
+- The executable walker label deliberately does **not** end in `_table`; the
+  RAM-safety CFG treats `_table` labels as data anchors.
+- The walker avoids TOS/return-address tricks and uses `TBLPTR` plus
+  `stock_008_acc` as a local access-bank loop counter.  `stock_008_acc` is
+  scratch at both call sites and is not clobbered by `i2c_secondary_dev_write`
+  or its timeout/NACK recovery paths.  An FSR0-backed counter was rejected
+  during implementation because the diagnostic timeout path uses FSR0.
+- `TBLPTRU` is cleared inside the walker before the first `tblrd*+`, so callers
+  only stage `TBLPTRL/H` and row count.
+
+Verification:
+
+```bash
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v34_v173_refactoring_contracts.py
+# 18 passed, 1 xfailed in 0.20s
+
+PYTHONPATH=src .venv_ep0/bin/python - <<'PY'
+from dlcp_fw.analysis.ram_bank_safety import check_targets
+findings = check_targets(['main-v34'])
+print('findings', len(findings))
+PY
+# findings 0
+
+PYTHONPATH=src .venv_ep0/bin/python scripts/build_v34_release.py
+# built canonical V3.4 release ... (EEPROM rev 0xA4 -> 0xA5)
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q \
+  tests/sim/test_ram_bank_safety.py \
+  tests/sim/test_v34_v173_refactoring_contracts.py \
+  tests/sim/test_v34_v173_release_builders.py \
+  tests/sim/test_v34_src4382_lock_hysteresis.py \
+  tests/sim/test_v34_autodetect_loss_debounce.py \
+  tests/sim/test_v34_preset_src_hole_field_bug.py \
+  tests/sim/test_v34_field_bugs_20260610.py \
+  tests/sim/test_v34_v173_field_repros_20260613.py
+# 97 passed, 3 xfailed in 623.93s
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim
+# 1630 passed, 2 skipped, 3 xfailed, 4 warnings in 4307.58s
+```
+
+Parked/rejected follow-up levers for this wave:
+
+- The additional `movlw/movwf` init runs around source lines 5334/6043/9845
+  were not touched: they need a different RAM/SFR table writer, and T1 already
+  met the target with a smaller proof surface.
+- XOR dispatch ladders remain rejected: likely break-even on PIC18 and higher
+  behavioral risk.
+- New `chain_copy`/descriptor rewrites remain rejected for this wave because
+  the existing chain-copy interrupt-safety proof is still explicitly xfailed.
+- Feature demotion remains off the table.
 
 ## Root causes found on the way (all fixed)
 

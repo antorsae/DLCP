@@ -2562,7 +2562,7 @@ flow_main_core_service_1e88_20c2:
     clrf        stock_008_acc, ACCESS
     movlw       0x82
     movwf       stock_007_acc, ACCESS
-    movlw       0xA4                            ; V3.4_RUNTIME_EEPROM_REV
+    movlw       0xA5                            ; V3.4_RUNTIME_EEPROM_REV
     movwf       stock_009_acc, ACCESS
     goto        main_flash_service_46de
 
@@ -5074,68 +5074,28 @@ flow_main_core_service_3188_32f6:
 ; ---------------------------------------------------------------------------
 main_i2c_service_32f8:
     call        i2c_wait_bus_idle, 0x0
-    movlw       0x3F
-    movwf       stock_006_acc, ACCESS
-    movlw       0x01
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x30
-    movwf       stock_006_acc, ACCESS
-    movlw       0x03
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x01
-    movwf       stock_006_acc, ACCESS
-    movlw       0x04
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x08
-    movwf       stock_006_acc, ACCESS
-    movlw       0x05
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x01
-    movwf       stock_006_acc, ACCESS
-    movlw       0x06
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x34
-    movwf       stock_006_acc, ACCESS
-    movlw       0x07
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x30
-    movwf       stock_006_acc, ACCESS
-    movlw       0x08
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x08
-    movwf       stock_006_acc, ACCESS
-    movlw       0x0D
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x08
-    movwf       stock_006_acc, ACCESS
-    movlw       0x0E
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x22
-    movwf       stock_006_acc, ACCESS
-    movlw       0x0F
-    call        i2c_secondary_dev_write, 0x0
-    clrf        stock_006_acc, ACCESS
+    movlw       LOW(main_i2c_service_32f8_table)
+    movwf       TBLPTRL, ACCESS
+    movlw       HIGH(main_i2c_service_32f8_table)
+    movwf       TBLPTRH, ACCESS
     movlw       0x10
+    bra         i2c_secondary_write_rows
+
+main_i2c_service_32f8_table:
+    db          0x3F,0x01, 0x30,0x03, 0x01,0x04, 0x08,0x05, 0x01,0x06, 0x34,0x07, 0x30,0x08, 0x08,0x0D, 0x08,0x0E, 0x22,0x0F, 0x00,0x10, 0x00,0x11, 0x01,0x1C, 0x01,0x1D, 0x02,0x2D, 0x20,0x2E
+
+i2c_secondary_write_rows:
+    clrf        TBLPTRU, ACCESS
+    movwf       stock_008_acc, ACCESS
+i2c_secondary_write_rows_loop:
+    tblrd*+
+    movff       TABLAT, stock_006_b0_phys
+    tblrd*+
+    movf        TABLAT, W, ACCESS
     call        i2c_secondary_dev_write, 0x0
-    clrf        stock_006_acc, ACCESS
-    movlw       0x11
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x01
-    movwf       stock_006_acc, ACCESS
-    movlw       0x1C
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x01
-    movwf       stock_006_acc, ACCESS
-    movlw       0x1D
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x02
-    movwf       stock_006_acc, ACCESS
-    movlw       0x2D
-    call        i2c_secondary_dev_write, 0x0
-    movlw       0x20
-    movwf       stock_006_acc, ACCESS
-    movlw       0x2E
-    goto        i2c_secondary_dev_write
+    decfsz      stock_008_acc, F, ACCESS
+    bra         i2c_secondary_write_rows_loop
+    return      0
 
 
 ; ---------------------------------------------------------------------------
@@ -6439,15 +6399,12 @@ uart_baud_31250_prefix:
 ; AN0 rail comes back up.
 ; ---------------------------------------------------------------------------
 hw_standby_shutdown:
-    clrf        stock_006_acc, ACCESS
-    movlw       0x1B
-    call        i2c_secondary_dev_write, 0x0
-    clrf        stock_006_acc, ACCESS
-    movlw       0x1C
-    call        i2c_secondary_dev_write, 0x0
-    clrf        stock_006_acc, ACCESS
-    movlw       0x1D
-    call        i2c_secondary_dev_write, 0x0
+    movlw       LOW(hw_standby_shutdown_i2c_table)
+    movwf       TBLPTRL, ACCESS
+    movlw       HIGH(hw_standby_shutdown_i2c_table)
+    movwf       TBLPTRH, ACCESS
+    movlw       0x03
+    call        i2c_secondary_write_rows, 0x0
     btfss       PORTC, 2, ACCESS
     bra         flow_hw_standby_shutdown_3c34
     bsf         LATB, 2, ACCESS
@@ -6490,6 +6447,9 @@ flow_hw_standby_shutdown_3c78:
     bcf         T0CON, 7, ACCESS
     bcf         INTCON, 5, ACCESS
     goto        usb_shutdown
+
+hw_standby_shutdown_i2c_table:
+    db          0x00,0x1B, 0x00,0x1C, 0x00,0x1D
 
 
 ; ---------------------------------------------------------------------------
@@ -9848,7 +9808,7 @@ cmd25_identity_query_handler:
     movwf       stock_006_acc, ACCESS
     movlw       0x0A                        ; V3.4_IDENTITY_REV_HI
     movwf       stock_007_acc, ACCESS
-    movlw       0x04                        ; V3.4_IDENTITY_REV_LO
+    movlw       0x05                        ; V3.4_IDENTITY_REV_LO
     movwf       stock_008_acc, ACCESS
     movlw       0x54                        ; sentinel: stop AFTER BF/53 sent
     movwf       stock_004_acc, ACCESS
@@ -11065,7 +11025,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0xA4, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
+    db  0x03, 0x04, 0xA5, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the monotonic release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

@@ -83,6 +83,18 @@ def _chain_copy_descriptors(text: str) -> list[list[str]]:
     return descriptors
 
 
+def _db_ints_for_label(text: str, label: str, next_labels: list[str] | tuple[str, ...]) -> list[int]:
+    body = _label_body(text, label, next_labels)
+    tokens: list[str] = []
+    for line in body.splitlines():
+        source = line.split(";", 1)[0]
+        match = re.search(r"\bdb\b(.+)$", source)
+        if match is not None:
+            tokens.extend(token.strip() for token in match.group(1).split(","))
+    assert tokens, f"missing db table for {label}"
+    return [int(token, 16) for token in tokens]
+
+
 def test_v34_identity_literals_are_v34_owned() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     identity = _label_body(text, "cmd25_identity_query_handler", ["cmd 0x26"])
@@ -128,6 +140,81 @@ def test_v34_v173_listing_size_gates_keep_refactoring_headroom() -> None:
     # reclaim candidates remain inventoried in the findings doc.
     _assert_listing_fits_before(v34_lst, 0x4C00, min_margin=10)
     _assert_listing_fits_before(v173_lst, 0x77B0, min_margin=128)
+
+
+def test_v34_src4382_cold_init_table_preserves_exact_ordered_writes() -> None:
+    text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    body = _label_body(text, "main_i2c_service_32f8", ["main_i2c_service_32f8_table"])
+    table = _db_ints_for_label(text, "main_i2c_service_32f8_table", ["i2c_secondary_write_rows"])
+
+    assert list(zip(table[0::2], table[1::2])) == [
+        (0x3F, 0x01),
+        (0x30, 0x03),
+        (0x01, 0x04),
+        (0x08, 0x05),
+        (0x01, 0x06),
+        (0x34, 0x07),
+        (0x30, 0x08),
+        (0x08, 0x0D),
+        (0x08, 0x0E),
+        (0x22, 0x0F),
+        (0x00, 0x10),
+        (0x00, 0x11),
+        (0x01, 0x1C),
+        (0x01, 0x1D),
+        (0x02, 0x2D),
+        (0x20, 0x2E),
+    ]
+    _assert_ordered(
+        body,
+        "call        i2c_wait_bus_idle, 0x0",
+        "movlw       LOW(main_i2c_service_32f8_table)",
+        "movlw       HIGH(main_i2c_service_32f8_table)",
+        "movlw       0x10",
+        "bra         i2c_secondary_write_rows",
+    )
+
+
+def test_v34_standby_shutdown_secondary_write_table_preserves_rail_drop_order() -> None:
+    text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    body = _label_body(text, "hw_standby_shutdown", ["flow_hw_standby_shutdown_3c34"])
+    table = _db_ints_for_label(text, "hw_standby_shutdown_i2c_table", ["main_core_service_3c82"])
+
+    assert list(zip(table[0::2], table[1::2])) == [
+        (0x00, 0x1B),
+        (0x00, 0x1C),
+        (0x00, 0x1D),
+    ]
+    _assert_ordered(
+        body,
+        "movlw       LOW(hw_standby_shutdown_i2c_table)",
+        "movlw       HIGH(hw_standby_shutdown_i2c_table)",
+        "movlw       0x03",
+        "call        i2c_secondary_write_rows, 0x0",
+        "btfss       PORTC, 2, ACCESS",
+    )
+
+
+def test_v34_i2c_table_walker_uses_fault_safe_access_counter_and_no_tos_rewrite() -> None:
+    text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    body = _label_body(text, "i2c_secondary_write_rows", ["main_core_service_3398"])
+
+    assert "TOSL" not in body
+    assert "TOSH" not in body
+    assert "FSR0" not in body
+    assert "INDF0" not in body
+    _assert_ordered(
+        body,
+        "clrf        TBLPTRU, ACCESS",
+        "movwf       stock_008_acc, ACCESS",
+        "tblrd*+",
+        "movff       TABLAT, stock_006_b0_phys",
+        "tblrd*+",
+        "movf        TABLAT, W, ACCESS",
+        "call        i2c_secondary_dev_write, 0x0",
+        "decfsz      stock_008_acc, F, ACCESS",
+        "return      0",
+    )
 
 
 def test_v34_chain_copy_eeprom_mode_keeps_pseudo_page_out_of_fsr0h() -> None:
