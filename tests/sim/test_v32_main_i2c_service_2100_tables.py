@@ -1,4 +1,4 @@
-"""V3.2 main_i2c_service_2100 table-shape guard.
+"""V3.2/V3.4 main_i2c_service_2100 table-shape guard.
 
 Pins the packed dispatch/source tables introduced when
 ``main_i2c_service_2100`` was rewritten from two inline xorlw-chain
@@ -19,7 +19,7 @@ from __future__ import annotations
 import pytest
 from intelhex import IntelHex
 
-from dlcp_fw.paths import V32_MAIN_ASM
+from dlcp_fw.paths import V32_MAIN_ASM, V34_MAIN_ASM
 from dlcp_fw.sim.v30_symbols import (
     assemble_v30,
     load_gpasm_symbols_for_hex,
@@ -53,17 +53,27 @@ SOURCE_TABLE_EXPECTED = [
 ]
 
 
-@pytest.fixture(scope="module")
-def v32_symbols_and_hex(tmp_path_factory: pytest.TempPathFactory):
+MAIN_ASM_CASES = [
+    ("v32", V32_MAIN_ASM),
+    ("v34", V34_MAIN_ASM),
+]
+
+
+@pytest.fixture(scope="module", params=MAIN_ASM_CASES, ids=lambda case: case[0])
+def main_symbols_and_hex(
+    tmp_path_factory: pytest.TempPathFactory,
+    request: pytest.FixtureRequest,
+):
     # Per-worker tmp build to avoid xdist races on the canonical release
     # hex (see tests/sim/test_v32_no_pop_flash_entry.py:71 for the same
     # pattern).  Explicit output_lst so the sibling listing lives next
     # to the tmp hex; `load_gpasm_symbols_for_hex` will then resolve
     # symbols from that tmp `.lst` directly.
-    tmp = tmp_path_factory.mktemp("v32_i2c_2100_tables")
-    hex_out = tmp / "DLCP_Firmware_V3.2.hex"
-    lst_out = tmp / "DLCP_Firmware_V3.2.lst"
-    assemble_v30(V32_MAIN_ASM, hex_out, output_lst=lst_out)
+    label, asm_path = request.param
+    tmp = tmp_path_factory.mktemp(f"{label}_i2c_2100_tables")
+    hex_out = tmp / f"DLCP_Firmware_{label.upper()}.hex"
+    lst_out = tmp / f"DLCP_Firmware_{label.upper()}.lst"
+    assemble_v30(asm_path, hex_out, output_lst=lst_out)
     symbols = load_gpasm_symbols_for_hex(hex_out)
     assert symbols is not None, "gpasm listing missing — cannot resolve table addresses"
     ih = IntelHex(str(hex_out))
@@ -74,8 +84,8 @@ def _table_bytes(ih: IntelHex, byte_addr: int, count: int) -> list[int]:
     return [ih[byte_addr + i] for i in range(count)]
 
 
-def test_dispatch_table_bytes_match_expected(v32_symbols_and_hex):
-    symbols, ih = v32_symbols_and_hex
+def test_dispatch_table_bytes_match_expected(main_symbols_and_hex):
+    symbols, ih = main_symbols_and_hex
     byte_addr = symbols["main_i2c_service_2100_dispatch_table"]
     expected = [b for pair in DISPATCH_TABLE_EXPECTED for b in pair]
     actual = _table_bytes(ih, byte_addr, len(expected))
@@ -84,8 +94,8 @@ def test_dispatch_table_bytes_match_expected(v32_symbols_and_hex):
     )
 
 
-def test_source_table_bytes_match_expected(v32_symbols_and_hex):
-    symbols, ih = v32_symbols_and_hex
+def test_source_table_bytes_match_expected(main_symbols_and_hex):
+    symbols, ih = main_symbols_and_hex
     byte_addr = symbols["main_i2c_service_2100_source_table"]
     expected = [b for pair in SOURCE_TABLE_EXPECTED for b in pair]
     actual = _table_bytes(ih, byte_addr, len(expected))
@@ -94,11 +104,11 @@ def test_source_table_bytes_match_expected(v32_symbols_and_hex):
     )
 
 
-def test_tables_do_not_cross_256_byte_page(v32_symbols_and_hex):
+def test_tables_do_not_cross_256_byte_page(main_symbols_and_hex):
     # The Part 2/3 loops compute TBLPTRL as `LOW(table) + 2*counter` without
     # propagating carry into TBLPTRH. That only stays correct while the
     # whole table lives within a single 256-byte page.
-    symbols, _ = v32_symbols_and_hex
+    symbols, _ = main_symbols_and_hex
     for label, span_bytes in (
         ("main_i2c_service_2100_dispatch_table", len(DISPATCH_TABLE_EXPECTED) * 2),
         ("main_i2c_service_2100_source_table", len(SOURCE_TABLE_EXPECTED) * 2),

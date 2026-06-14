@@ -432,10 +432,9 @@ def _drive_b_a_b_to_input_and_trace_immediate_left(
                 break
         chain.step_ticks(PRESET_REENTRY_POLL_TICKS)
 
-    tx_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
-    filename_queries = [
-        frame for frame in tx_frames if frame[0] == 0xB1 and frame[1] == 0x26
-    ]
+    tx_frames, filename_queries = _tx_frames_and_filename_queries(
+        chain.ctl_tx_record_since_last_capture()
+    )
     rx_frames = _sliding_frames(chain.ctl_rx_record_since_last_capture())
     filename_replies = [
         frame for frame in rx_frames if frame[0] == 0xBF and 0x2D <= frame[1] <= 0x4E
@@ -466,6 +465,20 @@ def _bytes_to_frames(raw: list[int]) -> list[tuple[int, int, int]]:
 
 def _sliding_frames(raw: list[int]) -> list[tuple[int, int, int]]:
     return [tuple(raw[i : i + 3]) for i in range(0, len(raw) - 2)]  # type: ignore[misc]
+
+
+def _tx_frames_and_filename_queries(
+    raw: list[int],
+) -> tuple[list[tuple[int, int, int]], list[tuple[int, int, int]]]:
+    aligned = _bytes_to_frames(raw)
+    queries = [frame for frame in aligned if frame[0] == 0xB1 and frame[1] == 0x26]
+    if queries:
+        return aligned, queries
+    sliding = _sliding_frames(raw)
+    sliding_queries = [
+        frame for frame in sliding if frame[0] == 0xB1 and frame[1] == 0x26
+    ]
+    return (sliding if sliding_queries else aligned), sliding_queries
 
 
 def _frame_tuple(frame) -> tuple[int, int, int]:  # type: ignore[no-untyped-def]
@@ -614,10 +627,13 @@ def _assert_native_filename_query_completed(
     # ctl_tx_record_since_last_capture() is consume-on-read; callers that
     # already drained it (e.g. the cache-or-query wrapper) pass the frames in.
     if query_frames is None:
-        query_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
-    filename_queries = [
-        frame for frame in query_frames if frame[0] == 0xB1 and frame[1] == 0x26
-    ]
+        query_frames, filename_queries = _tx_frames_and_filename_queries(
+            chain.ctl_tx_record_since_last_capture()
+        )
+    else:
+        filename_queries = [
+            frame for frame in query_frames if frame[0] == 0xB1 and frame[1] == 0x26
+        ]
     assert filename_queries, f"CONTROL did not issue PB1 cmd 0x26 query: {query_frames!r}"
     assert len(filename_queries) <= 1, (
         f"CONTROL issued {len(filename_queries)} filename queries, expected at most "
@@ -682,10 +698,9 @@ def _assert_native_filename_cache_or_query_completed(
     slot_b: str,
     allow_query: bool,
 ) -> None:  # type: ignore[no-untyped-def]
-    query_frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
-    filename_queries = [
-        frame for frame in query_frames if frame[0] == 0xB1 and frame[1] == 0x26
-    ]
+    query_frames, filename_queries = _tx_frames_and_filename_queries(
+        chain.ctl_tx_record_since_last_capture()
+    )
     assert len(filename_queries) <= 1, (
         f"CONTROL issued {len(filename_queries)} filename queries, expected at most "
         f"1: {filename_queries!r}"
@@ -2321,9 +2336,9 @@ def test_v34_v173_refactoring_layout_labels_are_pinned() -> None:
     assert _lst_symbol_address(V173_CONTROL_LST, "control_release_metadata") == 0x77B0
     assert _lst_symbol_address(V173_CONTROL_LST, "bootloader_entry") == 0x7800
     # MAIN floor matches the canonical headroom gate in
-    # test_v34_v173_refactoring_contracts.py (raised 24 -> 200 on
-    # 2026-06-12 after the size-reclaim S-series; see the rationale there).
-    _assert_listing_fits_before(V34_MAIN_LST, 0x4C00, min_margin=200)
+    # test_v34_v173_refactoring_contracts.py.  2026-06-13 FIELD-5 override:
+    # user explicitly relaxed the V3.4 reserve floor to 10 bytes.
+    _assert_listing_fits_before(V34_MAIN_LST, 0x4C00, min_margin=10)
     _assert_listing_fits_before(V173_CONTROL_LST, 0x77B0, min_margin=64)
 
 
@@ -2961,10 +2976,10 @@ def test_v172_v32_native_chain_filename_control_old_main_blanks_after_timeout(
     assert not (flags & FNAME_VALID_MASK)
     assert not (flags & FNAME_PENDING_MASK)
     assert chain.lcd_lines() == ("Preset         A", "                ")
-    assert any(
-        route == 0xB1 and cmd == 0x26
-        for route, cmd, _data in _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
+    _tx_frames, filename_queries = _tx_frames_and_filename_queries(
+        chain.ctl_tx_record_since_last_capture()
     )
+    assert filename_queries
 
 
 def test_v171_v33_native_chain_old_control_never_sends_filename_query(
@@ -2982,7 +2997,10 @@ def test_v171_v33_native_chain_old_control_never_sends_filename_query(
     _wait_for_lcd(chain, lambda lcd: lcd == ("Preset          ", "Active: A       "))
     chain.step_ticks(20_000_000)
 
-    frames = _bytes_to_frames(chain.ctl_tx_record_since_last_capture())
+    frames, filename_queries = _tx_frames_and_filename_queries(
+        chain.ctl_tx_record_since_last_capture()
+    )
+    assert not filename_queries
     assert not any(cmd == 0x26 for _route, cmd, _data in frames)
     assert chain.lcd_lines() == ("Preset          ", "Active: A       ")
 

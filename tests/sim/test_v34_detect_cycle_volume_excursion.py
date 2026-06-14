@@ -32,6 +32,10 @@ from dlcp_fw.sim.dlcp_sim_native import Chain  # noqa: E402
 
 SRC_REG_NON_PCM = 0x12
 SRC_REG_RX_STATUS = 0x13
+SRC_REG_RX_LOCK = 0x14
+UNLOCK_BIT = 0x04
+SRC_LOSS_DEBOUNCE = 0x2F3
+SRC_HARD_LOSS_CONFIRM_SAMPLES = 0x14
 ONE_S = 48_000_000
 DETECT_CYCLES = 5
 
@@ -43,6 +47,7 @@ def cycled_chain():
     )
     chain.run_until_connected(limit=240)
     chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x01)
+    chain.poke_main_src4382_reg(0, SRC_REG_RX_LOCK, 0x00)
     chain.poke_main_src4382_reg(0, SRC_REG_NON_PCM, 0x00)
     chain.step_ticks(4 * ONE_S)
     return chain
@@ -71,12 +76,15 @@ def test_detect_cycles_never_write_louder_master_volume(cycled_chain) -> None:
 
     offenders: list[tuple[int, str]] = []
     for cycle in range(DETECT_CYCLES):
+        # This regression is about route-flux volume writes during confirmed
+        # loss/reacquire cycles, not about the real-time loss threshold.  The
+        # full threshold is exercised in test_v34_src4382_lock_hysteresis.
+        chain.write_main_reg(0, SRC_LOSS_DEBOUNCE, SRC_HARD_LOSS_CONFIRM_SAMPLES - 1)
         chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x00)
-        # rev 0x88 widened the loss debounce to 6 consecutive samples; keep
-        # the loss phase long enough that every cycle still CONFIRMS and
-        # exercises the route-flux window this test guards
-        chain.step_ticks(5 * ONE_S)
+        chain.poke_main_src4382_reg(0, SRC_REG_RX_LOCK, UNLOCK_BIT)
+        chain.step_ticks(ONE_S)
         chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x01)
+        chain.poke_main_src4382_reg(0, SRC_REG_RX_LOCK, 0x00)
         chain.step_ticks(2 * ONE_S)
         for w in _master_volume_writes(chain):
             value = int.from_bytes(w, "big")

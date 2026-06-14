@@ -41,6 +41,8 @@ DIAG_SRC_M = 0x3C4
 
 SRC_REG_NON_PCM = 0x12
 SRC_REG_RX_STATUS = 0x13
+SRC_REG_RX_LOCK = 0x14
+UNLOCK_BIT = 0x04
 
 IR_ADDR = 0x10
 IR_PRESET_A = 0x38
@@ -63,6 +65,7 @@ def settled_chain():
     )
     chain.run_until_connected(limit=240)
     chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x01)
+    chain.poke_main_src4382_reg(0, SRC_REG_RX_LOCK, 0x00)
     chain.poke_main_src4382_reg(0, SRC_REG_NON_PCM, 0x00)
     chain.step_ticks(4 * ONE_S)
     return chain
@@ -132,23 +135,25 @@ def test_source_loss_and_reacquire_count_l_and_c(settled_chain) -> None:
     before = _cells(chain)
 
     chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x00)
-    chain.step_ticks(6 * ONE_S)          # K=6 loss debounce (rev 0x88): ~3 s to confirm
+    chain.poke_main_src4382_reg(0, SRC_REG_RX_LOCK, UNLOCK_BIT)
+    chain.step_ticks(14 * ONE_S)         # sustained hard unlock through the V3.4 threshold
     lost = _cells(chain)
     assert lost["L"] >= before["L"] + 1, (before, lost)
     assert lost["C"] >= before["C"] + 1, (before, lost)
 
     chain.poke_main_src4382_reg(0, SRC_REG_RX_STATUS, 0x01)
+    chain.poke_main_src4382_reg(0, SRC_REG_RX_LOCK, 0x00)
     chain.step_ticks(4 * ONE_S)
     back = _cells(chain)
     assert back["C"] >= lost["C"] + 1, (lost, back)
 
 
 def test_preset_switch_counts_walk_and_mute(settled_chain) -> None:
-    """Each completed async preset switch is one full table walk (T, exact:
-    nothing else walks tables) and at least one forced-mute DSP write (M,
-    floor: the counter is shared with detect-machinery mutes, and prior
-    tests' trailing detect state may land one during these windows under
-    xdist module splits).
+    """Each completed preset switch is two full table walks (T, exact): the
+    async APPLY walk plus the FIELD-7 validated lifecycle reassert that owns
+    the final coefficient image before volume restore.  M is a floor: the
+    counter is shared with detect-machinery mutes, and prior tests' trailing
+    detect state may land one during these windows under xdist module splits.
     """
     chain = settled_chain
     chain.step_ticks(6 * ONE_S)   # drain any trailing detect-machinery state
@@ -157,13 +162,13 @@ def test_preset_switch_counts_walk_and_mute(settled_chain) -> None:
     chain.inject_decoded_ir_event(addr=IR_ADDR, cmd=IR_PRESET_B)
     chain.step_ticks(4 * ONE_S)
     after_b = _cells(chain)
-    assert after_b["T"] == before["T"] + 1, (before, after_b)
+    assert after_b["T"] == before["T"] + 2, (before, after_b)
     assert after_b["M"] >= before["M"] + 1, (before, after_b)
 
     chain.inject_decoded_ir_event(addr=IR_ADDR, cmd=IR_PRESET_A)
     chain.step_ticks(4 * ONE_S)
     after_a = _cells(chain)
-    assert after_a["T"] == before["T"] + 2, (before, after_a)
+    assert after_a["T"] == before["T"] + 4, (before, after_a)
     assert after_a["M"] >= before["M"] + 2, (before, after_a)
 
 

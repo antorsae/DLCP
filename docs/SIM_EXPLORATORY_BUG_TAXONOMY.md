@@ -112,6 +112,24 @@ cache; responses continue after a timeout/reset should have discarded them.
 - Trigger families: synthetic raw bytes / partial frames / duplicated bytes /
   stale echo (lower priority unless durable); overlapping real transactions.
 
+## Class 10 — Live audio on wrong DSP coefficient image
+A MAIN reports a settled healthy preset state and restores live audio, but the
+actual TAS3108 preset coefficient image does not match the clean image for that
+reported preset.
+- Signature: `PBn_job=0`, gate open, effective mute clear, SRC4382 reports a
+  live PCM source (`RXCKR[1:0] != 0`, non-PCM clear), latest TAS `0x30`
+  non-zero, no DSP/ACK fault flags, LCD/CONTROL preset agrees with the MAIN,
+  yet the MAIN's TAS `0x37..0x90` image differs from the golden image for the
+  reported preset.  This includes partial images such as a missing TAS burst
+  with all status indicators healthy.
+- Trigger families: A/B preset reversal during the async APPLY window, especially
+  B->A or A->B when the second request lands at a narrow PB2 APPLY phase; SRC4382
+  RXCKR/lock-estimator churn while Auto Detect is active; preset flip interleaved
+  with volume, route, standby/wake, or filename traffic.
+- Severity discipline: this is `HIGH` whenever live audio is restored on the
+  wrong image.  Do not down-rank it because the phase aligner is SRC RXCKR churn
+  or another realistic environmental timing perturbation.
+
 ## Severity & artifact discipline
 Use `docs/SIM_CHAIN_EXPLORATORY_STRESS_SPEC.md` §Severity and
 §"Bug vs Harness Artifact Checklist". In particular, before promoting a finding:

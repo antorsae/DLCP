@@ -155,6 +155,8 @@ The runner should be able to seed or create HFD-like state for both PBs:
   reset
 - one preset has valid coefficients while the other is blank or partially
   updated
+- clean golden TAS `0x37..0x90` coefficient images for preset A and preset B,
+  learned per PB before bug-hunt stimulus starts
 
 Do not require fixed names in this spec.  The runner should use a generator
 with named categories and log the actual generated strings and byte payloads.
@@ -183,6 +185,8 @@ Use real CONTROL-facing paths:
 
 - decoded IR events: volume up/down, mute, explicit preset A/B, standby, wake,
   source up/down, menu/navigation commands
+- preset phase sweeps: drive A->B and B->A with the delay before the second
+  preset command deliberately swept/jittered across the PB2 async APPLY window
 - front-panel key pins: RIGHT, LEFT, UP, DOWN, SELECT/OK, STBY where modeled
 - menu navigation while parked on Volume, Preset, Setup, Input, PB1 Diag,
   PB2 Diag, and any reachable secondary page
@@ -236,6 +240,9 @@ scripts:
 - Preset filename incremental LCD repaint and scroll
 - source-selection transition and SRC4382 Auto Detect candidate convergence
 - TAS3108 preset apply and volume write
+- PB2 async preset APPLY/COMMIT/unmute: sample at high cadence while the
+  second A/B command lands at varied phases, including SRC4382 RXCKR
+  lock-estimator holes as realistic environmental timing
 - standby close-gate, wake open-gate, and AN0 standby-sense path
 - UART frame-gap timeout windows
 - TX/RX ring near-full conditions
@@ -284,6 +291,8 @@ Record per MAIN:
 - TAS3108 stats and recent write payloads
 - DSP register snapshots for volume, mute, preset-dependent coefficient entry
   points, and fault-relevant registers
+- actual TAS `0x37..0x90` preset coefficient image, digest, and golden-image
+  match state for the reported preset
 - MSSP fault injection state and consumed fault counters
 
 If any local tool uses the legacy name `SRS`, treat it as an alias for this
@@ -366,6 +375,13 @@ Potential bug if:
   cleared
 - mute/volume/preset DSP state differs between PB1 and PB2 after a stable
   broadcast settle window
+- a settled, gate-open, unmuted, fault-free MAIN with SRC4382 live-PCM evidence
+  (`RXCKR[1:0] != 0`, non-PCM clear) restores a non-zero TAS `0x30`
+  master-volume payload while its TAS `0x37..0x90` coefficient image differs
+  from the clean golden image for its reported preset.  This is a HIGH safety
+  incident even when LCD, route, preset flag, and diagnostics all look healthy.
+  The incident must include per-register diffs and recent TAS writes around the
+  differing registers, not only a digest.
 
 ### Fault Surfacing and Recovery
 
@@ -396,7 +412,8 @@ Potential bug if:
 Use these severities in `incidents.jsonl`:
 
 - `HIGH`: liveness loss, unrecoverable audio/control loss, durable corruption,
-  wrong PB target, or safety-relevant standby/wake failure.
+  wrong PB target, live audio restored on the wrong DSP coefficient image, or
+  safety-relevant standby/wake failure.
 - `MEDIUM`: recoverable but user-visible incorrect UI/protocol/audio behavior,
   incorrect diagnostics, repeated source/DSP convergence failure, or serious
   saturation.
@@ -468,6 +485,9 @@ mix rather than a single long random walk:
 - 20 percent: UI/menu/IR activity during normal playback.
 - 15 percent: Preset filename and HFD upload churn.
 - 15 percent: SRC/source-selection and Auto Detect under source loss/NACKs.
+- 15 percent: preset phase-sweep/hammer sessions, including A->B and B->A with
+  pre-second-command jitter and SRC4382 RXCKR churn treated as realistic timing
+  when judging wrong-coefficient audio safety.
 - 15 percent: standby/wake/reset/reconnect windows.
 - 15 percent: Diagnostics parked pages under real event and fault traffic.
 - 10 percent: TX/RX saturation, partial frames, and old/pre-feature echoes.

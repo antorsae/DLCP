@@ -148,6 +148,10 @@ def _stimulus_str(event: dict[str, Any]) -> str:
         return f"fault:TAS3108_nack(unit={params.get('unit')}, phase={params.get('phase')}, n={params.get('count')})" + suffix
     if action == "src_reg":
         return f"setup:SRC4382_reg(unit={params.get('unit')}, reg=0x{int(params.get('reg',0)):02X}, val=0x{int(params.get('value',0)):02X})" + suffix
+    if action == "src_rxckr_hole":
+        return f"env:SRC4382_RXCKR_hole(units={params.get('units')})" + suffix
+    if action == "src_rxckr_locked":
+        return f"env:SRC4382_RXCKR_locked(units={params.get('units')})" + suffix
     if action == "mssp_stop":
         return f"fault:MSSP_stop_stuck(unit={params.get('unit')}, cycles={params.get('cycles')}, n={params.get('count')})" + suffix
     if action == "line_hold":
@@ -231,6 +235,9 @@ def _state_vector(obs: dict[str, Any]) -> dict[str, Any]:
         # actual preset-coefficient fingerprint (biquad range 0x37..0x90)
         sv[f"{tag}_dsp_digest"] = m.get("dsp_biquad_digest", "")
         sv[f"{tag}_dsp_full"] = m.get("dsp_full_digest", "")
+        sv[f"{tag}_golden_live"] = bool(m.get("golden_coeff_live_checked", False))
+        sv[f"{tag}_golden_match"] = m.get("golden_coeff_match")
+        sv[f"{tag}_golden_digest"] = m.get("golden_coeff_digest", "")
     return sv
 
 
@@ -475,6 +482,12 @@ def render_card(run_dir: Path, session_id: int) -> str:
                 + (f" tas30_since={sv[f'{tag}_tas30_since']}" if sv[f'{tag}_tas30_since'] else "")
                 + (" tas30_nonzero!" if sv[f'{tag}_tas30_nonzero'] else "")
                 + (f" dsp_coeff={sv.get(f'{tag}_dsp_digest', '--')}" if sv.get(f'{tag}_dsp_digest') else "")
+                + (
+                    f" golden={sv.get(f'{tag}_golden_digest', '--')}"
+                    f"/{'OK' if sv.get(f'{tag}_golden_match') else 'BAD'}"
+                    if sv.get(f"{tag}_golden_live")
+                    else ""
+                )
             )
         changes = _diff(prev_sv, sv)
         if changes:
@@ -606,6 +619,8 @@ def _triage_session(
         "final_cross_pb_coeff_desync": False,
         "preset_coeff_collision": False,   # preset A and B map to SAME coeffs
         "preset_coeff_unstable": False,    # one preset maps to >1 coeff image
+        "live_wrong_coeff_obs": 0,
+        "final_live_wrong_coeff": False,
         # candidate mute-leak windows: CONTROL shows muted yet a MAIN wrote a
         # volume coefficient (0x30) in the interval (agent adjudicates the value).
         "mute_volwrite_obs": 0,
@@ -628,6 +643,9 @@ def _triage_session(
     for sv in svs:
         if sv["PB1_gate"] and sv["PB2_gate"] and sv["PB1_preset"] != sv["PB2_preset"]:
             signals["preset_mismatch_obs"] += 1
+        for tag in ("PB1", "PB2"):
+            if sv.get(f"{tag}_golden_live") and sv.get(f"{tag}_golden_match") is False:
+                signals["live_wrong_coeff_obs"] += 1
         # cross-PB coefficient desync: both awake, SAME active preset, but the
         # actual biquad coefficient images differ -> one MAIN has wrong/stale
         # coeffs even though the preset flags agree.
@@ -694,6 +712,10 @@ def _triage_session(
         signals["final_mute_volwrite"] = bool(
             last.get("ctl_mute") and (last.get("PB1_tas30_nonzero") or last.get("PB2_tas30_nonzero"))
         )
+        signals["final_live_wrong_coeff"] = any(
+            last.get(f"{tag}_golden_live") and last.get(f"{tag}_golden_match") is False
+            for tag in ("PB1", "PB2")
+        )
     else:
         # no observations: boot/connect failure or aborted before sampling
         signals["no_observations"] = True
@@ -731,6 +753,8 @@ def _triage_session(
         + 2 * min(signals["gate_mismatch_obs"], 8)
         + 1 * min(signals["ui_main_preset_mismatch_obs"], 8)
         + (5 if signals["lcd_idle_streak"] >= 8 else 0)
+        + 100 * int(signals["final_live_wrong_coeff"])
+        + 20 * min(signals["live_wrong_coeff_obs"], 5)
         + 24 * int(signals["final_cross_pb_coeff_desync"])
         + 18 * int(signals["preset_coeff_collision"])
         # soft/confounded: the biquad range (0x37..0x90) is also perturbed within a
@@ -764,6 +788,8 @@ def _triage_session(
         + 2 * min(signals["preset_mismatch_obs"], 6)
         + 1 * min(signals["ui_main_preset_mismatch_obs"], 6)
         + (4 if signals["lcd_idle_streak"] >= 8 else 0)
+        + 100 * int(signals["final_live_wrong_coeff"])
+        + 20 * min(signals["live_wrong_coeff_obs"], 5)
         + 24 * int(signals["final_cross_pb_coeff_desync"])
         + 18 * int(signals["preset_coeff_collision"])
         # soft/confounded (see score above); minor tiebreaker only

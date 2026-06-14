@@ -65,8 +65,11 @@ CONTROL_IR_PROFILE_SEL = 0x0A7  # cmd1d_setting: 0x04=Hypex@0x10, 0x03=RC-5@0x00
 MAIN_ACTIVE_FLAGS = 0x05E
 MAIN_ACTIVE_PRESET_MASK = 0x04
 MAIN_ACTIVE_GATE_MASK = 0x08
+MAIN_ACTIVE_MUTE_MASK = 0x10
 MAIN_PRESET_JOB_STATE = 0x2DE
 MAIN_PRESET_JOB_TARGET = 0x2DF
+MAIN_PRESET_JOB_INDEX = 0x2E0
+MAIN_PRESET_JOB_FLAGS = 0x2E2
 # Semantically-critical MAIN state the oracle was previously blind to.  Without
 # these, mute-leak (Class 5) and IR/volume/route bugs cannot be distinguished
 # from benign refresh traffic.  Addresses from src/dlcp_fw/asm/dlcp_main_ram.inc.
@@ -78,6 +81,29 @@ MAIN_STOCK094_MUTE_LATCH = 0x094
 MAIN_INPUT_SELECT = 0x099
 MAIN_INPUT_MIRROR = 0x0B3
 TAS_VOLUME_SUBADDR = 0x30
+TAS_BIQUAD_FIRST = 0x37
+TAS_BIQUAD_LAST = 0x90
+TAS_BIQUAD_SUBADDRS = tuple(range(TAS_BIQUAD_FIRST, TAS_BIQUAD_LAST + 1))
+DSP_FAULT_MASK = 0x40
+DSP_ACKSTAT_MASK = 0x04
+SRC_REG_NON_PCM = 0x12
+SRC_REG_RX_STATUS = 0x13
+SRC_REG_RX_LOCK = 0x14
+SRC_LOCKED_REGS = {
+    SRC_REG_NON_PCM: 0x00,
+    SRC_REG_RX_STATUS: 0x01,
+    SRC_REG_RX_LOCK: 0x00,
+}
+SRC_RXCKR_HOLE_REGS = {
+    SRC_REG_NON_PCM: 0x00,
+    SRC_REG_RX_STATUS: 0x00,
+    SRC_REG_RX_LOCK: 0x00,
+}
+SRC_REG_HEX_KEYS = {
+    SRC_REG_NON_PCM: f"0x{SRC_REG_NON_PCM:02X}",
+    SRC_REG_RX_STATUS: f"0x{SRC_REG_RX_STATUS:02X}",
+    SRC_REG_RX_LOCK: f"0x{SRC_REG_RX_LOCK:02X}",
+}
 MAIN_DIAG_BASE = 0x2E5
 MAIN_DIAG_RESET_BASE = 0x2ED
 MAIN_DIAG_NAMES = ("I", "D", "S", "B", "R", "A", "P")
@@ -115,6 +141,20 @@ CMD03_FILENAME_WRITE = 0x09
 CMD03_FILENAME_ERASE = 0x0A
 
 UNPRINTABLE_REPLACEMENT = "\ufffd"
+GOLDEN_SETTLE_TICKS = 260_000_000
+PHASE_SAMPLE_TICKS = 250_000
+PHASE_SAMPLE_COUNT = 260
+PHASE_SWEEP_DELAYS = (
+    0,
+    250_000,
+    500_000,
+    1_000_000,
+    2_000_000,
+    4_000_000,
+    8_000_000,
+    12_000_000,
+)
+PHASE_SWEEP_JITTER = 250_000
 
 
 def _json_default(obj: object) -> object:
@@ -186,6 +226,370 @@ def _compact_stats(stats: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _digest_bytes(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()[:12]
+
+
+def _dsp_biquad_image(chain: Chain, unit: int) -> bytes:
+    return bytes(chain.read_main_dsp_reg(unit, subaddr) for subaddr in TAS_BIQUAD_SUBADDRS)
+
+
+def _golden_summary(
+    golden_images: dict[int, dict[int, bytes]],
+) -> dict[str, Any]:
+    return {
+        "range": f"0x{TAS_BIQUAD_FIRST:02X}..0x{TAS_BIQUAD_LAST:02X}",
+        "units": {
+            str(unit): {
+                ("B" if preset else "A"): {
+                    "digest": _digest_bytes(image),
+                    "image": image.hex(),
+                }
+                for preset, image in per_preset.items()
+            }
+            for unit, per_preset in golden_images.items()
+        },
+    }
+
+
+def _set_src_regs(chain: Chain, unit: int, values: dict[int, int]) -> None:
+    for reg, value in values.items():
+        chain.poke_main_src4382_reg(unit, reg, value)
+
+
+def _set_all_src_locked(chain: Chain) -> None:
+    for unit in (0, 1):
+        _set_src_regs(chain, unit, SRC_LOCKED_REGS)
+
+
+def _send_ir_preset(chain: Chain, preset_b: bool) -> None:
+    chain.inject_decoded_ir_event(
+        addr=IR_ADDR_HYPEX,
+        cmd=IR_CMDS["preset_b"] if preset_b else IR_CMDS["preset_a"],
+    )
+
+
+def learn_preset_golden_images(
+    control_hex: Path | str,
+    main_hex: Path | str,
+) -> dict[int, dict[int, bytes]]:
+    """Learn stable clean A/B TAS 0x37..0x90 images for each MAIN unit."""
+    chain = Chain.from_v171_v32(
+        control_hex_path=str(control_hex),
+        main_hex_path=str(main_hex),
+    )
+    chunks = chain.run_until_connected(limit=300)
+    if chunks >= 300 or not chain.is_connected():
+        raise RuntimeError("golden coeff learner could not reach connected chain")
+    _set_all_src_locked(chain)
+    chain.step_ticks(4 * 48_000_000)
+
+    _send_ir_preset(chain, True)
+    chain.step_ticks(GOLDEN_SETTLE_TICKS)
+    for unit in (0, 1):
+        if chain.read_main_reg(unit, MAIN_PRESET_JOB_STATE):
+            raise RuntimeError(f"golden coeff learner preset B did not settle on unit {unit}")
+    b_images = {unit: _dsp_biquad_image(chain, unit) for unit in (0, 1)}
+
+    _send_ir_preset(chain, False)
+    chain.step_ticks(GOLDEN_SETTLE_TICKS)
+    for unit in (0, 1):
+        if chain.read_main_reg(unit, MAIN_PRESET_JOB_STATE):
+            raise RuntimeError(f"golden coeff learner preset A did not settle on unit {unit}")
+    a_images = {unit: _dsp_biquad_image(chain, unit) for unit in (0, 1)}
+
+    return {
+        unit: {
+            0: a_images[unit],
+            1: b_images[unit],
+        }
+        for unit in (0, 1)
+    }
+
+
+def _image_diff(expected: bytes, observed: bytes) -> list[dict[str, int]]:
+    diffs = []
+    for offset, (exp, got) in enumerate(zip(expected, observed)):
+        if exp != got:
+            diffs.append(
+                {
+                    "subaddr": TAS_BIQUAD_FIRST + offset,
+                    "expected": exp,
+                    "observed": got,
+                }
+            )
+    return diffs
+
+
+def _int_from_hex(raw: str) -> int:
+    if not raw:
+        return 0
+    return int(raw, 16)
+
+
+def _tas_write_tail(chain: Chain | None, unit: int, subaddr: int) -> list[str]:
+    if chain is None:
+        return []
+    try:
+        return [payload.hex() for payload in chain.read_main_dsp_write_payloads(unit, subaddr)[-4:]]
+    except Exception:
+        return []
+
+
+def _src_regs_indicate_live_pcm(unit_state: dict[str, Any]) -> bool:
+    regs = unit_state.get("src_regs", {})
+    rx_status = int(regs.get(SRC_REG_HEX_KEYS[SRC_REG_RX_STATUS], 0))
+    non_pcm = int(regs.get(SRC_REG_HEX_KEYS[SRC_REG_NON_PCM], 0))
+    return (rx_status & 0x03) != 0 and (non_pcm & 0x01) == 0
+
+
+def _golden_coeff_incident(
+    sample: dict[str, Any],
+    unit_state: dict[str, Any],
+    golden_images: dict[int, dict[int, bytes]] | None,
+    *,
+    chain: Chain | None = None,
+    recent_events: list[dict[str, Any]] | None = None,
+) -> Incident | None:
+    if not golden_images:
+        return None
+    unit = int(unit_state["unit"])
+    active_flags = int(unit_state["active_flags"])
+    preset = int(unit_state["active_preset"])
+    image_hex = str(unit_state.get("dsp_biquad_image", ""))
+    if not image_hex:
+        return None
+    src_live_pcm = _src_regs_indicate_live_pcm(unit_state)
+    live = (
+        int(unit_state.get("preset_job_state", 0)) == 0
+        and bool(active_flags & MAIN_ACTIVE_GATE_MASK)
+        and not bool(active_flags & MAIN_ACTIVE_MUTE_MASK)
+        and src_live_pcm
+        and _int_from_hex(str(unit_state.get("tas30_last_write", ""))) != 0
+        and (int(unit_state.get("dsp_fault_flags", 0)) & (DSP_FAULT_MASK | DSP_ACKSTAT_MASK)) == 0
+    )
+    if not live:
+        return None
+    expected = golden_images.get(unit, {}).get(preset)
+    if expected is None:
+        return None
+    observed = bytes.fromhex(image_hex)
+    if observed == expected:
+        return None
+
+    diffs = _image_diff(expected, observed)
+    around = sorted(
+        {
+            max(TAS_BIQUAD_FIRST, d["subaddr"] + delta)
+            for d in diffs[:4]
+            for delta in (-1, 0, 1)
+            if TAS_BIQUAD_FIRST <= d["subaddr"] + delta <= TAS_BIQUAD_LAST
+        }
+    )
+    tas_near = {f"0x{sub:02X}": _tas_write_tail(chain, unit, sub) for sub in around}
+    observed_payload = {
+        "unit": unit,
+        "reported_preset": "B" if preset else "A",
+        "expected_digest": _digest_bytes(expected),
+        "observed_digest": _digest_bytes(observed),
+        "diffs": diffs[:16],
+        "diff_count": len(diffs),
+        "active_flags": active_flags,
+        "preset_job_state": int(unit_state.get("preset_job_state", 0)),
+        "preset_job_index": int(unit_state.get("preset_job_index", 0)),
+        "preset_job_target": int(unit_state.get("preset_job_target", 0)),
+        "preset_job_flags": int(unit_state.get("preset_job_flags", 0)),
+        "dsp_fault_flags": int(unit_state.get("dsp_fault_flags", 0)),
+        "src_live_pcm": src_live_pcm,
+        "latest_tas30": str(unit_state.get("tas30_last_write", "")),
+        "tas30_write_count": int(unit_state.get("tas30_write_count", 0)),
+        "tas_near_diff_writes": tas_near,
+        "src_regs": unit_state.get("src_regs", {}),
+        "src_stats": unit_state.get("src_stats", {}),
+        "tas_stats": unit_state.get("tas_stats", {}),
+        "lcd": sample.get("lcd"),
+        "recent_stimuli": recent_events or [],
+    }
+    return Incident(
+        "HIGH",
+        "audio.golden_coeff.live_wrong_image",
+        (
+            f"MAIN{unit} is live on preset {'B' if preset else 'A'} "
+            "with DSP coefficients different from the clean golden image"
+        ),
+        (
+            "a settled, unmuted, fault-free MAIN must never restore live audio "
+            "unless its DSP preset coefficients match the reported preset"
+        ),
+        observed_payload,
+        "MAIN preset APPLY / TAS3108 coefficient image",
+        (
+            "live-wrong-coeff:"
+            f"unit{unit}:preset{preset}:"
+            f"{observed_payload['expected_digest']}:{observed_payload['observed_digest']}"
+        ),
+    )
+
+
+def _golden_match_fields(
+    unit_state: dict[str, Any],
+    golden_images: dict[int, dict[int, bytes]] | None,
+) -> dict[str, Any]:
+    if not golden_images:
+        return {}
+    unit = int(unit_state["unit"])
+    preset = int(unit_state["active_preset"])
+    expected = golden_images.get(unit, {}).get(preset)
+    image_hex = str(unit_state.get("dsp_biquad_image", ""))
+    if expected is None or not image_hex:
+        return {}
+    observed = bytes.fromhex(image_hex)
+    active_flags = int(unit_state["active_flags"])
+    src_live_pcm = _src_regs_indicate_live_pcm(unit_state)
+    live_checked = (
+        int(unit_state.get("preset_job_state", 0)) == 0
+        and bool(active_flags & MAIN_ACTIVE_GATE_MASK)
+        and not bool(active_flags & MAIN_ACTIVE_MUTE_MASK)
+        and src_live_pcm
+        and _int_from_hex(str(unit_state.get("tas30_last_write", ""))) != 0
+        and (int(unit_state.get("dsp_fault_flags", 0)) & (DSP_FAULT_MASK | DSP_ACKSTAT_MASK)) == 0
+    )
+    return {
+        "golden_coeff_digest": _digest_bytes(expected),
+        "golden_coeff_match": observed == expected,
+        "golden_coeff_live_checked": live_checked,
+        "golden_coeff_src_live_pcm": src_live_pcm,
+    }
+
+
+def build_preset_phase_sweep_plan(
+    rng: random.Random,
+    *,
+    cycles: int = 2,
+    sample_count: int = PHASE_SAMPLE_COUNT,
+) -> list[tuple[str, dict[str, Any]]]:
+    plan: list[tuple[str, dict[str, Any]]] = []
+    start_b_to_a = bool(rng.randrange(2))
+    for cycle in range(cycles):
+        b_to_a = start_b_to_a if cycle % 2 == 0 else not start_b_to_a
+        origin_b = b_to_a
+        target_b = not origin_b
+        delay = rng.choice(PHASE_SWEEP_DELAYS) + rng.randrange(PHASE_SWEEP_JITTER)
+        use_churn = bool(rng.randrange(2))
+        direction = ("B" if origin_b else "A") + "->" + ("B" if target_b else "A")
+        origin_setup: list[tuple[str, dict[str, Any]]] = []
+        if not origin_b:
+            origin_setup.extend(
+                [
+                    (
+                        "ir",
+                        {
+                            "cmd": IR_CMDS["preset_b"],
+                            "settle_ticks": 0,
+                            "purpose": "phase_origin_primer",
+                            "direction": direction,
+                            "observe": False,
+                        },
+                    ),
+                    (
+                        "step",
+                        {
+                            "ticks": 160_000_000,
+                            "purpose": "phase_origin_primer_settle",
+                            "direction": direction,
+                            "observe": False,
+                        },
+                    ),
+                ]
+            )
+        origin_setup.extend(
+            [
+                (
+                    "ir",
+                    {
+                        "cmd": IR_CMDS["preset_b"] if origin_b else IR_CMDS["preset_a"],
+                        "settle_ticks": 0,
+                        "purpose": "phase_origin",
+                        "direction": direction,
+                        "observe": False,
+                    },
+                ),
+                (
+                    "step",
+                    {
+                        "ticks": 160_000_000,
+                        "purpose": "phase_origin_settle",
+                        "direction": direction,
+                        "observe": False,
+                    },
+                ),
+            ]
+        )
+        plan.extend(origin_setup)
+        if use_churn:
+            plan.append(
+                (
+                    "src_rxckr_hole",
+                    {
+                        "units": [0, 1],
+                        "purpose": "phase_src_churn",
+                        "direction": direction,
+                    },
+                )
+            )
+        plan.extend(
+            [
+                (
+                    "step",
+                    {
+                        "ticks": delay,
+                        "purpose": "phase_delay_before_second",
+                        "phase_delay_ticks": delay,
+                        "direction": direction,
+                        "src_rxckr_churn": use_churn,
+                    },
+                ),
+                (
+                    "ir",
+                    {
+                        "cmd": IR_CMDS["preset_b"] if target_b else IR_CMDS["preset_a"],
+                        "settle_ticks": 0,
+                        "purpose": "phase_target",
+                        "direction": direction,
+                        "phase_delay_ticks": delay,
+                        "src_rxckr_churn": use_churn,
+                        "observe": False,
+                    },
+                ),
+            ]
+        )
+        if use_churn:
+            plan.append(
+                (
+                    "src_rxckr_locked",
+                    {
+                        "units": [0, 1],
+                        "purpose": "phase_src_restore",
+                        "direction": direction,
+                    },
+                )
+            )
+        plan.append(
+            (
+                "phase_sample_window",
+                {
+                    "ticks": PHASE_SAMPLE_TICKS,
+                    "samples": sample_count,
+                    "purpose": "phase_apply_commit_sample",
+                    "direction": direction,
+                    "phase_delay_ticks": delay,
+                    "src_rxckr_churn": use_churn,
+                },
+            )
+        )
+    return plan
+
+
 class JsonlWriter:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -255,6 +659,7 @@ class Explorer:
         self.deadline = time.monotonic() + args.duration_seconds
         self.control_hex = Path(args.control_hex).resolve()
         self.main_hex = Path(args.main_hex).resolve()
+        self.golden_images = learn_preset_golden_images(self.control_hex, self.main_hex)
         self.manifest = self._manifest()
         (self.run_dir / "manifest.json").write_text(
             json.dumps(self.manifest, indent=2, sort_keys=True, default=_json_default) + "\n",
@@ -292,6 +697,7 @@ class Explorer:
             "control_hex_sha256": _sha256(self.control_hex),
             "main_hex": str(self.main_hex),
             "main_hex_sha256": _sha256(self.main_hex),
+            "golden_coefficients": _golden_summary(self.golden_images),
             "spec": str(PROJECT_ROOT / "docs" / "SIM_CHAIN_EXPLORATORY_STRESS_SPEC.md"),
             "command": sys.argv,
         }
@@ -361,6 +767,7 @@ class Explorer:
         choices = [
             ("ui", 20),
             ("preset-filename", 15),
+            ("preset-phase-sweep", 12),
             ("src", 15),
             ("standby-reset", 15),
             ("diag", 15),
@@ -407,6 +814,9 @@ class Explorer:
             a2 = a
         else:
             a2, b2 = self._name_choice(), self._name_choice()
+        src_initial = self.rng.choice(["locked", "lost", "non_pcm", "flap"])
+        if campaign == "preset-phase-sweep":
+            src_initial = "locked"
         return SessionConfig(
             session_id=session_id,
             campaign=campaign,
@@ -415,7 +825,7 @@ class Explorer:
             slot_b_pb1=b,
             slot_a_pb2=a2,
             slot_b_pb2=b2,
-            src_initial=self.rng.choice(["locked", "lost", "non_pcm", "flap"]),
+            src_initial=src_initial,
             active_preset=self.rng.choice(["A", "B"]),
             reset_source=self.rng.choice(["por", "bor", "mclr"]),
         )
@@ -508,68 +918,66 @@ class Explorer:
             tas30_cursor = cursor_map.get(unit, 0)
             tas30_since = tas30_all[tas30_cursor:]
             cursor_map[unit] = len(tas30_all)
+            active_flags = chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS)
+            biquad_image = _dsp_biquad_image(chain, unit)
+            full_image = bytes(chain.read_main_dsp_reg(unit, s) for s in range(0x00, 0x100))
+            unit_state = {
+                "unit": unit,
+                "active_flags": active_flags,
+                "active_preset": (active_flags & MAIN_ACTIVE_PRESET_MASK) >> 2,
+                "active_gate": (active_flags & MAIN_ACTIVE_GATE_MASK) >> 3,
+                "active_mute": (active_flags & MAIN_ACTIVE_MUTE_MASK) >> 4,
+                "preset_job_state": chain.read_main_reg(unit, MAIN_PRESET_JOB_STATE),
+                "preset_job_target": chain.read_main_reg(unit, MAIN_PRESET_JOB_TARGET),
+                "preset_job_index": chain.read_main_reg(unit, MAIN_PRESET_JOB_INDEX),
+                "preset_job_flags": chain.read_main_reg(unit, MAIN_PRESET_JOB_FLAGS),
+                "mute_latch": chain.read_main_reg(unit, MAIN_STOCK094_MUTE_LATCH),
+                "event_flags": chain.read_main_reg(unit, MAIN_EVENT_FLAGS),
+                "dsp_fault_flags": chain.read_main_reg(unit, MAIN_DSP_FAULT_FLAGS),
+                "logical_volume": chain.read_main_reg(unit, MAIN_LOGICAL_VOLUME),
+                "computed_volume": chain.read_main_reg(unit, MAIN_COMPUTED_VOLUME),
+                "input_select": chain.read_main_reg(unit, MAIN_INPUT_SELECT),
+                "input_mirror": chain.read_main_reg(unit, MAIN_INPUT_MIRROR),
+                # TAS3108 volume-coefficient (0x30) write history: the
+                # ground truth for mute-leak detection (a non-zero 0x30
+                # write while mute_latch is set = audio returning).
+                "tas30_last_write": (tas30_all[-1].hex() if tas30_all else ""),
+                "tas30_write_count": len(tas30_all),
+                # 0x30 writes since the previous sample (display-capped), so a
+                # transient unmute-while-muted is visible to the oracle.
+                "tas30_writes_since": [p.hex() for p in tas30_since[-16:]],
+                # UNCAPPED leak signal: did ANY non-zero (unmute) 0x30 write
+                # happen this interval?  Survives the display cap above, so a
+                # bursty interval cannot hide the transient.
+                "tas30_nonzero_since": any(int.from_bytes(p, "big") for p in tas30_since),
+                # ACTUAL DSP preset-coefficient image.  The biquad range
+                # 0x37..0x90 is the preset-defining coefficient block; it
+                # excludes volume so it changes on preset switch but not volume.
+                "dsp_biquad_image": biquad_image.hex(),
+                "dsp_biquad_digest": _digest_bytes(biquad_image),
+                "dsp_full_digest": _digest_bytes(full_image),
+                "src_regs": {
+                    f"0x{reg:02X}": chain.read_main_src4382_reg(unit, reg)
+                    for reg in (SRC_REG_NON_PCM, SRC_REG_RX_STATUS, SRC_REG_RX_LOCK)
+                },
+                "diag": {
+                    name: chain.read_main_reg(unit, MAIN_DIAG_BASE + idx)
+                    for idx, name in enumerate(MAIN_DIAG_NAMES)
+                },
+                "reset": {
+                    name: chain.read_main_reg(unit, MAIN_DIAG_RESET_BASE + idx)
+                    for idx, name in enumerate(MAIN_RESET_NAMES)
+                },
+                "src_stats": _compact_stats(chain.read_main_src4382_stats(unit)),
+                "tas_stats": _compact_stats(chain.read_main_tas3108_stats(unit)),
+                "filename_ram": _decode_slot(
+                    [chain.read_main_reg(unit, FILENAME_RAM_BASE + i) for i in range(FILENAME_LEN)]
+                ),
+                "filename_dirty_flags": chain.read_main_reg(unit, FILENAME_DIRTY_FLAGS),
+            }
+            unit_state.update(_golden_match_fields(unit_state, self.golden_images))
             main_diag.append(
-                {
-                    "unit": unit,
-                    "active_flags": chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS),
-                    "active_preset": (
-                        chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS) & MAIN_ACTIVE_PRESET_MASK
-                    )
-                    >> 2,
-                    "active_gate": (
-                        chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS) & MAIN_ACTIVE_GATE_MASK
-                    )
-                    >> 3,
-                    "preset_job_state": chain.read_main_reg(unit, MAIN_PRESET_JOB_STATE),
-                    "preset_job_target": chain.read_main_reg(unit, MAIN_PRESET_JOB_TARGET),
-                    "mute_latch": chain.read_main_reg(unit, MAIN_STOCK094_MUTE_LATCH),
-                    "event_flags": chain.read_main_reg(unit, MAIN_EVENT_FLAGS),
-                    "dsp_fault_flags": chain.read_main_reg(unit, MAIN_DSP_FAULT_FLAGS),
-                    "logical_volume": chain.read_main_reg(unit, MAIN_LOGICAL_VOLUME),
-                    "computed_volume": chain.read_main_reg(unit, MAIN_COMPUTED_VOLUME),
-                    "input_select": chain.read_main_reg(unit, MAIN_INPUT_SELECT),
-                    "input_mirror": chain.read_main_reg(unit, MAIN_INPUT_MIRROR),
-                    # TAS3108 volume-coefficient (0x30) write history: the
-                    # ground truth for mute-leak detection (a non-zero 0x30
-                    # write while mute_latch is set = audio returning).
-                    "tas30_last_write": (tas30_all[-1].hex() if tas30_all else ""),
-                    "tas30_write_count": len(tas30_all),
-                    # 0x30 writes since the previous sample (display-capped), so a
-                    # transient unmute-while-muted is visible to the oracle.
-                    "tas30_writes_since": [p.hex() for p in tas30_since[-16:]],
-                    # UNCAPPED leak signal: did ANY non-zero (unmute) 0x30 write
-                    # happen this interval?  Survives the display cap above, so a
-                    # bursty interval cannot hide the transient.
-                    "tas30_nonzero_since": any(int.from_bytes(p, "big") for p in tas30_since),
-                    # ACTUAL DSP preset-coefficient fingerprint.  The biquad
-                    # range 0x37..0x90 (per test_v171_v32_dual_main_preset_sync)
-                    # is the preset-defining coefficient block; it EXCLUDES
-                    # volume (0x30) so the digest changes on a preset switch but
-                    # not on a volume change.  Lets the oracle verify
-                    # preset A -> coeffs A / preset B -> coeffs B, that PB1 and
-                    # PB2 hold byte-identical coeffs, and that a preset flag flip
-                    # actually rewrote the coefficients (not a silent no-op).
-                    "dsp_biquad_digest": hashlib.sha256(
-                        bytes(chain.read_main_dsp_reg(unit, s) for s in range(0x37, 0x91))
-                    ).hexdigest()[:12],
-                    "dsp_full_digest": hashlib.sha256(
-                        bytes(chain.read_main_dsp_reg(unit, s) for s in range(0x00, 0x100))
-                    ).hexdigest()[:12],
-                    "diag": {
-                        name: chain.read_main_reg(unit, MAIN_DIAG_BASE + idx)
-                        for idx, name in enumerate(MAIN_DIAG_NAMES)
-                    },
-                    "reset": {
-                        name: chain.read_main_reg(unit, MAIN_DIAG_RESET_BASE + idx)
-                        for idx, name in enumerate(MAIN_RESET_NAMES)
-                    },
-                    "src_stats": _compact_stats(chain.read_main_src4382_stats(unit)),
-                    "tas_stats": _compact_stats(chain.read_main_tas3108_stats(unit)),
-                    "filename_ram": _decode_slot(
-                        [chain.read_main_reg(unit, FILENAME_RAM_BASE + i) for i in range(FILENAME_LEN)]
-                    ),
-                    "filename_dirty_flags": chain.read_main_reg(unit, FILENAME_DIRTY_FLAGS),
-                }
+                unit_state
             )
         lcd = chain.lcd_lines()
         sample = {
@@ -684,6 +1092,15 @@ class Explorer:
                 )
             )
         for unit_state in sample["main"]:
+            golden_incident = _golden_coeff_incident(
+                sample,
+                unit_state,
+                self.golden_images,
+                chain=chain,
+                recent_events=list(self.recent_events),
+            )
+            if golden_incident is not None:
+                incidents.append(golden_incident)
             diag_bad = {
                 k: v for k, v in unit_state["diag"].items() if not (0 <= int(v) <= 0x0F)
             }
@@ -866,6 +1283,16 @@ class Explorer:
             chain.poke_main_src4382_reg(unit, int(params["reg"]), int(params["value"]))
             chain.step_ticks(int(params.get("settle_ticks", 3_000_000)))
             return
+        if action == "src_rxckr_hole":
+            for unit in params.get("units", [0, 1]):
+                _set_src_regs(chain, int(unit), SRC_RXCKR_HOLE_REGS)
+            chain.step_ticks(int(params.get("settle_ticks", 0)))
+            return
+        if action == "src_rxckr_locked":
+            for unit in params.get("units", [0, 1]):
+                _set_src_regs(chain, int(unit), SRC_LOCKED_REGS)
+            chain.step_ticks(int(params.get("settle_ticks", 0)))
+            return
         if action == "mssp_stop":
             unit = int(params["unit"])
             chain.set_main_mssp_stop_fault(
@@ -937,6 +1364,16 @@ class Explorer:
 
     def _next_action(self, config: SessionConfig) -> tuple[str, dict[str, Any]]:
         campaign = config.campaign
+        if campaign == "preset-phase-sweep":
+            first_b = bool(self.rng.randrange(2))
+            return (
+                "ir",
+                {
+                    "cmd": IR_CMDS["preset_b"] if first_b else IR_CMDS["preset_a"],
+                    "settle_ticks": 0,
+                    "purpose": "phase-fallback",
+                },
+            )
         if campaign == "ui":
             return self.rng.choice(
                 [
@@ -1024,6 +1461,52 @@ class Explorer:
             self.close()
         return 0
 
+    def _observe(
+        self,
+        chain: Chain,
+        config: SessionConfig,
+        previous: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        sample = self._sample(chain, config.session_id, config, kind="observation")
+        for incident in self._oracles(chain, config.session_id, config, sample, previous):
+            self._record_incident(chain, config.session_id, config, incident)
+        self._status(force=False)
+        return sample
+
+    def _run_preset_phase_sweep(
+        self,
+        chain: Chain,
+        config: SessionConfig,
+        previous: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        cycles = self.rng.choice([1, 2])
+        plan = build_preset_phase_sweep_plan(self.rng, cycles=cycles)
+        for action, params in plan:
+            if time.monotonic() >= self.deadline:
+                break
+            if action == "phase_sample_window":
+                samples = int(params["samples"])
+                ticks = int(params["ticks"])
+                for idx in range(samples):
+                    if time.monotonic() >= self.deadline:
+                        break
+                    step_params = {
+                        "ticks": ticks,
+                        "purpose": params.get("purpose", "phase_sample"),
+                        "sample_index": idx,
+                        "samples": samples,
+                        "direction": params.get("direction"),
+                        "phase_delay_ticks": params.get("phase_delay_ticks"),
+                        "src_rxckr_churn": params.get("src_rxckr_churn", False),
+                    }
+                    self._safe_action(chain, config, "step", step_params)
+                    previous = self._observe(chain, config, previous)
+                continue
+            self._safe_action(chain, config, action, params)
+            if params.get("observe", True):
+                previous = self._observe(chain, config, previous)
+        return previous
+
     def _run_session(self, config: SessionConfig) -> None:
         chain = self._new_chain(config)
         # per-unit cursor into each DSP's TAS 0x30 write log, so each sample can
@@ -1058,6 +1541,9 @@ class Explorer:
             chain.mark_tx_capture_point()
             chain.mark_main1_tx_capture_point()
             self._navigate_for_campaign(chain, config)
+            if config.campaign == "preset-phase-sweep":
+                self._run_preset_phase_sweep(chain, config, previous)
+                return
             max_events = self.rng.randrange(self.args.session_events_min, self.args.session_events_max + 1)
             for _ in range(max_events):
                 if time.monotonic() >= self.deadline:
@@ -1072,11 +1558,7 @@ class Explorer:
                         "step",
                         {"ticks": self.rng.randrange(1_000_000, 12_000_000)},
                     )
-                sample = self._sample(chain, config.session_id, config, kind="observation")
-                for incident in self._oracles(chain, config.session_id, config, sample, previous):
-                    self._record_incident(chain, config.session_id, config, incident)
-                previous = sample
-                self._status(force=False)
+                previous = self._observe(chain, config, previous)
         except Exception as exc:
             try:
                 self._record_incident(
