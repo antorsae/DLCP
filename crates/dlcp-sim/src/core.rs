@@ -200,6 +200,19 @@ pub struct Core {
     /// chain_copy postmortem, 2026-06-13).
     #[serde(default)]
     tos_sw_write_pending: Option<(u16, u8)>,
+    /// SW write to STKPTR staged for post-instruction application
+    /// to the external [`crate::stack::Stack`].  The STKPTR SFR is
+    /// readable/writable on silicon, but the authoritative depth
+    /// and sticky flags live in `Stack`, not in Core's memory mirror.
+    #[serde(default)]
+    stkp_sw_write_pending: Option<u8>,
+    /// SW write to PCL staged for post-instruction PC transfer.
+    /// PIC18 writes to PCL load PC<20:8> from PCLATU/PCLATH and
+    /// PCL<7:0> from the written byte; applying it after the
+    /// instruction body lets RMW ops update STATUS/FSR state first
+    /// while still billing the pipeline flush in `exec::step`.
+    #[serde(default)]
+    pcl_sw_write_pending: Option<u8>,
     /// Optional cycle-level probe used by research scaffolding
     /// (e.g. P3.6b research step 2, task #62) to count exact
     /// per-instruction PC entries to a labelled flash range AND
@@ -505,6 +518,8 @@ impl Core {
             wdt_counter_tcy: 0,
             wdt_timeout_pending: false,
             tos_sw_write_pending: None,
+            stkp_sw_write_pending: None,
+            pcl_sw_write_pending: None,
             cycle_probe: None,
         }
     }
@@ -674,6 +689,8 @@ impl Core {
         self.clear_irq_context();
         self.clear_wdt();
         self.tos_sw_write_pending = None;
+        self.stkp_sw_write_pending = None;
+        self.pcl_sw_write_pending = None;
     }
 
     pub fn take_wdt_timeout_pending(&mut self) -> bool {
@@ -690,6 +707,26 @@ impl Core {
 
     pub fn take_tos_sw_write_pending(&mut self) -> Option<(u16, u8)> {
         self.tos_sw_write_pending.take()
+    }
+
+    /// Stage a firmware SW write to STKPTR (0xFFC) for
+    /// post-instruction write-through into the hardware stack.
+    pub fn stage_stkp_sw_write(&mut self, value: u8) {
+        self.stkp_sw_write_pending = Some(value);
+    }
+
+    pub fn take_stkp_sw_write_pending(&mut self) -> Option<u8> {
+        self.stkp_sw_write_pending.take()
+    }
+
+    /// Stage a firmware SW write to PCL (0xFF9) for
+    /// post-instruction transfer into the program counter.
+    pub fn stage_pcl_sw_write(&mut self, value: u8) {
+        self.pcl_sw_write_pending = Some(value);
+    }
+
+    pub fn take_pcl_sw_write_pending(&mut self) -> Option<u8> {
+        self.pcl_sw_write_pending.take()
     }
 
     pub fn advance_halted_cycles(&mut self, n: u32) {

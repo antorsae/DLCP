@@ -5238,10 +5238,9 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
 }
 
 /// P3.8d-strong (symptom-equivalent, not bit-exact) — CONTROL LCD
-/// raster on the PB1 Diag screen reflects seeded cache cells, not
-/// MAIN BANK 2 runtime cells (the LCD-render version of the
-/// task #44 contract probe -- cf. the weak version above which
-/// only checks structural RAM-address independence).
+/// raster on the PB1 Diag screen gives stale link health priority
+/// over seeded cache cells, while the cache remains decoupled from
+/// MAIN BANK 2 runtime cells.
 ///
 /// Stronger probe shape suggested by codex review of c993454,
 /// MEDIUM #5 -- the weak Test D was characterised as "mostly
@@ -5259,20 +5258,15 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
 ///      consumes menu_state at the top of the cycle.
 ///   3. Seeding `v171_diag_present = 0x01` (PB1 present mask)
 ///      AND `v171_diag_pb1_*` cache cells (0x180..0x186) to
-///      V1.71 Tier-1 Overflow encoding values matching the
-///      hardware capture (`PB1: I+ D1 SE B4`).
-///   4. Stepping further so CONTROL's cadence loop redraws the
-///      LCD using the seeded cache.
-///   5. Asserting the LCD line 0 starts with `PB1:` (the
-///      Degraded/Overflow layout, distinguishing it from the
-///      Healthy layout `PBn / OK` and the Absent layout
-///      `PBn / n/a`) AND that line 1 has flipped out of the
-///      pre-seed `n/a` content into the per-PB cell row (R-prefix
-///      is the V1.71 Tier-1 row-1 layout's first letter).
+///      non-zero sparse-renderer values.
+///   4. Blacking out UART and stepping further so CONTROL ages PB1
+///      to the current Diagnostics stale threshold.
+///   5. Asserting LCD line 0 is `PB1 old` and line 1 is blank,
+///      matching the current PB Diagnostics stale-health layout.
 ///   6. Asserting MAIN0 BANK 2 `diag_d`/`s`/`b`/`r`/`a`/`p`
-///      remain unchanged at 0x00 -- proving the LCD content is
-///      sourced from CONTROL's local cache, not from MAIN's
-///      runtime cells.  `diag_i` is excluded because V3.2's
+///      remain unchanged at 0x00 -- proving the direct cache seed
+///      did not alias into MAIN's runtime cells.  `diag_i` is
+///      excluded because V3.2's
 ///      I2C transport-fault counter (per
 ///      `src/dlcp_fw/asm/dlcp_main_ram.inc:338`) drifts upward
 ///      naturally during the test's ~13-sim-second run from
@@ -5289,7 +5283,7 @@ fn control_diag_lcd_render_decouples_from_main_diag_ram_when_cache_seeded() {
 /// navigation cycling per docs/HARDWARE_TEST.md §"Diagnostics
 /// page", confirmed on real HW 2026-05-04).
 #[test]
-fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
+fn control_diag_lcd_render_pb1_stale_health_masks_seeded_cache() {
     use dlcp_sim::memory::Address;
     use dlcp_sim::pinnet::PortLetter;
 
@@ -5373,6 +5367,8 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     const V171_DIAG_FLAGS_PHYS: u16 = 0x19C;
     const V171_DIAG_FLAG_DIRTY: u8 = 0x01;
     const V171_DIAG_PB1_BASE_PHYS: u16 = 0x180;
+    const V171_HEALTH_AGE_PB1_PHYS: u16 = 0x1B0;
+    const V171_HEALTH_STALE_AGE: u8 = 0x03;
 
     // Step 1: navigate from Volume screen to PB1 Diag via 4
     // RIGHT-press cycles on RA4 (active-low).  Direct
@@ -5513,33 +5509,31 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     // explicitly set DIRTY after the manual cache seed above, matching
     // the real parser-side dirty mark.
     //
-    // Walk forward in chunks and stop once BOTH LCD rows have
-    // flipped to the Degraded/Overflow layout (row 0 starts
-    // with `PB1:`, row 1 starts with `R` per V1.71 Tier-1
-    // row-1 layout `R<r> A<a> P<p> O<o> V<v> W<w>`).  Codex
-    // review of b367528, LOW #2: stopping on row 0 alone could
-    // catch a partial-redraw race where row 0 has flipped but
-    // row 1 still shows the pre-seed `n/a` content.  Requiring
-    // both rows past their pre-seed shape closes that gap.
-    let mut redrawn = false;
+    // Current PB Diag pages render stale/lost health BEFORE
+    // rendering the cached counters.  Since this test deliberately
+    // blackouts UART and then advances several cadence windows, the
+    // visible PB1 page should settle on the stale layout
+    // (`PB1 old`, blank row 1), not the legacy V1.71 pre-sparse
+    // `PB1:` counter layout.
+    let mut stale_redrawn = false;
     for chunk in 0..16 {
         chain.step_ticks(200_000_000);
         let line0 = chain.lcd_slaves[i_lcd].line1();
         let line1 = chain.lcd_slaves[i_lcd].line2();
-        if line0.starts_with("PB1:") && line1.starts_with("R") {
+        if line0 == "PB1 old         " && line1 == "                " {
             eprintln!(
-                "P3.8d-strong redraw fired (both rows) at chunk {chunk} \
+                "P3.8d-strong stale redraw fired (both rows) at chunk {chunk} \
                  (tick={}, line0={:?}, line1={:?})",
                 chain.current_tick, line0, line1
             );
-            redrawn = true;
+            stale_redrawn = true;
             break;
         }
     }
-    if !redrawn {
+    if !stale_redrawn {
         eprintln!(
-            "P3.8d-strong WARNING: cadence redraw did not flip BOTH \
-             rows in 16 chunks (3.2 B ticks)"
+            "P3.8d-strong WARNING: cadence redraw did not reach PB1 old \
+             in 16 chunks (3.2 B ticks)"
         );
     }
 
@@ -5554,70 +5548,39 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     let menu_post_redraw = chain.cores[i_ctl]
         .memory
         .read_raw(Address::from_raw(MENU_STATE_RAM));
+    let health_age_pb1_post_redraw = chain.cores[i_ctl]
+        .memory
+        .read_raw(Address::from_raw(V171_HEALTH_AGE_PB1_PHYS));
     eprintln!(
         "P3.8d-strong post-seed LCD: line0={:?}, line1={:?}",
         lcd_post_seed_line0, lcd_post_seed_line1
     );
     eprintln!(
         "P3.8d-strong post-redraw RAM: pb1_i=0x{pb1_i_post_redraw:02X}, \
-         present=0x{present_post_redraw:02X}, menu_state={menu_post_redraw}"
+         present=0x{present_post_redraw:02X}, menu_state={menu_post_redraw}, \
+         health_age_pb1=0x{health_age_pb1_post_redraw:02X}"
     );
 
-    // Step 5: assert the diag-screen render now reflects the
-    // Degraded/Overflow layout.  Key discriminator from the
-    // V1.71 Tier-1 spec: row 0 character at column 3 is `:` for
-    // Degraded/Overflow (cells follow), and ` ` (space) for
-    // Healthy / Absent (`PBn ` followed by ` ` fill or
-    // `OK` / `n/a` on row 1).  This proves the present-mask
-    // bit we seeded was honoured.
-    let line0_chars: Vec<char> = lcd_post_seed_line0.chars().collect();
-    assert!(
-        line0_chars.len() >= 4,
-        "LCD line 0 must be at least 4 chars after seed; got {:?}",
+    assert_eq!(
+        lcd_post_seed_line0, "PB1 old         ",
+        "PB1 Diag must use the current stale-health layout after UART \
+         blackout ages PB1 past V171_HEALTH_STALE_AGE; got line0={:?}",
         lcd_post_seed_line0
     );
     assert_eq!(
-        line0_chars[3], ':',
-        "LCD line 0 col 3 must be `:` (V1.71 Tier-1 Degraded/Overflow \
-         layout, proving v171_diag_present.bit_0 was honoured); got \
-         line0={:?}, full-line-chars={line0_chars:?}",
-        lcd_post_seed_line0
-    );
-    assert!(
-        lcd_post_seed_line0.starts_with("PB1:"),
-        "LCD line 0 must start with `PB1:` after seeding the present \
-         mask + cache; got {:?}",
-        lcd_post_seed_line0
-    );
-    // Codex LOW from b367528 #2 follow-up: also assert row 1
-    // has flipped out of pre-seed `n/a` content into per-PB
-    // cell row.  V1.71 Tier-1 row-1 layout starts with `R`
-    // (rendering `R<r-cell> A<a-cell> ...`); the Absent layout
-    // had `n/a             `.  Pairing the row-0 `PB1:` check
-    // with this row-1 `R` prefix prevents the partial-redraw
-    // race from spuriously passing.
-    assert!(
-        lcd_post_seed_line1.starts_with("R"),
-        "LCD line 1 must start with `R` (V1.71 Tier-1 row-1 cell \
-         layout) after redraw; got {:?}.  If still `n/a...`, the \
-         row-1 redraw didn't fire even though row 0 did -- \
-         partial-redraw race.",
+        lcd_post_seed_line1, "                ",
+        "PB1 old layout must blank row 1; got {:?}",
         lcd_post_seed_line1
     );
-    // Specific-char check: the seeded diag_pb1_s = 0x0E should
-    // render as 'E' (Tier-1 alpha encoding for nibble values
-    // 0xA..0xE).  This char is NOT one MAIN can produce naturally
-    // -- it requires diag_s == 14 which means 14 explicit
-    // standby-event_dispatches, none of which we triggered.
-    // Finding 'E' on the LCD is therefore load-bearing evidence
-    // that the LCD is rendering CONTROL's cache, not MAIN's
-    // actual counter values.
     assert!(
-        lcd_post_seed_line0.contains('E'),
-        "LCD line 0 must contain 'E' (rendered from seeded \
-         diag_pb1_s = 0x0E -- a value MAIN cannot produce through \
-         standby_event_dispatch in this test setup); got {:?}",
-        lcd_post_seed_line0
+        health_age_pb1_post_redraw >= V171_HEALTH_STALE_AGE,
+        "PB1 old layout requires health age >= stale threshold; got \
+         age=0x{health_age_pb1_post_redraw:02X}, threshold=0x{V171_HEALTH_STALE_AGE:02X}"
+    );
+    assert_eq!(
+        pb1_i_post_redraw, pb1_seed[0],
+        "PB1 old layout should be selected by link-health age, not by \
+         overwriting the seeded CONTROL cache"
     );
 
     // Step 6: assert MAIN0 BANK 2 runtime cells reflect MAIN's
@@ -5676,21 +5639,10 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
     );
 
     // Step 7: log final cache cell values for diagnostic
-    // visibility.  The original test asserted strict
-    // seed-preservation here, on the premise that the BF/2N
-    // reply-cache update path was the open P3.6b gap and would
-    // therefore not fire -- so seeded cells would survive to
-    // end-of-test.  With the PIC18 silicon-fidelity closure
-    // (commit 6485f1d) shipping the proper EUSART error paths,
-    // timer/IRQ models, and oscillator state, the BF/2N cadence
-    // now actually fires during the test window, and the cadence
-    // legitimately overwrites cache cells with their currently
-    // -reported values.  That is P3.6b convergence success, not
-    // a regression -- the test's own assertion message anticipated
-    // this exact case.  The load-bearing decoupling contract
-    // (LCD reflects seeded cache, not MAIN RAM) is still proven
-    // by Step 5's LCD content checks above, which sampled at the
-    // redraw moment.  Step 7 is now diagnostic-only.
+    // visibility.  The load-bearing UI contract in this version
+    // is stale-health priority: once PB1 is old, the sparse
+    // counter renderer is intentionally masked even though the
+    // CONTROL cache still contains non-zero issue cells.
     for (i, &v) in pb1_seed.iter().enumerate() {
         let actual = chain.cores[i_ctl]
             .memory
@@ -5710,10 +5662,9 @@ fn control_diag_lcd_render_pb1_screen_reflects_seeded_cache_not_main_ram() {
 
     let _ = PortLetter::A; // silence unused-import lint if any
     eprintln!(
-        "P3.8d-strong OK: PB1 Diag screen rendered with seeded cache \
+        "P3.8d-strong OK: PB1 Diag screen rendered stale-health layout \
          (LCD line0=`{lcd_post_seed_line0}`, line1=`{lcd_post_seed_line1}`); \
-         MAIN0 BANK 2 unchanged at all-zero -- LCD-vs-MAIN-RAM divergence \
-         locked in."
+         seeded CONTROL cache remained decoupled from MAIN0 BANK 2."
     );
 }
 

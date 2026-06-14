@@ -58,9 +58,9 @@ use serde::{Deserialize, Serialize};
 // `0xF60..=0xFFF`; the executor uses [`Memory::read_raw`] /
 // [`Memory::write_raw`] to access them.  FSR indirect addressing
 // (INDFn / POSTINCn / POSTDECn / PREINCn / PLUSWn) IS modelled
-// (see `resolve_target_no_commit` below).  PCL writes triggering
-// a PC update are still deferred to a future P1.8b sub-commit;
-// the helpers here treat PCL as a normal SFR byte for now.
+// (see `resolve_target_no_commit` below).  PCL and stack-window
+// SFRs need executor-side glue because their architectural state
+// lives outside the raw memory backing bytes.
 
 /// `WREG` at 0xFE8.  PIC18's W is exposed as this SFR; reads /
 /// writes via the f-operand route through the same byte.
@@ -85,6 +85,11 @@ const STATUS_VALID_MASK: u8 = 0x1F;
 /// mask needed.
 const PRODL_ADDR: u16 = 0xFF3;
 const PRODH_ADDR: u16 = 0xFF4;
+
+/// Program-counter latch SFRs.
+const PCL_ADDR: u16 = 0xFF9;
+const PCLATH_ADDR: u16 = 0xFFA;
+const PCLATU_ADDR: u16 = 0xFFB;
 
 // ---- Read/write helpers -----------------------------------------
 
@@ -460,7 +465,7 @@ where
     let result = compute(f_value);
     match d {
         Dest::W => write_w(core, result),
-        Dest::F => write_addr_masked(core, target, result),
+        Dest::F => write_resolved_target_masked(core, target, result),
     }
     if let Some((fsr, new_fsr)) = pending {
         commit_fsr(core, fsr, new_fsr);
@@ -484,7 +489,7 @@ where
     let (target, pending) = resolve_target_no_commit(core, operand_addr);
     let f_value = read_target_with_hook(core, target);
     let result = transform(f_value);
-    write_addr_masked(core, target, result);
+    write_resolved_target_masked(core, target, result);
     if let Some((fsr, new_fsr)) = pending {
         commit_fsr(core, fsr, new_fsr);
     }
@@ -511,8 +516,8 @@ where
     match d {
         Dest::W => write_w(core, result),
         Dest::F => {
-            if target.as_u16() != STATUS_ADDR {
-                write_addr_masked(core, target, result);
+            if !target_is_status(target) {
+                write_resolved_target_masked(core, target, result);
             }
         }
     }
@@ -584,11 +589,36 @@ fn read_addr(core: &mut Core, addr: Address) -> u8 {
 /// returned byte is captured BEFORE the hook so the
 /// firmware sees the byte that was just there; the hook
 /// only updates collateral state for the NEXT read.
-fn read_target_with_hook(core: &mut Core, target: Address) -> u8 {
+fn read_target_with_hook(core: &mut Core, target: ResolvedTarget) -> u8 {
+    let Some(target) = target else {
+        return 0;
+    };
+    if target.as_u16() == PCL_ADDR {
+        sync_pc_sfrs_from_pc(core);
+    }
     let value = core.memory.read_raw(target);
     core.peripherals
         .on_sfr_read(target.as_u16(), &mut core.memory);
     value
+}
+
+/// Mirror the current PC into the PCL/PCLATH/PCLATU SFR bytes.
+/// Reading PCL exposes the current PC low byte and refreshes the
+/// high latches from PC; ordinary branches/calls don't otherwise
+/// keep these raw memory bytes authoritative.
+fn sync_pc_sfrs_from_pc(core: &mut Core) {
+    let pc = core.pc();
+    core.memory.write_raw(Address::from_raw(PCL_ADDR), pc as u8);
+    core.memory
+        .write_raw(Address::from_raw(PCLATH_ADDR), (pc >> 8) as u8);
+    core.memory
+        .write_raw(Address::from_raw(PCLATU_ADDR), ((pc >> 16) as u8) & 0x1F);
+}
+
+fn pc_from_pcl_write(core: &Core, pcl: u8) -> u32 {
+    let pclath = core.memory.read_raw(Address::from_raw(PCLATH_ADDR)) as u32;
+    let pclatu = (core.memory.read_raw(Address::from_raw(PCLATU_ADDR)) & 0x1F) as u32;
+    (pclatu << 16) | (pclath << 8) | pcl as u32
 }
 
 /// Pending FSR mutation: `(fsr, new_value)` where `new_value` is
@@ -598,6 +628,12 @@ fn read_target_with_hook(core: &mut Core, target: Address) -> u8 {
 /// rather than per memory access (per gpsim's `fsr_state`
 /// behaviour).
 type PendingFsrUpdate = (FsrIndex, u16);
+
+/// Resolved operand target.  `None` represents the silicon
+/// special case where an indirect access points at one of the
+/// FSR virtual registers themselves; per DS39632E §5.5.4, the
+/// access reads as 0 and writes are NOPs.
+type ResolvedTarget = Option<Address>;
 
 /// Resolve an operand address into its underlying RAM target.
 /// Returns `(target, Some(fsr, new))` when `addr` is a virtual
@@ -611,22 +647,33 @@ type PendingFsrUpdate = (FsrIndex, u16);
 /// used in the operation" per DS39632E §5.5.4).  PreIncrement's
 /// FSR write is therefore committed inline here, and the
 /// returned target reflects the post-increment FSR value.
-fn resolve_target_no_commit(core: &mut Core, addr: Address) -> (Address, Option<PendingFsrUpdate>) {
+fn resolve_target_no_commit(
+    core: &mut Core,
+    addr: Address,
+) -> (ResolvedTarget, Option<PendingFsrUpdate>) {
     let Some((fsr, mode)) = classify_fsr_indirect(addr.as_u16()) else {
-        return (addr, None);
+        return (Some(addr), None);
     };
     let cur_l = core.memory.read_raw(Address::from_raw(fsr_low_addr(fsr)));
     let cur_h = core.memory.read_raw(Address::from_raw(fsr_high_addr(fsr))) & 0x0F;
     let cur = ((cur_h as u16) << 8) | cur_l as u16;
 
+    let target_or_virtual_nop = |target: u16| {
+        if classify_fsr_indirect(target).is_some() {
+            None
+        } else {
+            Some(Address::from_raw(target))
+        }
+    };
+
     match mode {
-        FsrAccessMode::Indirect => (Address::from_raw(cur), None),
+        FsrAccessMode::Indirect => (target_or_virtual_nop(cur), None),
         FsrAccessMode::PostIncrement => (
-            Address::from_raw(cur),
+            target_or_virtual_nop(cur),
             Some((fsr, cur.wrapping_add(1) & 0x0FFF)),
         ),
         FsrAccessMode::PostDecrement => (
-            Address::from_raw(cur),
+            target_or_virtual_nop(cur),
             Some((fsr, cur.wrapping_sub(1) & 0x0FFF)),
         ),
         FsrAccessMode::PreIncrement => {
@@ -638,13 +685,13 @@ fn resolve_target_no_commit(core: &mut Core, addr: Address) -> (Address, Option<
             // returning 0xE9 (the new low byte), not 0xE8.
             let new_fsr = cur.wrapping_add(1) & 0x0FFF;
             commit_fsr(core, fsr, new_fsr);
-            (Address::from_raw(new_fsr), None)
+            (target_or_virtual_nop(new_fsr), None)
         }
         FsrAccessMode::PlusW => {
             let w = read_w(core);
             let signed = w as i8 as i32;
             let target = ((cur as i32).wrapping_add(signed) as u16) & 0x0FFF;
-            (Address::from_raw(target), None)
+            (target_or_virtual_nop(target), None)
         }
     }
 }
@@ -787,22 +834,36 @@ fn write_addr_masked(core: &mut Core, target: Address, value: u8) {
     let old = core.memory.read_raw(target);
     let new_value = apply_sfr_sw_write(old, value, target.as_u16());
     core.memory.write_raw(target, new_value);
+    let a = target.as_u16();
+    if a == PCL_ADDR {
+        core.stage_pcl_sw_write(new_value);
+    }
     // TOS SFRs are readable AND writable on real silicon (DS39632E
     // §5.1.2.1: computed returns patch TOSL/TOSH then RETURN).  The
     // Stack lives outside Core, so stage the write here and let
     // step() drain it into stack::write_tos_byte after the
-    // instruction retires.  (MOVFF to TOSx is architecturally
-    // forbidden and rejected at assembly, so single-writer staging
-    // is sufficient.)
-    let a = target.as_u16();
+    // instruction retires.
     if (crate::stack::TOSL_ADDR..=crate::stack::TOSU_ADDR).contains(&a) {
         core.stage_tos_sw_write(a, new_value);
+    }
+    if a == crate::stack::STKPTR_ADDR {
+        core.stage_stkp_sw_write(value);
     }
     core.peripherals
         .on_sfr_write(target.as_u16(), value, &mut core.memory);
     if target.as_u16() == crate::peripherals::eeprom::EECON1_ADDR {
         commit_tblwt_long_write(core, value);
     }
+}
+
+fn write_resolved_target_masked(core: &mut Core, target: ResolvedTarget, value: u8) {
+    if let Some(target) = target {
+        write_addr_masked(core, target, value);
+    }
+}
+
+fn target_is_status(target: ResolvedTarget) -> bool {
+    matches!(target, Some(target) if target.as_u16() == STATUS_ADDR)
 }
 
 fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
@@ -823,17 +884,11 @@ fn write_f(core: &mut Core, f: u8, a: Access, value: u8) {
 /// pointer).  The `sfr_write_mask` is applied to the
 /// *underlying* target, not the virtual slot's address.
 ///
-/// **Known gap:** when the underlying FSR-indirect target
-/// happens to be STATUS and the calling instruction is flag-
-/// affecting (e.g. `CLRF INDF0` with FSR0 = STATUS), the
-/// dispatch's STATUS-skip check sees the operand address (the
-/// virtual slot, not STATUS) and the data write goes through
-/// here -- clobbering the flag update.  Real DLCP firmware
-/// doesn't combine those, so it's deferred (tracked via
-/// TaskCreate #14's neighbour).
+/// Flag-affecting instructions that need STATUS-write suppression
+/// must resolve the target before deciding whether to call this.
 fn write_addr(core: &mut Core, addr: Address, value: u8) {
     let (target, pending) = resolve_target_no_commit(core, addr);
-    write_addr_masked(core, target, value);
+    write_resolved_target_masked(core, target, value);
     if let Some((fsr, new_fsr)) = pending {
         commit_fsr(core, fsr, new_fsr);
     }
@@ -959,11 +1014,30 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
     } else {
         None
     };
-    let result = step_inner(core, stack);
-    if let Some((addr, value)) = core.take_tos_sw_write_pending() {
-        if result.is_ok() {
+    let mut result = step_inner(core, stack);
+    let stkp_pending = core.take_stkp_sw_write_pending();
+    let tos_pending = core.take_tos_sw_write_pending();
+    let pcl_pending = core.take_pcl_sw_write_pending();
+    if result.is_ok() {
+        if let Some(value) = stkp_pending {
+            stack.write_stkptr(value);
+            stack.mirror_to_sfrs(&mut core.memory);
+        }
+        if let Some((addr, value)) = tos_pending {
             crate::stack::write_tos_byte(stack, addr, value);
             stack.mirror_to_sfrs(&mut core.memory);
+        }
+        if let Some(value) = pcl_pending {
+            let pc = pc_from_pcl_write(core, value);
+            core.set_pc(pc);
+            sync_pc_sfrs_from_pc(core);
+            if let Ok(cycles) = result {
+                if cycles < 2 {
+                    let extra = 2 - cycles;
+                    core.advance_cycles(extra as u32);
+                    result = Ok(2);
+                }
+            }
         }
     }
     if result.is_ok() && core.take_wdt_timeout_pending() {
@@ -1118,8 +1192,8 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             match d {
                 Dest::W => write_w(core, v),
                 Dest::F => {
-                    if target.as_u16() != STATUS_ADDR {
-                        write_addr_masked(core, target, v);
+                    if !target_is_status(target) {
+                        write_resolved_target_masked(core, target, v);
                     }
                 }
             }
@@ -1151,9 +1225,13 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // Per §5.3.6, when f=STATUS the result-write of 0
             // would clobber the Z update, so skip the write
             // and let only the flag update land.
-            let target = resolve_f(core, f, a);
-            if target.as_u16() != STATUS_ADDR {
-                write_addr(core, target, 0);
+            let operand = resolve_f(core, f, a);
+            let (target, pending) = resolve_target_no_commit(core, operand);
+            if !target_is_status(target) {
+                write_resolved_target_masked(core, target, 0);
+            }
+            if let Some((fsr, new_fsr)) = pending {
+                commit_fsr(core, fsr, new_fsr);
             }
             set_status_bits(core, STATUS_Z, true);
             core.advance_cycles(1);
@@ -1166,10 +1244,9 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // route through `read_addr` / `write_addr`, so
             // either or both being an FSR virtual slot
             // (POSTINC0 → POSTDEC1 etc.) triggers indirection
-            // + FSRn mutation per §5.5.4.  Silicon errata
-            // notes that dst = PCL / TOSU / TOSH / TOSL is
-            // undefined; the simulator just writes through and
-            // lets the mask handle whatever lands.
+            // + FSRn mutation per §5.5.4.  PCL / STKPTR / TOSx
+            // destinations use the same post-instruction
+            // side-effect staging as ordinary byte-oriented writes.
             let v = read_addr(core, Address::from_raw(src));
             write_addr(core, Address::from_raw(dst), v);
             core.advance_cycles(2);
@@ -1254,8 +1331,8 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let f_value = read_target_with_hook(core, target);
             let (result, c, dc, ov) = sub_byte(0, f_value, false);
             set_status_arith(core, result, c, dc, ov);
-            if target.as_u16() != STATUS_ADDR {
-                write_addr_masked(core, target, result);
+            if !target_is_status(target) {
+                write_resolved_target_masked(core, target, result);
             }
             if let Some((fsr, new_fsr)) = pending {
                 commit_fsr(core, fsr, new_fsr);
@@ -1961,7 +2038,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             let result = (f_value << 4) | (f_value >> 4);
             match d {
                 Dest::W => write_w(core, result),
-                Dest::F => write_addr_masked(core, target, result),
+                Dest::F => write_resolved_target_masked(core, target, result),
             }
             if let Some((fsr, new_fsr)) = pending {
                 commit_fsr(core, fsr, new_fsr);
@@ -3185,6 +3262,139 @@ mod tests {
     }
 
     #[test]
+    fn movff_tos_write_through_patches_computed_return_high_byte() {
+        // MOVFF also routes through the absolute-address write path.
+        // Patch TOSL/TOSH from RAM and make RETURN land across a
+        // 0x100 boundary; this is the same architectural TOS write
+        // contract as the MOVWF chain_copy case, but through the
+        // 2-word MOVFF executor arm.
+        let mut prog = vec![
+            0x04, 0xEC, 0x00, 0xF0, // CALL 0x0008
+            0x00, 0x00, 0x00, 0x00, // NOP, NOP
+            0x20, 0xC0, 0xFD, 0xFF, // MOVFF 0x020, TOSL
+            0x21, 0xC0, 0xFE, 0xFF, // MOVFF 0x021, TOSH
+            0x12, 0x00, // RETURN
+        ];
+        prog.resize(0x124, 0x00);
+        let mut core = k20_core_with_flash(&prog);
+        core.memory.write_raw(Address::from_raw(0x020), 0x20);
+        core.memory.write_raw(Address::from_raw(0x021), 0x01);
+        let mut stack = Stack::new();
+
+        step(&mut core, &mut stack).unwrap(); // CALL
+        assert_eq!(stack.top(), 0x0004);
+        step(&mut core, &mut stack).unwrap(); // MOVFF -> TOSL
+        assert_eq!(stack.top(), 0x0020);
+        step(&mut core, &mut stack).unwrap(); // MOVFF -> TOSH
+        assert_eq!(stack.top(), 0x0120);
+        step(&mut core, &mut stack).unwrap(); // RETURN
+        assert_eq!(core.pc(), 0x0120);
+    }
+
+    #[test]
+    fn movwf_stkptr_write_changes_internal_depth_and_tos_mirror() {
+        // STKPTR is writable on silicon.  The simulator's raw SFR
+        // byte is only a mirror; the authoritative depth lives in
+        // Stack and must be patched by a SW write to STKPTR.
+        let mut core = k20_core_with_flash(&[
+            0x02, 0x0E, // MOVLW 0x02
+            0xFC, 0x6E, // MOVWF STKPTR (access)
+        ]);
+        let mut stack = Stack::new();
+        stack.push(0x1110);
+        stack.push(0x2220);
+        stack.push(0x3330);
+        stack.mirror_to_sfrs(&mut core.memory);
+
+        step(&mut core, &mut stack).unwrap(); // MOVLW
+        step(&mut core, &mut stack).unwrap(); // MOVWF STKPTR
+
+        assert_eq!(stack.depth(), 2);
+        assert_eq!(stack.top(), 0x2220);
+        assert_eq!(
+            core.memory
+                .read_raw(Address::from_raw(crate::stack::STKPTR_ADDR))
+                & crate::stack::STKPTR_INDEX_MASK,
+            2
+        );
+        assert_eq!(
+            core.memory
+                .read_raw(Address::from_raw(crate::stack::TOSL_ADDR)),
+            0x20
+        );
+        assert_eq!(
+            core.memory
+                .read_raw(Address::from_raw(crate::stack::TOSH_ADDR)),
+            0x22
+        );
+    }
+
+    #[test]
+    fn addwf_pcl_computed_goto_refreshes_latches_and_bills_branch_cycle() {
+        // ADDWF PCL,F is the canonical PIC18 computed-goto idiom.
+        // During execution PC has already advanced to 0x0002; adding
+        // W=4 writes PCL=0x06.  Because this RMW instruction reads
+        // PCL first, silicon refreshes PCLATH/PCLATU from the current
+        // PC before the write, keeping the computed jump in the
+        // current 256-byte page.
+        let mut core = k20_core_with_flash(&[0xF9, 0x26, 0x00, 0x00]);
+        core.memory.write_raw(Address::from_raw(PCLATH_ADDR), 0x01);
+        write_w(&mut core, 0x04);
+        let mut stack = Stack::new();
+
+        let cycles = step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(cycles, 2);
+        assert_eq!(core.cycles(), 2);
+        assert_eq!(core.pc(), 0x0006);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PCL_ADDR)), 0x06);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PCLATH_ADDR)), 0x00);
+    }
+
+    #[test]
+    fn movwf_pcl_uses_pclath_and_bills_branch_cycle() {
+        // A direct write to PCL does not read PCL first, so the
+        // firmware-supplied PCLATH value transfers into PC<15:8>.
+        let mut core = k20_core_with_flash(&[
+            0x06, 0x0E, // MOVLW 0x06
+            0xF9, 0x6E, // MOVWF PCL (access)
+        ]);
+        core.memory.write_raw(Address::from_raw(PCLATH_ADDR), 0x01);
+        let mut stack = Stack::new();
+
+        step(&mut core, &mut stack).unwrap(); // MOVLW
+        let cycles = step(&mut core, &mut stack).unwrap(); // MOVWF PCL
+
+        assert_eq!(cycles, 2);
+        assert_eq!(core.cycles(), 3);
+        assert_eq!(core.pc(), 0x0106);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PCL_ADDR)), 0x06);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PCLATH_ADDR)), 0x01);
+    }
+
+    #[test]
+    fn movf_pcl_updates_latches_from_current_pc() {
+        // Reading PCL exposes the current post-fetch PC low byte and
+        // refreshes PCLATH/PCLATU from the current PC high bits.
+        let mut prog = vec![0x00; 0x1238];
+        prog[0x1234] = 0xF9; // MOVF PCL,W,ACCESS
+        prog[0x1235] = 0x50;
+        let mut core = k20_core_with_flash(&prog);
+        core.set_pc(0x1234);
+        core.memory.write_raw(Address::from_raw(PCLATH_ADDR), 0x00);
+        core.memory.write_raw(Address::from_raw(PCLATU_ADDR), 0x00);
+        let mut stack = Stack::new();
+
+        step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(read_w(&core), 0x36);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PCL_ADDR)), 0x36);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PCLATH_ADDR)), 0x12);
+        assert_eq!(core.memory.read_raw(Address::from_raw(PCLATU_ADDR)), 0x00);
+        assert_eq!(core.pc(), 0x1236);
+    }
+
+    #[test]
     fn call_pushes_return_addr_and_jumps_to_target() {
         // CALL 0x0040 (word address 0x40 → byte address 0x80),
         // fast=0.  Encoding:
@@ -4110,6 +4320,121 @@ mod tests {
         step(&mut core, &mut stack).unwrap();
         assert_eq!(core.memory.read_raw(Address::from_raw(0x100)), 0xFF);
         assert_eq!(read_fsr0(&core), 0x100, "INDF leaves FSR0 untouched");
+    }
+
+    #[test]
+    fn movf_indf0_pointing_at_virtual_register_reads_zero() {
+        // DS39632E §5.5.4: if FSR0 points at an indirect virtual
+        // register (here INDF1 at 0xFE7), an INDF0 access reads
+        // zero instead of recursively interpreting or reading the
+        // raw backing byte.
+        let mut core = k20_core_with_flash(&[0xEF, 0x50]); // MOVF INDF0,W
+        set_fsr0(&mut core, 0xFE7);
+        core.memory.write_raw(Address::from_raw(0xFE7), 0xA5);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(read_w(&core), 0);
+        assert_ne!(core.memory.read_raw(Address::from_raw(0xFE7)), 0);
+        assert_eq!(read_fsr0(&core), 0xFE7);
+        assert_ne!(read_status(&core) & STATUS_Z, 0);
+    }
+
+    #[test]
+    fn setf_indf0_pointing_at_virtual_register_is_nop() {
+        // Writes through an FSR that points at a virtual register
+        // are NOPs, not writes to the raw 0xFE7 backing byte.
+        let mut core = k20_core_with_flash(&[0xEF, 0x68]); // SETF INDF0
+        set_fsr0(&mut core, 0xFE7);
+        core.memory.write_raw(Address::from_raw(0xFE7), 0x12);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFE7)), 0x12);
+        assert_eq!(read_fsr0(&core), 0xFE7);
+    }
+
+    #[test]
+    fn movf_postinc0_pointing_at_virtual_register_reads_zero_and_increments() {
+        // The access itself is read-zero, but POSTINC still commits
+        // after the operand access.
+        let mut core = k20_core_with_flash(&[0xEE, 0x50]); // MOVF POSTINC0,W
+        set_fsr0(&mut core, 0xFE7);
+        core.memory.write_raw(Address::from_raw(0xFE7), 0xA5);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(read_w(&core), 0);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFE7)), 0xA5);
+        assert_eq!(read_fsr0(&core), 0xFE8);
+    }
+
+    #[test]
+    fn setf_postinc0_pointing_at_virtual_register_is_nop_but_increments() {
+        // POSTINC's pointer update is independent from the write
+        // target.  The write is NOP because 0xFE7 is virtual.
+        let mut core = k20_core_with_flash(&[0xEE, 0x68]); // SETF POSTINC0
+        set_fsr0(&mut core, 0xFE7);
+        core.memory.write_raw(Address::from_raw(0xFE7), 0x12);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFE7)), 0x12);
+        assert_eq!(read_fsr0(&core), 0xFE8);
+    }
+
+    #[test]
+    fn movf_preinc0_landing_on_virtual_register_reads_zero() {
+        // PREINC mutates first; the resulting 0xFE7 target is an
+        // indirect virtual register, so the access reads zero.
+        let mut core = k20_core_with_flash(&[0xEC, 0x50]); // MOVF PREINC0,W
+        set_fsr0(&mut core, 0xFE6);
+        core.memory.write_raw(Address::from_raw(0xFE7), 0xA5);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(read_w(&core), 0);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFE7)), 0xA5);
+        assert_eq!(read_fsr0(&core), 0xFE7);
+    }
+
+    #[test]
+    fn movf_plusw0_landing_on_virtual_register_reads_zero() {
+        // PLUSW uses signed W as an offset; FSR0=0xFE0 and W=7
+        // lands on INDF1 at 0xFE7.  The final access reads zero
+        // and leaves FSR0 untouched.
+        let mut core = k20_core_with_flash(&[0xEB, 0x50]); // MOVF PLUSW0,W
+        set_fsr0(&mut core, 0xFE0);
+        write_w(&mut core, 0x07);
+        core.memory.write_raw(Address::from_raw(0xFE7), 0xA5);
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(read_w(&core), 0);
+        assert_eq!(core.memory.read_raw(Address::from_raw(0xFE7)), 0xA5);
+        assert_eq!(read_fsr0(&core), 0xFE0);
+    }
+
+    #[test]
+    fn clrf_indf0_pointing_at_status_preserves_flags_except_z() {
+        // CLRF is flag-affecting, so when indirection resolves to
+        // STATUS the result byte must be suppressed exactly as if
+        // STATUS had been named directly.  Only Z is set; C/DC/OV/N
+        // survive.
+        let mut core = k20_core_with_flash(&[0xEF, 0x6A]); // CLRF INDF0
+        set_fsr0(&mut core, STATUS_ADDR);
+        core.memory.write_raw(
+            Address::from_raw(STATUS_ADDR),
+            STATUS_C | STATUS_DC | STATUS_OV | STATUS_N,
+        );
+        let mut stack = Stack::new();
+        step(&mut core, &mut stack).unwrap();
+
+        assert_eq!(
+            read_status(&core),
+            STATUS_C | STATUS_DC | STATUS_Z | STATUS_OV | STATUS_N
+        );
+        assert_eq!(read_fsr0(&core), STATUS_ADDR);
     }
 
     #[test]
