@@ -379,6 +379,34 @@ def test_v34_muted_zero_write_uses_volume_retry_contract(
     _assert_user_muted_with_zero_volume_coeff(chain)
 
 
+@pytest.mark.parametrize("fault_kind", ["address", "data"])
+def test_v34_direct_user_mute_retries_zero_write_after_tas_nack(
+    v34_mute_hex: Path,
+    fault_kind: str,
+) -> None:
+    """A direct mute command must keep retry authority until TAS30 is zero.
+
+    Exploratory session 34/55 found the hole missed by the cmd06 refresh test:
+    direct cmd03 mute set the user/effective mute bits, the first zero write
+    NACKed, and the mute-dirty bit was cleared before a verified TAS write.
+    """
+    chain = _boot_v34_main(v34_mute_hex)
+
+    if fault_kind == "address":
+        chain.inject_main_tas3108_address_nack(0, 2)
+    else:
+        chain.inject_main_tas3108_data_nack(0, 2)
+    chain.reset_main_tas3108_stats(0)
+    chain.reset_main_dsp_write_log(0)
+
+    _inject_frame(chain, 0x03, 0x02)
+    chain.step_ticks(INPUT_REFRESH_SETTLE_TICKS)
+
+    stats = chain.read_main_tas3108_stats(0)
+    assert stats[f"{fault_kind}_nacks_consumed"] > 0
+    _assert_user_muted_with_zero_volume_coeff(chain)
+
+
 def test_v173_v34_chain_mute_survives_periodic_full_sync_refresh(
     v34_mute_hex: Path,
 ) -> None:

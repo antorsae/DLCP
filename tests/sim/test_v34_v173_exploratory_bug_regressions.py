@@ -5,8 +5,9 @@ Authored red-first as strict xfails against the unfixed sources (see
 ``docs/IMPL_V34_V173_EXPLORATORY_BUGS.md`` and must stay green.
 
 BUG-5's structural test pins the amended contract (record target independent
-of the USB-filename gate; deferral lives in the preset job machinery), per the
-ledger's "before (or independent of)" expected behavior.
+of the USB-filename gate; deferral lives in the preset job machinery and stays
+muted while filename RAM is protected), per the ledger's "before (or
+independent of)" expected behavior.
 """
 
 from __future__ import annotations
@@ -38,6 +39,7 @@ USB_FILENAME_GATE_MASK = 0x40
 PRESET_JOB_STATE = 0x2DE
 PRESET_JOB_TARGET = 0x2DF
 PRESET_JOB_STATE_PENDING = 0x01
+PRESET_JOB_STATE_HOLDING = 0x02
 
 
 def _label_body(text: str, label: str, next_labels: list[str] | tuple[str, ...]) -> str:
@@ -153,7 +155,8 @@ def test_bug_v34v173_5_preset_select_must_record_target_independent_of_usb_gate(
 
     The parser must always record the broadcast target (no drop gate); the
     deferral while a USB cmd 0x03 filename WRITE is in flight belongs to the
-    preset job machinery: PENDING parks un-muted, and the HOLDING bit6
+    preset job machinery: PENDING skips filename persistence but force-mutes,
+    and the HOLDING bit6
     backstop before ``preset_load_filename`` (the actual hazard) must stay.
     """
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
@@ -166,8 +169,13 @@ def test_bug_v34v173_5_preset_select_must_record_target_independent_of_usb_gate(
         "USB filename write would be dropped (not deferred) again"
     )
     pending = _label_body(text, "preset_job_pending", ["preset_job_pending_no_mute"])
-    assert re.search(r"btfsc\s+filename_dirty_flags_b0,\s*6", pending), (
-        "PENDING must park (not persist/mute/hold) while a USB filename write is open"
+    assert re.search(
+        r"btfsc\s+filename_dirty_flags_b0,\s*6,\s*BANKED[^\n]*\n"
+        r"\s*bra\s+preset_job_pending_force_mute",
+        pending,
+    ), (
+        "PENDING must skip filename persistence but still force-mute while "
+        "a USB filename write is open"
     )
     holding = _label_body(text, "preset_job_holding", ["preset_job_holding_wait"])
     assert re.search(r"btfsc\s+filename_dirty_flags_b0,\s*6", holding), (
@@ -197,13 +205,13 @@ def test_bug_v34v173_5_preset_broadcast_defers_until_usb_gate_clears(
     assert chain.read_main_reg(0, PRESET_JOB_TARGET) == 0x01, (
         "broadcast target was not recorded while the USB filename gate is set"
     )
-    assert chain.read_main_reg(0, PRESET_JOB_STATE) == PRESET_JOB_STATE_PENDING, (
-        "job must park in PENDING while the USB filename gate is set"
+    assert chain.read_main_reg(0, PRESET_JOB_STATE) == PRESET_JOB_STATE_HOLDING, (
+        "job must advance to HOLDING, muted, while the USB filename gate is set"
     )
     active = chain.read_main_reg(0, ACTIVE_FLAGS)
     assert not (active & ACTIVE_PRESET_B_MASK), "preset must not switch while parked"
-    assert not (active & ACTIVE_MUTE_MASK), (
-        "parked PENDING must not force-mute against an unbounded host condition"
+    assert active & ACTIVE_MUTE_MASK, (
+        "deferred preset switch must force-mute instead of playing the old preset"
     )
 
     flags = chain.read_main_reg(0, FILENAME_DIRTY_FLAGS)

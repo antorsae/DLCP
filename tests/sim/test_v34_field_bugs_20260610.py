@@ -43,10 +43,32 @@ except Exception as exc:  # pragma: no cover
     _RUST_CHAIN_IMPORT_ERROR = exc
 
 PRESET_JOB_STATE = 0x2DE
+DIAG_I = 0x2E5
+DIAG_R = 0x2E9
 DSP_FAULT_FLAGS = 0x07F
+EVENT_FLAGS = 0x07E
+ACTIVE_FLAGS = 0x05E
+STOCK_094 = 0x094
 SETUP_PROFILE_RAM = 0x0B8
 SETUP_PROFILE_EEPROM = 0x0E
 VALID_PROFILE_VALUES = {0x03, 0x04}
+FILENAME_RAM_BASE = 0x02C0
+RX_RING_WR = 0x0C7
+
+ACTIVE_GATE_MASK = 0x08
+ACTIVE_MUTE_MASK = 0x10
+ACTIVE_FAULT_MUTE_OWNER_MASK = 0x20
+USER_MUTE_LATCH_MASK = 0x20
+LATE_BIT1_PENDING_MASK = 0x02
+VOLUME_DIRTY_MASK = 0x08
+FIELD10_BARRIER_PENDING_MASK = 0x40
+DSP_ACKSTAT_MASK = 0x04
+DSP_FAULT_MASK = 0x40
+STANDBY_SETTLE_TICKS = 12_000_000
+WAKE_SETTLE_TICKS = 2_000_000
+SRC_NON_PCM_REG = 0x12
+SRC_RX_STATUS_REG = 0x13
+SRC_UNLOCK_REG = 0x14
 
 
 # --- shared fixtures ---------------------------------------------------------
@@ -83,10 +105,125 @@ def _latest_tas30(chain, *, unit: int = 0) -> str | None:
     return payloads[-1].hex() if payloads else None
 
 
+def _latest_tas30_bytes(chain, *, unit: int = 0) -> bytes | None:
+    payloads = chain.read_main_dsp_write_payloads(unit, 0x30)
+    return payloads[-1] if payloads else None
+
+
+def _coeff_image(chain, *, unit: int = 0) -> bytes:
+    return bytes(chain.read_main_dsp_reg(unit, subaddr) for subaddr in range(0x37, 0x91))
+
+
+def _src_live_pcm(chain, *, unit: int = 0) -> bool:
+    return (
+        (chain.read_main_src4382_reg(unit, SRC_RX_STATUS_REG) & 0x03) != 0
+        and (chain.read_main_src4382_reg(unit, SRC_NON_PCM_REG) & 0x01) == 0
+        and chain.read_main_src4382_reg(unit, SRC_UNLOCK_REG) == 0
+    )
+
+
+def _live_wrong_coeff_units(chain, expected: dict[int, bytes]) -> list[dict[str, object]]:
+    wrong: list[dict[str, object]] = []
+    for unit, expected_image in expected.items():
+        active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+        faults = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+        tas30 = _latest_tas30_bytes(chain, unit=unit)
+        live = (
+            bool(active & ACTIVE_GATE_MASK)
+            and not bool(active & ACTIVE_MUTE_MASK)
+            and chain.read_main_reg(unit, PRESET_JOB_STATE) == 0
+            and not (faults & (DSP_FAULT_MASK | DSP_ACKSTAT_MASK))
+            and _src_live_pcm(chain, unit=unit)
+            and tas30 is not None
+            and tas30 != b"\x00" * 4
+        )
+        observed = _coeff_image(chain, unit=unit)
+        if live and observed != expected_image:
+            wrong.append(
+                {
+                    "unit": unit,
+                    "active": f"0x{active:02X}",
+                    "faults": f"0x{faults:02X}",
+                    "tas30": tas30.hex(),
+                    "expected": hashlib.sha256(expected_image).hexdigest()[:12],
+                    "observed": hashlib.sha256(observed).hexdigest()[:12],
+                    "lcd": chain.lcd_lines(),
+                }
+            )
+    return wrong
+
+
+def _bad_live_volume_payloads(chain, *, unit: int = 0) -> list[bytes]:
+    return [
+        payload
+        for payload in chain.read_main_dsp_write_payloads(unit, 0x30)
+        if payload != b"\x00" * 4
+    ]
+
+
 def _switch_preset_and_settle(chain, target: int, *, settle_m: int = 60) -> None:
     _inject_frame(chain, 0x20, target)
     chain.step_ticks(settle_m * 1_000_000)
     assert chain.read_main_reg(0, PRESET_JOB_STATE) == 0
+
+
+def _connected_field_chain(field_chain_hexes: tuple[Path, Path]):
+    if RustChain is None:  # pragma: no cover
+        pytest.fail(f"rust facade not importable: {_RUST_CHAIN_IMPORT_ERROR!r}")
+    control_hex, main_hex = field_chain_hexes
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(control_hex),
+        main_hex_path=str(main_hex),
+    )
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    return chain
+
+
+def _set_src4382_nack(chain, *, unit: int, fault_kind: str, count: int) -> None:
+    if fault_kind == "address":
+        chain.inject_main_src4382_address_nack(unit, count)
+    elif fault_kind == "data":
+        chain.inject_main_src4382_data_nack(unit, count)
+    else:  # pragma: no cover
+        raise AssertionError(f"unknown fault kind {fault_kind!r}")
+
+
+def _inject_unit_broadcast_frame(chain, *, unit: int, cmd: int, data: int) -> None:
+    for byte in (0xB0, cmd & 0xFF, data & 0xFF):
+        accepted, dropped = chain.inject_main_uart_rx_bytes(unit, bytes([byte]))
+        assert (accepted, dropped) == (1, 0)
+        chain.step_ticks(16_000)
+
+
+def _query_cmd44_cells(chain, *, unit: int) -> list[int]:
+    response, dispatch_hits = chain.firmware_hid_report(unit, [0x44] + [0x00] * 63)
+    assert dispatch_hits >= 1
+    assert response[0] == 0x44 and response[1] == 0x00
+    assert response[2] == 0x10, f"unexpected cmd-0x44 length 0x{response[2]:02X}"
+    return list(response[3:19])
+
+
+def _drive_standby_then_faulted_wake(chain, *, unit: int, fault_kind: str, count: int) -> None:
+    _inject_unit_broadcast_frame(chain, unit=unit, cmd=0x03, data=0x00)
+    chain.step_ticks(STANDBY_SETTLE_TICKS)
+    _set_src4382_nack(chain, unit=unit, fault_kind=fault_kind, count=count)
+    chain.reset_main_src4382_stats(unit)
+    chain.reset_main_dsp_write_log(unit)
+    _inject_unit_broadcast_frame(chain, unit=unit, cmd=0x03, data=0x01)
+
+
+def _wait_for_field10_barrier_pending(chain, *, unit: int) -> None:
+    for _ in range(120):
+        if chain.read_main_reg(unit, STOCK_094) & FIELD10_BARRIER_PENDING_MASK:
+            return
+        chain.step_ticks(WAKE_SETTLE_TICKS)
+    flags = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+    active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+    latch = chain.read_main_reg(unit, STOCK_094)
+    raise AssertionError(
+        f"MAIN{unit} never entered FIELD-10 barrier_pending "
+        f"(stock_094=0x{latch:02X}, active=0x{active:02X}, dsp=0x{flags:02X})"
+    )
 
 
 # --- FIELD-4A: NACKed table-apply writes silently skipped (SAFETY) ----------
@@ -151,6 +288,230 @@ def test_field4b_no_dsp_coefficient_writes_after_preset_unmute(
     assert not violations, (
         "DSP coefficients still changing AFTER volume was restored "
         f"(settled_b={settled_b}): {violations[:5]}"
+    )
+
+
+# --- FIELD-10: wake input-route I2C must wait for post-wake device init -----
+
+@pytest.mark.parametrize("fault_kind", ("address", "data"))
+@pytest.mark.parametrize("unit", (0, 1))
+def test_field10_faulted_wake_barrier_keeps_main_muted_and_fault_visible(
+    field_chain_hexes: tuple[Path, Path],
+    unit: int,
+    fault_kind: str,
+) -> None:
+    chain = _connected_field_chain(field_chain_hexes)
+    _drive_standby_then_faulted_wake(
+        chain, unit=unit, fault_kind=fault_kind, count=1000
+    )
+
+    _wait_for_field10_barrier_pending(chain, unit=unit)
+
+    stats = chain.read_main_src4382_stats(unit)
+    active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+    events = chain.read_main_reg(unit, EVENT_FLAGS)
+    dsp = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+    stock_094 = chain.read_main_reg(unit, STOCK_094)
+    assert stats[f"{fault_kind}_nacks_consumed"] > 0, stats
+    assert stock_094 & FIELD10_BARRIER_PENDING_MASK, (
+        f"MAIN{unit} did not preserve barrier_pending: stock_094=0x{stock_094:02X}"
+    )
+    assert active & ACTIVE_MUTE_MASK, f"MAIN{unit} not forced muted: active=0x{active:02X}"
+    assert active & ACTIVE_FAULT_MUTE_OWNER_MASK, (
+        f"MAIN{unit} lost fault mute ownership: active=0x{active:02X}"
+    )
+    assert events & LATE_BIT1_PENDING_MASK, (
+        f"MAIN{unit} did not preserve late bit1 retry: events=0x{events:02X}"
+    )
+    assert not (events & VOLUME_DIRTY_MASK), (
+        f"MAIN{unit} left stale volume dirty while barrier failed: events=0x{events:02X}"
+    )
+    assert dsp & DSP_FAULT_MASK, f"MAIN{unit} did not surface BF/08 fault: dsp=0x{dsp:02X}"
+    assert not _bad_live_volume_payloads(chain, unit=unit), (
+        f"MAIN{unit} restored live volume while wake barrier was failed: "
+        f"{[p.hex() for p in chain.read_main_dsp_write_payloads(unit, 0x30)[-6:]]}"
+    )
+
+
+@pytest.mark.parametrize("unit", (0, 1))
+def test_field10_barrier_retry_recovers_and_only_then_restores_volume(
+    field_chain_hexes: tuple[Path, Path],
+    unit: int,
+) -> None:
+    chain = _connected_field_chain(field_chain_hexes)
+    _drive_standby_then_faulted_wake(chain, unit=unit, fault_kind="address", count=1000)
+    _wait_for_field10_barrier_pending(chain, unit=unit)
+
+    chain.inject_main_src4382_address_nack(unit, 0)
+    chain.reset_main_dsp_write_log(unit)
+    for _ in range(160):
+        chain.step_ticks(WAKE_SETTLE_TICKS)
+        stock_094 = chain.read_main_reg(unit, STOCK_094)
+        dsp = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+        live = _bad_live_volume_payloads(chain, unit=unit)
+        if not (stock_094 & FIELD10_BARRIER_PENDING_MASK) and not (dsp & (DSP_FAULT_MASK | DSP_ACKSTAT_MASK)) and live:
+            break
+    else:
+        stock_094 = chain.read_main_reg(unit, STOCK_094)
+        active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+        events = chain.read_main_reg(unit, EVENT_FLAGS)
+        dsp = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+        raise AssertionError(
+            f"MAIN{unit} did not recover from FIELD-10 barrier retry: "
+            f"stock_094=0x{stock_094:02X} active=0x{active:02X} "
+            f"events=0x{events:02X} dsp=0x{dsp:02X} "
+            f"tas30={[p.hex() for p in chain.read_main_dsp_write_payloads(unit, 0x30)[-6:]]}"
+        )
+
+    active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+    stock_094 = chain.read_main_reg(unit, STOCK_094)
+    assert not (stock_094 & FIELD10_BARRIER_PENDING_MASK)
+    assert not (active & ACTIVE_MUTE_MASK), f"MAIN{unit} stayed fault-muted: 0x{active:02X}"
+    assert not (active & ACTIVE_FAULT_MUTE_OWNER_MASK), (
+        f"MAIN{unit} kept automatic mute ownership after recovery: 0x{active:02X}"
+    )
+
+
+def test_field10_barrier_retry_preserves_user_mute_until_explicit_unmute(
+    field_chain_hexes: tuple[Path, Path],
+) -> None:
+    unit = 0
+    chain = _connected_field_chain(field_chain_hexes)
+    _inject_unit_broadcast_frame(chain, unit=unit, cmd=0x03, data=0x02)
+    chain.step_ticks(12_000_000)
+    assert chain.read_main_reg(unit, STOCK_094) & USER_MUTE_LATCH_MASK
+
+    _drive_standby_then_faulted_wake(chain, unit=unit, fault_kind="address", count=1000)
+    _wait_for_field10_barrier_pending(chain, unit=unit)
+    chain.inject_main_src4382_address_nack(unit, 0)
+    chain.reset_main_dsp_write_log(unit)
+    for _ in range(160):
+        chain.step_ticks(WAKE_SETTLE_TICKS)
+        stock_094 = chain.read_main_reg(unit, STOCK_094)
+        dsp = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+        if not (stock_094 & FIELD10_BARRIER_PENDING_MASK) and not (dsp & DSP_ACKSTAT_MASK):
+            break
+    else:
+        raise AssertionError("FIELD-10 barrier did not recover under user mute")
+
+    active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+    stock_094 = chain.read_main_reg(unit, STOCK_094)
+    assert stock_094 & USER_MUTE_LATCH_MASK
+    assert active & ACTIVE_MUTE_MASK
+    assert not _bad_live_volume_payloads(chain, unit=unit), (
+        "FIELD-10 recovery restored live volume despite user mute"
+    )
+
+    _inject_unit_broadcast_frame(chain, unit=unit, cmd=0x03, data=0x03)
+    chain.step_ticks(12_000_000)
+    assert not (chain.read_main_reg(unit, STOCK_094) & USER_MUTE_LATCH_MASK)
+    assert _bad_live_volume_payloads(chain, unit=unit), (
+        "explicit user unmute after FIELD-10 recovery did not restore live volume"
+    )
+
+
+def test_field10_active7_zero_mute_nack_does_not_start_live_reapply(
+    field_chain_hexes: tuple[Path, Path],
+) -> None:
+    chain = _connected_field_chain(field_chain_hexes)
+    for unit in (0, 1):
+        chain.poke_main_src4382_reg(unit, SRC_NON_PCM_REG, 0x00)
+        chain.poke_main_src4382_reg(unit, SRC_RX_STATUS_REG, 0x01)
+        chain.poke_main_src4382_reg(unit, SRC_UNLOCK_REG, 0x00)
+    chain.step_ticks(30_000_000)
+    expected = {unit: _coeff_image(chain, unit=unit) for unit in (0, 1)}
+    assert _latest_tas30_bytes(chain, unit=0) not in (None, b"\x00" * 4)
+
+    chain.press("RIGHT")
+    chain.step_ticks(20_000_000)
+    chain.inject_main_tas3108_data_nack(0, 2)
+    chain.press("STBY")
+    chain.step_ticks(20_000_000)
+    chain.press("STBY")
+
+    wrong = []
+    for sample in range(120):
+        for item in _live_wrong_coeff_units(chain, expected):
+            item["sample"] = sample
+            wrong.append(item)
+        chain.step_ticks(250_000)
+    assert not wrong, wrong
+
+    stats = chain.read_main_tas3108_stats(0)
+    assert stats["data_nacks_consumed"] >= 2, stats
+
+
+def test_field10_clean_boot_and_standby_wake_keep_cmd44_i0(
+    field_chain_hexes: tuple[Path, Path],
+) -> None:
+    chain = _connected_field_chain(field_chain_hexes)
+
+    for unit in (0, 1):
+        cells = _query_cmd44_cells(chain, unit=unit)
+        assert cells[0] == 0 and cells[4] == 0, (unit, cells)
+        assert chain.read_main_reg(unit, DIAG_I) == 0
+        assert chain.read_main_reg(unit, DIAG_R) == 0
+
+    chain.press("STBY")
+    chain.step_ticks(20_000_000)
+    chain.press("STBY")
+    for _ in range(200):
+        if chain.is_connected() and not chain.is_waiting():
+            break
+        chain.step_ticks(WAKE_SETTLE_TICKS)
+    chain.step_ticks(30_000_000)
+
+    for unit in (0, 1):
+        cells = _query_cmd44_cells(chain, unit=unit)
+        assert cells[0] == 0 and cells[4] == 0, (unit, cells)
+        assert cells[2] >= 1 and cells[3] >= 1, (unit, cells)
+        assert chain.read_main_reg(unit, DIAG_I) == 0
+        assert chain.read_main_reg(unit, DIAG_R) == 0
+
+
+def test_field10_late_bit1_nack_is_retryable_before_volume_restore(
+    field_chain_hexes: tuple[Path, Path],
+) -> None:
+    unit = 0
+    chain = _connected_field_chain(field_chain_hexes)
+    chain.step_ticks(20_000_000)
+
+    chain.write_main_reg(unit, EVENT_FLAGS, chain.read_main_reg(unit, EVENT_FLAGS) | LATE_BIT1_PENDING_MASK)
+    chain.inject_main_src4382_data_nack(unit, 1000)
+    volume_data = (chain.read_main_reg(unit, 0x066) + 0x60) & 0xFF
+    _inject_unit_broadcast_frame(chain, unit=unit, cmd=0x07, data=volume_data)
+    chain.step_ticks(10_000_000)
+
+    stats = chain.read_main_src4382_stats(unit)
+    active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+    events = chain.read_main_reg(unit, EVENT_FLAGS)
+    dsp = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+    assert stats["data_nacks_consumed"] > 0, stats
+    assert active & ACTIVE_MUTE_MASK, f"late bit1 failure did not mute: active=0x{active:02X}"
+    assert active & ACTIVE_FAULT_MUTE_OWNER_MASK, (
+        f"late bit1 failure lost automatic mute owner: active=0x{active:02X}"
+    )
+    assert events & LATE_BIT1_PENDING_MASK, f"late bit1 retry not preserved: events=0x{events:02X}"
+    assert dsp & DSP_FAULT_MASK, f"late bit1 failure did not surface BF/08: dsp=0x{dsp:02X}"
+
+    chain.inject_main_src4382_data_nack(unit, 0)
+    _inject_unit_broadcast_frame(chain, unit=unit, cmd=0x07, data=volume_data)
+    for _ in range(120):
+        chain.step_ticks(WAKE_SETTLE_TICKS)
+        events = chain.read_main_reg(unit, EVENT_FLAGS)
+        dsp = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+        if not (events & LATE_BIT1_PENDING_MASK) and not (dsp & (DSP_FAULT_MASK | DSP_ACKSTAT_MASK)):
+            break
+    else:
+        raise AssertionError(
+            f"late bit1 retry did not recover: active=0x{chain.read_main_reg(unit, ACTIVE_FLAGS):02X} "
+            f"events=0x{events:02X} dsp=0x{dsp:02X}"
+        )
+
+    active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+    assert not (active & ACTIVE_MUTE_MASK), f"late bit1 recovery stayed muted: active=0x{active:02X}"
+    assert _bad_live_volume_payloads(chain, unit=unit), (
+        "volume was not restored after late bit1 recovered cleanly"
     )
 
 
@@ -409,6 +770,40 @@ def test_v34_frame_dispatches_with_preaccumulated_gap_watchdog(
         "mute frame silently discarded: the parser gap watchdog fired "
         f"mid-frame on a pre-accumulated counter (latch=0x{latch:02X})"
     )
+
+
+def test_v34_invalid_rx_ring_wr_is_clamped_before_uart_indirect_write(
+    field_chain_hexes: tuple[Path, Path],
+) -> None:
+    """Regression for the 2026-06-14 live `...10F BF v7` readback.
+
+    Before the ISR clamp, `wr=0xCF` mapped exactly to filename RAM offset
+    15 (`0x02CF`), where the expected '-' in `LX521.4 22MG10F-v7` was
+    observed as `0xBF`.  The ISR must heal the bad pointer before the
+    indirect RCREG store, so the byte lands at ring[0] instead.
+    """
+    if RustChain is None:
+        pytest.skip(f"rust sim unavailable: {_RUST_CHAIN_IMPORT_ERROR}")
+    control_hex, main_hex = field_chain_hexes
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(control_hex),
+        main_hex_path=str(main_hex),
+    )
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+
+    slot = b"LX521.4 22MG10F-v7" + (b"\xFF" * (30 - 18))
+    for offset, value in enumerate(slot):
+        chain.write_main_reg(0, FILENAME_RAM_BASE + offset, value)
+    assert chain.read_main_reg(0, FILENAME_RAM_BASE + 15) == 0x2D
+
+    chain.write_main_reg(0, RX_RING_WR, 0xCF)
+    accepted, dropped = chain.inject_main_uart_rx_bytes(0, bytes([0xBF]))
+    assert (accepted, dropped) == (1, 0)
+    chain.step_ticks(1_000)
+
+    assert chain.read_main_reg(0, FILENAME_RAM_BASE + 15) == 0x2D
+    assert chain.read_main_reg(0, 0x0200) == 0xBF
+    assert chain.read_main_reg(0, RX_RING_WR) == 0x01
 
 
 def test_field1b_preflash_mode_inference_uses_identity_probe(

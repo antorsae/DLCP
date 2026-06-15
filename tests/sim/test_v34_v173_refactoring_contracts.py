@@ -379,12 +379,12 @@ def test_v34_field6_lifecycle_reassert_uses_validated_writer_and_route_drain() -
     _assert_ordered(
         reconnect,
         "call        clrf_i2c_coeff_0123_and_write",
-        "rcall       cmd_dispatch_input_route_if_dirty",
         "rcall       cmd_dispatch_route_sync_if_dirty",
         "bcf         event_flags_b0, 6, BANKED",
         "call        main_core_service_4574",
         "bc          flow_cmd_dispatch_gated_reapply_failed",
     )
+    assert "cmd_dispatch_input_route_if_dirty" not in reconnect
     _assert_ordered(
         reconnect,
         "btfss       INTCON, 7, ACCESS",
@@ -396,11 +396,26 @@ def test_v34_field6_lifecycle_reassert_uses_validated_writer_and_route_drain() -
 
     volume_entry = _label_body(
         text,
+        "cmd_dispatch_gated",
+        ["flow_cmd_dispatch_gated_volume_unmuted"],
+    )
+    pre_late = volume_entry[: volume_entry.index("cmd_dispatch_late_bit1_entry:")]
+    _assert_ordered(
+        pre_late,
+        "btfsc       active_flags_acc, 7, ACCESS",
+        "bra         flow_cmd_dispatch_gated_19a8",
+    )
+    assert "cmd_dispatch_input_route_if_dirty" not in pre_late
+    assert volume_entry.index("cmd_dispatch_late_bit1_entry:") < volume_entry.index(
+        "rcall       cmd_dispatch_input_route_if_dirty"
+    )
+    flow_entry = _label_body(
+        text,
         "flow_cmd_dispatch_gated_19a8",
         ["flow_cmd_dispatch_gated_volume_unmuted"],
     )
     _assert_ordered(
-        volume_entry,
+        flow_entry,
         "btfsc       active_flags_acc, 7, ACCESS",
         "bra         flow_cmd_dispatch_gated_1a76",
         "btfss       event_flags_b0, 3, BANKED",
@@ -414,11 +429,13 @@ def test_v34_field6_wake_route_sync_precedes_final_reassert() -> None:
     _assert_ordered(
         wake,
         "call        clrf_i2c_coeff_0123_and_write",
-        "bsf         event_flags_b0, 1, BANKED",
         "bsf         event_flags_b0, 4, BANKED",
         "bsf         active_flags_acc, 7, ACCESS",
         "call        cmd_dispatch_gated",
         "adc_boot_gate_reassert_ok:",
+        "rcall       wake_i2c_barrier_attempt",
+        "bc          adc_boot_gate_barrier_pending",
+        "bsf         event_flags_b0, 1, BANKED",
         "bsf         event_flags_b0, 3, BANKED",
         "call        cmd_dispatch_gated",
     )
@@ -426,6 +443,27 @@ def test_v34_field6_wake_route_sync_precedes_final_reassert() -> None:
     assert "call        main_core_service_4574" not in pre_lifecycle
     assert "call        cmd_dispatch_input_route_if_dirty" not in pre_lifecycle
     assert "call        cmd_dispatch_route_sync_if_dirty" not in pre_lifecycle
+    assert "event_flags_b0, 1" not in pre_lifecycle
+
+    barrier = wake[
+        wake.index("adc_boot_gate_reassert_ok:") : wake.index("bsf         event_flags_b0, 1, BANKED")
+    ]
+    assert "call        cmd_dispatch_gated" not in barrier
+    assert "event_flags_b0, 3" not in barrier
+    assert "stock_094_b0, 7" not in barrier
+    assert "bsf         stock_094_b0, 6, BANKED" in wake
+
+    dispatch = _label_body(text, "cmd_dispatch_late_bit1_entry", ["flow_cmd_dispatch_gated_19a8"])
+    _assert_ordered(
+        dispatch,
+        "bcf         stock_094_b0, 7, BANKED",
+        "btfsc       event_flags_b0, 1, BANKED",
+        "bsf         stock_094_b0, 7, BANKED",
+        "bcf         dsp_fault_flags_b0, 2, BANKED",
+        "rcall       cmd_dispatch_input_route_if_dirty",
+        "btfsc       dsp_fault_flags_b0, 2, BANKED",
+        "bra         wake_input_failed",
+    )
 
 
 def test_v34_field6_route_sync_tail_has_single_code_owner() -> None:
