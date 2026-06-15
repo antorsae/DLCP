@@ -7,10 +7,17 @@ Status: design locked + implemented in
 `firmware/patched/releases/DLCP_Control_V1.71.hex` and
 `firmware/patched/releases/DLCP_Firmware_V3.2.hex`.
 
+Current-use note: this is the base Tier-1 diagnostics protocol inherited by the
+current V1.73/V3.4 LCD Diagnostics pages.  V1.73 CONTROL still caches/renders
+the 11 LCD cells (`I/D/S/B/R/A/P/O/V/W/X`).  MAIN V3.4 extends host USB HID
+`cmd 0x44` to a 16-cell payload by appending MAIN-only SRC/DSP forensic
+counters `N/L/C/T/M`; those five cells are not sent over the CONTROL chain and
+are not shown on the V1.73 LCD.
+
 ## Current diagnostics tracking map (2026-05-29)
 
-Use this document as the authoritative protocol/UI spec for the implemented
-V1.71/V3.2 Diagnostics pages.
+Use this document as the authoritative base protocol/UI spec for the implemented
+V1.71/V3.2 Diagnostics pages and the inherited V1.73/V3.4 LCD surface.
 
 - `docs/V32_DIAG_TIER1_SPEC.md` — canonical chain/HID protocol, CONTROL
   cache, LCD layout, compatibility, and implementation plan.
@@ -33,8 +40,8 @@ Implemented V1.71/V3.2 LCD behavior, verified against
 - stale/lost: row 0 `PBn old` / `PBn lost`, row 1 blank.
 
 Successor note: V1.72/V3.3+ adds MAIN version/rev to the healthy Diagnostics
-title.  That work is intentionally tracked outside this V1.71/V3.2 spec in
-`docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md`.
+title, and V3.4 adds USB-only SRC/DSP counters to `cmd 0x44`.  Those work items
+are intentionally tracked outside this V1.71/V3.2 base spec.
 
 ## Round-5 implementation tightening (2026-04-20)
 
@@ -541,10 +548,11 @@ Implementation: `display_state_max` constant 4 → 5; menu dispatch
 table grows two entries (PB1 entry + PB2 entry, each calling a new
 `v171_diag_pb_screen` parameterized by PB index 0 or 1).
 
-## CONTROL diag cache layout (V1.71)
+## CONTROL diag cache layout (V1.71 through V1.73)
 
-Cache extends from 7 cells per PB to 11 cells per PB.  Total 22 PB
-cache cells + state bytes.  Lives in K20 BANK 1 upper:
+Cache extends from 7 cells per PB to 11 cells per PB.  V1.73 keeps this 11-cell
+CONTROL cache and does not cache/render the MAIN V3.4 USB-only `N/L/C/T/M`
+extension.  Total 22 PB cache cells + state bytes.  Lives in K20 BANK 1 upper:
 
 ```
 0x180..0x18A    v171_diag_pb1_*   (11 cells: I D S B R A P O V W X)
@@ -666,7 +674,8 @@ at any time.
 ## Python tooling — `scripts/dlcp_diag.py`
 
 Operator-facing CLI that enumerates all visible DLCP MAINs, queries
-cmd 0x44 on each, and prints a structured report.
+cmd 0x44 on each, and prints a structured report.  On MAIN V3.4 it also prints
+the USB-only `SRC/DSP` `N/L/C/T/M` line when the response length is `0x10`.
 
 ### Usage
 
@@ -706,6 +715,16 @@ RIGHT HID DevSrvsID:4296392549  V3.2
   Reset:     O0 V1 W0 X0     (BOR — brown-out)
   Status:    DEGRADED (5 nonzero — I2C transport faults: 3, DSP fault: 2,
                                     + brown-out reset since cold-init)
+```
+
+V3.4 samples include the appended host-only line:
+
+```text
+LEFT  HID DevSrvsID:4295725205  V3.4 rev 0xAC
+  Runtime:   I0 D0 S0 B0 R0 A0 P0
+  SRC/DSP:   N0 L0 C1 T1 M2
+  Reset:     O1 V0 W0 X0     (POR -- power-on)
+  Status:    HEALTHY
 ```
 
 ### Sample output (JSON)
@@ -816,12 +835,12 @@ Behavioral (Tier C):
   (Unchanged from rev 0x36 behavior.)
 - cmd 0x22 reply burst: 4 frames in order (BF/28..BF/2B), each
   data byte 0 or 1, exactly one byte = 1.
-- HID cmd 0x44 returns an 11-byte payload (length byte = 0x0B):
-  7 runtime counters + 4 reset-cause flags.  Bytes [14..63] of the
-  64-byte HID IN report are NOT pad-filled and the host MUST stop
-  parsing at byte 13 per the length byte at [2].  Firmware revision
-  metadata is fetched via the existing cmd 0x06 probe (round-5
-  spec/implementation tightening — see top-of-doc revisions block).
+- HID cmd 0x44 returns an 11-byte payload on V3.2 (length byte = 0x0B):
+  7 runtime counters + 4 reset-cause flags.  MAIN V3.4 returns a 16-byte
+  payload (length byte = 0x10) by appending SRC/DSP counters `N/L/C/T/M` at
+  bytes [14..18].  Bytes after the active payload of the 64-byte HID IN report
+  are NOT pad-filled and the host MUST stop parsing at the active length.
+  Firmware revision metadata is fetched via the existing cmd 0x06 probe.
 - Sustained-Diag-page test (existing failing test from
   `test_v171_v32_layer5_chain_sustained_diag_page_keeps_control_responsive`):
   must now pass with cmd 0x22 fired only once per page entry
@@ -870,9 +889,10 @@ Field units showing 0x37 have all of:
 - NEW cmd 0x22 4-frame reset-flags reply burst (BF/28..BF/2B)
 - cold init always-clear (no RCON gate) + reset-cause classification
   with full RCON re-arm (BOR + POR + TO + RI)
-- HID cmd 0x44 supported (returns 11-byte payload: 7 runtime counters +
-  4 reset-cause flags; length byte at response[2] = 0x0B; firmware
-  revision still available via cmd 0x06)
+- HID cmd 0x44 supported (V3.2 returns 11-byte payload: 7 runtime counters +
+  4 reset-cause flags; length byte at response[2] = 0x0B; V3.4 returns
+  16-byte payload with appended `N/L/C/T/M`; firmware revision still available
+  via cmd 0x06)
 
 Cross-version compatibility — separate the LCD path (CONTROL-mediated)
 from the HID path (MAIN-local).  HID cmd 0x44 lives entirely in MAIN
@@ -951,7 +971,7 @@ sub-phases:
 | 2.1 | Reset-cause RAM EQUs (`0x2ED..0x2F0`) | committed |
 | 2.2 | Cold-init reset-cause classification cascade | committed |
 | 2.3 | `cmd 0x22` 4-frame reset-flags reply burst | committed |
-| 2.4 | HID `cmd 0x44` diag-snapshot endpoint (length 0x0B) | committed |
+| 2.4 | HID `cmd 0x44` diag-snapshot endpoint (V3.2 length 0x0B; V3.4 extends to 0x10) | committed |
 | 2.5 | EEPROM marker bump 0x36 -> 0x37 | committed |
 | 2.6 | V3.2 hex build + structural tests | committed |
 | 2.7 | simulator behavioral test for cold POR classification | committed |
@@ -1017,13 +1037,16 @@ Helpers introduced by Phase 3.4:
 
 Operators who need the full Tier-1 view via host can use
 `scripts/dlcp_diag.py` (Phase 4) which reads HID `cmd 0x44` and
-prints all 11 cells per PB; the LCD-side per-PB layout is now
-also fully Tier-1-aware.
+prints all 11 LCD cells per PB; on MAIN V3.4 it also prints the appended
+USB-only `N/L/C/T/M` cells.  The LCD-side per-PB layout remains the 11-cell
+Tier-1 surface.
 
 ## Open questions
 
 - **Should HID cmd 0x44 also include the chain-link health summary?**
-  E.g., bytes 18-23 could carry a per-link OERR / FERR / TX-saturation
+  Since V3.4 uses byte 18 for `M`, any future extension must start after the
+  active payload length and bump the length beyond `0x10`; for example, later
+  bytes could carry a per-link OERR / FERR / TX-saturation
   count.  Useful for diagnosing chain bus issues without the operator
   needing to walk to the Diag page.  Would require extending the
   diag block further into BANK 2 upper (still room).  **Decision

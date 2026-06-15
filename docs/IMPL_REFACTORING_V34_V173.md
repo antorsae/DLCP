@@ -76,8 +76,8 @@ Release/path evidence:
 - `scripts/build_v33_release.py` and `scripts/build_v172_release.py` are thin
   wrappers into `dlcp_fw.patch.build_v33_release` and
   `dlcp_fw.patch.build_v172_release`.
-- `README.md` identifies recommended MAIN as V3.4 rev `0x7D` and CONTROL as
-  V1.73 rev `0x40` build `20260608`.
+- `README.md` identifies recommended MAIN as V3.4 rev `0xAC` and CONTROL as
+  V1.73 rev `0x47` build `20260611`.
 - `src/dlcp_fw/sim/v30_symbols.py` has canonical listing/source fallback
   through V3.4.
 - Native chain helpers are named around older pairs in places even when they
@@ -146,8 +146,11 @@ RAM/checker evidence:
 
 Test/deploy evidence:
 
-- `AGENTS.md` records `1482 tests collected`, full `tests/sim` passing, and
-  V3.4/V1.73 focused Preset filename LCD coverage passing.
+- `README.md` records the current non-hardware release snapshot:
+  V3.4/V1.73 FIELD-10 focused regressions passing, V3.4/V1.73 focused
+  bug/regression set `95 passed, 3 xfailed`, full simulator gate
+  `1655 passed, 2 skipped, 3 xfailed, 7 warnings`, and a 30-minute
+  exploratory hunt with no unreconciled HIGH/MEDIUM safety finding.
 - `docs/HARDWARE_TEST.md` requires `identify-mains --require-left-right`
   before flashing two MAINs and treats live hardware tests as skipped unless
   `--run-hardware` is passed.
@@ -617,8 +620,9 @@ Size gates:
 - record `used_bytes_pre_preset_b`, `last_used_pre_preset_b`, and
   `free_bytes_before_0x4C00`;
 - record the listing/object-word end address before `org 0x4C00`;
-- require `free_object_words >= 64` MAIN listing-fit margin before `org 0x4C00`,
-  equivalent to `byte_margin >= 128`;
+- require the current accepted MAIN listing-fit floor of at least 10 free bytes
+  before `org 0x4C00`; the original `free_object_words >= 64` target was
+  superseded by necessary FIELD-5/FIELD-10 safety fixes and tight MAIN space;
 - keep the per-WU MAIN size checkpoints from WU2/WU3/WU4 in the final evidence;
 - assemble V1.72 and V1.73 and record app-space extent plus metadata location;
 - record the last app-code word and distance to `control_release_metadata` plus
@@ -965,8 +969,9 @@ High/Medium findings addressed:
   re-identify/path refresh before CONTROL flash and rollback.
 - Closed the raw numeric RAM `lfsr` loophole by requiring generated `_phys`
   range-base aliases for all RAM `lfsr` operands.
-- Defined size gates as `free_object_words >= 64` / `byte_margin >= 128`,
-  with CONTROL measured from last app-code word to metadata/boundaries.
+- Defined size gates as current MAIN free-byte floor plus CONTROL
+  `free_object_words >= 64` / `byte_margin >= 128`, with CONTROL measured from
+  last app-code word to metadata/boundaries.
 
 ### Final Focused Clean Pass
 

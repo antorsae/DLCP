@@ -1,7 +1,8 @@
 # V3.2 MAIN Hang Hardening Plan
 
 Last updated: 2026-05-12
-Scope: MAIN `V3.2` robustness against control-path hangs on two-MAIN chain (`CONTROL <> PB1 <> PB2`)
+Scope: historical MAIN `V3.2` robustness plan against control-path hangs on
+two-MAIN chain (`CONTROL <> PB1 <> PB2`).  Current release work is V3.4/V1.73.
 
 ## Problem Statement
 
@@ -11,7 +12,7 @@ Field symptom pattern:
 - Audio may continue as if commands were never received.
 - Power-cycling PB1 can produce a large pop, consistent with a non-graceful shutdown state.
 
-In the current architecture, PB1 software performs forwarding to PB2 in `main_uart_service_1be6`.
+In the V3.2-era architecture, PB1 software performs forwarding to PB2 in `main_uart_service_1be6`.
 If PB1 parser/service gets wedged, downstream control traffic can stall.
 
 ## Objectives
@@ -25,7 +26,7 @@ If PB1 parser/service gets wedged, downstream control traffic can stall.
 
 ## 1) Eliminate Remaining Unbounded Waits
 
-Current gap: only async preset APPLY path has bounded I2C waits in V3.2; legacy `main_i2c_service_381c` call sites still exist.
+V3.2-era gap: only async preset APPLY path has bounded I2C waits in V3.2; legacy `main_i2c_service_381c` call sites still exist.
 
 Implementation:
 
@@ -220,7 +221,7 @@ Tests:
   lockups into the WAITING-loop grace-reset window (i.e., zero
   operator-visible `WAITING FOR DLCP` > 5 s after wake).
 
-Release-gate note: with the V1.71 grace-reset in place this hang is
+Historical V3.2 release-gate note: with the V1.71 grace-reset in place this hang is
 operator-recoverable without a power cycle, so it's no longer a
 blocker for V3.2 shipping.  Remaining work is to eliminate the
 recovery requirement entirely on the next canonical pair revision,
@@ -293,7 +294,7 @@ Tests:
 
 Classify required gates:
 
-- **wire/gpsim required**: deterministic protocol/fault-path liveness tests.
+- **wire/Rust-simulator required**: deterministic protocol/fault-path liveness tests.
 - **hardware required for release candidate**: standby/mute/preset/reconnect soak and upstream-loss safe-state behavior.
 
 Minimum release gate:

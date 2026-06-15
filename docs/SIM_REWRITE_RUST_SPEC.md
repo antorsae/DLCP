@@ -4,6 +4,12 @@ Last updated: 2026-05-05
 Branch: `feature/sim-rewrite-rust`
 Status: **Phases 0–5 done; PF.1–PF.4 done; P4.gate timing relaxation pending sign-off** — see `docs/SIM_REWRITE_RUST_PROGRESS.md` for the canonical phase-state ledger.
 
+Current-use note: this is a historical migration spec.  The Rust/native
+simulator is now the default test path, the gpsim wrappers and vendor fork were
+retired in PF.4, and the current operator gate is the `README.md` validation
+section (`pytest tests/sim -n 16`).  Keep this document for design lineage, not
+as current run instructions.
+
 ---
 
 ## 1. Goals and Non-Goals
@@ -100,15 +106,21 @@ Status: **Phases 0–5 done; PF.1–PF.4 done; P4.gate timing relaxation pending
 | LLM implementation pace             | C++ + autotools + 20-yr codebase | Rust + Cargo + clean spec. |
 | Differential testing safety net     | Can't run two gpsims against each other | gpsim is ground truth; Rust matches. |
 
-**Decision:** standalone Rust simulator, `crates/dlcp-sim/`. gpsim stays in-tree as the ground-truth oracle through Phase 4; gets dropped from the test path once dual-run is green.
+**Decision:** standalone Rust simulator, `crates/dlcp-sim/`. gpsim stayed
+in-tree as the ground-truth oracle through Phase 4; after PF.4 the wrappers and
+test path were dropped and the Rust simulator is authoritative for repository
+sim gates.
 
 ---
 
 ## 4. Phase 0 — Ground-Truth Capture
 
-**Goal:** Freeze every passing gpsim test as a regression fixture so the new simulator can be developed against a fixed target.
+**Historical goal:** Freeze every passing gpsim test as a regression fixture so
+the new simulator could be developed against a fixed target.  The capture/replay
+scripts named below were migration artifacts and are retired from the current
+operator workflow.
 
-### Deliverables
+### Historical Deliverables
 
 - `scripts/capture_gpsim_ground_truth.py` — pytest entry that, for every `tests/sim/` test currently passing on gpsim, records:
   - **Stimulus stream**: every external pin/IR/button/UART/ADC/I²C event with `(tick, core_id, pin/peripheral, payload)` tuples (universal-clock ticks).
@@ -330,27 +342,29 @@ cargo test -p dlcp-sim --test multicore_parity --release
   - `chain.snapshot() -> bytes`, `chain.restore(bytes)`
   - `chain.replay(stimulus_log_path)`
 - `src/dlcp_fw/sim/dlcp_sim_native.py` — thin Python wrapper presenting the same API surface as `chain_gpsim.py` / `wire_chain_gpsim.py` so tests can swap engines transparently.
-- `tests/sim/conftest.py` plugin: when `DLCP_SIM_BACKEND=dual` env var is set, every test is run twice (once on gpsim, once on `dlcp-sim`) and divergent outputs trip an `assert`.
-- `tests/sim/conftest.py` plugin: when `DLCP_SIM_BACKEND=rust` env var is set, only `dlcp-sim` runs.
+- Historical migration plugin behavior: `DLCP_SIM_BACKEND=dual` ran each test
+  once on gpsim and once on `dlcp-sim`; `DLCP_SIM_BACKEND=rust` forced the
+  Rust-only path.  These env-var paths are retired from the current operator
+  workflow.
 
-### Migration protocol
+### Historical Migration Protocol
 
-- **Per-test migration**:
+- **Per-test migration (retired process)**:
   1. Run `DLCP_SIM_BACKEND=dual pytest tests/sim/test_<name>.py`.
   2. If it passes, mark the test as migrated in `docs/SIM_REWRITE_RUST_PROGRESS.md`.
   3. If it fails, the divergence is captured in `artifacts/sim_rewrite_divergences/<test_id>.json`; an agent investigates, fixes the Rust side, re-runs.
   4. gpsim is treated as the source of truth except for the deliberate fidelity exceptions enumerated in §11 (e.g. EEPROM write-completion latency).  BAUDCON is *not* an exception: gpsim, gputils, and the assembled firmware all agree on 0xFB8, per the P0.0 resolution recorded in §11b.
 
-- **Drop gpsim** (deferred per P4.9 closure 2026-05-04 to PF.4 alignment):
+- **Drop gpsim** (completed later in PF.4):
   - Once all `tests/sim/` tests pass under `DLCP_SIM_BACKEND=rust`, set `dlcp-sim` as default.  **Status 2026-05-04**: P4.8 already flipped the default to rust; the routine pytest gate runs `DLCP_SIM_BACKEND=rust` and is green per P4.gate + PF.1 verification.  ~299 tests across 33 files remain skipped under rust (gpsim-only as of 2026-05-04 PF.1 measurement; was 309 across ~55 files at the 2026-05-02 checkpoint) -- they are tracked as "P4 followup" work in `docs/SIM_REWRITE_RUST_PROGRESS.md`.
   - Remove `chain_gpsim.py`, `wire_chain_gpsim.py`, `_CliSession`, `gpsim.py` subprocess machinery, `.stc` script generation. Large deletion.  **Deferred**: 69 test files still import these wrappers; deleting them now would either (a) break the gpsim opt-in pytest path entirely (no graceful skip without per-test marker work) or (b) require deleting those 69 tests as collateral.  The deletion is rescheduled to co-occur with the next bullet (vendor/gpsim retirement) so a single coordinated excision retires the binary + the Python drivers + the orphaned tests + the 3 ground-truth scripts.
   - Keep `vendor/gpsim-0.32.1-xtc/` for one release cycle as a regression reference, then remove.
 
-### Exit gate
+### Historical Exit Gate
 
 ```bash
-DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -n 16 -q  # all pass
-DLCP_SIM_BACKEND=rust .venv_ep0/bin/python -m pytest tests/sim -n 16 -q  # all pass
+DLCP_SIM_BACKEND=dual .venv_ep0/bin/python -m pytest tests/sim -n 16 -q  # historical dual-backend gate
+DLCP_SIM_BACKEND=rust .venv_ep0/bin/python -m pytest tests/sim -n 16 -q  # historical rust opt-in before Rust became default
 .venv_ep0/bin/python scripts/sim_rewrite_next.py verify-phase 4
 ```
 
@@ -394,7 +408,7 @@ Every phase has a single command that returns exit code 0 iff the gate is met.  
 | 1     | `cargo test -p dlcp-sim --test isa_parity --release`                                          |
 | 2     | `cargo test -p dlcp-sim --test 'peripheral_*_parity' --release`                               |
 | 3     | `cargo test -p dlcp-sim --test multicore_parity --release` + Task #22 unxfail check.          |
-| 4     | `DLCP_SIM_BACKEND=dual pytest tests/sim -n 16 -q` (full sim gate green)                       |
+| 4     | historical `DLCP_SIM_BACKEND=dual pytest tests/sim -n 16 -q` dual-backend gate                 |
 | 5     | `cargo test -p dlcp-sim --test snapshot_property` + soak suite green                          |
 
 The progress ledger (`docs/SIM_REWRITE_RUST_PROGRESS.md`) tracks sub-task status; phase-level gates are the authoritative completion signal.
@@ -598,9 +612,9 @@ question.
 
 ## 12. Out-of-Scope (For This Effort)
 
-- Replacing gpsim's role as a debugging tool (some humans use the gpsim interactive prompt directly) — the **scripts** that wrap gpsim are gone; the gpsim binary stays in `vendor/` until the team decides otherwise.
+- Replacing gpsim's role as a debugging tool (some humans used the gpsim interactive prompt directly) — the wrapper scripts and vendor fork are now retired from this repository.
 - Modeling the TAS3108 audio path (filters, coefficient effects on signal). Out of scope — we keep the I²C-slave fault-injection stub.
-- Modeling actual USB host enumeration. We model only what `dlcp_fw.flash.dlcp_main_flash` and `dlcp_fw.flash.dlcp_diag` (cmd 0x44 Tier-1 diag) exercise.
+- Modeling actual USB host enumeration. We model only what `dlcp_fw.flash.dlcp_main_flash` and `dlcp_fw.flash.dlcp_diag` exercise, including V3.2 11-cell and V3.4 16-cell `cmd 0x44` diagnostics.
 - Real-time audio capture/loopback (today done by `dlcp_fw.flash.read_coeffs` + `tests/hardware/`) — these are physical-only tests and stay outside the simulator.
 
 ---
@@ -637,8 +651,9 @@ question.
 - Clock derivation: `docs/analysis/MAIN_CLOCK_TIMING.md`
 - **Note**: The CONTROL source header at `src/dlcp_fw/asm/dlcp_control_v171.asm:4` says "PIC18F25K20 @ ~16 MHz (4 MIPS)" — this comment is stale. Empirical proof CONTROL is **12 MHz** (3 MIPS): SPBRG=0x05 with BRGH=0/BRG16=0 (`v171.asm:773`) yields BAUD = Fosc / (64 × 6) = 31,250 only at Fosc=12 MHz; at 16 MHz it would be 41,667. (The legacy gpsim harness override that asserted CONTROL is 12 MHz lived in `src/dlcp_fw/sim/control_gpsim.py`; that file was retired in PF.4 phase 2.  The rust executor honours 12 MHz directly via the K20 core's `instr_per_tick` configuration.) The stale header comment is not in scope for this rewrite to fix.
 - AN0 boot detail: `docs/analysis/MAIN_AN0_STANDBY_TRACE.md`
-- V1.71 source: `src/dlcp_fw/asm/dlcp_control_v171.asm`
-- V3.2 source: `src/dlcp_fw/asm/dlcp_main_v32.asm`
+- Original migration target sources: `src/dlcp_fw/asm/dlcp_control_v171.asm`
+  and `src/dlcp_fw/asm/dlcp_main_v32.asm`.  Current users pass explicit
+  V1.73/V3.4 HEXs into the chain helpers.
 
 ---
 

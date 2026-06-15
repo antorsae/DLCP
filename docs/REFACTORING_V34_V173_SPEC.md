@@ -6,6 +6,10 @@ Targets: MAIN V3.4 and CONTROL V1.73
 Scope: source-level simplification and lifecycle hardening for the current
 V3.3/V1.72 behavior set, with no user-visible feature loss.
 
+Baseline note: this implementation spec uses V3.3/V1.72 as the immediate code
+lineage baseline.  User-facing release comparison in `README.md` is against the
+stock pair, MAIN V2.3 + CONTROL V1.6b.
+
 ## Purpose
 
 V3.4/V1.73 is a refactoring release pair.  It exists to make the firmware
@@ -48,10 +52,10 @@ Before behavior refactoring starts, the new pair shall also be fully wired into:
 - flash-wrapper tests that allow V3.4/V1.73 flashing and pin the accepted
   CONTROL safe-flash default.
 
-Promotion status: as of 2026-06-08, V3.4/V1.73 is the recommended operator
+Promotion status: as of 2026-06-14, V3.4/V1.73 is the recommended operator
 release pair.  `README.md` and `scripts/flash_control_safe.sh` now default to
-V3.4 MAIN plus V1.73 CONTROL; V3.3/V1.72 remains the previous supported
-rollback pair.
+MAIN V3.4 rev `0xAC` plus CONTROL V1.73 rev `0x47`; V3.3/V1.72 remains the
+previous supported rollback pair.
 
 ## Goals
 
@@ -77,8 +81,10 @@ rollback pair.
 ## Non-Goals
 
 - No DLCP_LINK_V2 protocol replacement.
-- No new UI page, new host protocol, new diagnostics counter, or new hardware
-  deployment flow beyond the V3.4/V1.73 release plumbing.
+- No new UI page, new CONTROL LCD/chain diagnostics counter, or new hardware
+  deployment flow beyond the V3.4/V1.73 release plumbing.  Later V3.4 field
+  fixes added MAIN-only USB `cmd 0x44` SRC/DSP forensic counters `N/L/C/T/M`;
+  those are not rendered by V1.73 CONTROL.
 - No full macro rewrite of RAM access that emits hidden `movlb` instructions.
 - No broad historical-source migration for older firmware versions unless a
   shared test/helper requires a compatibility alias.
@@ -450,10 +456,11 @@ optimization-era measurements.  Use the same metrics as the V3.3 size ledger:
 
 Any MAIN growth must be tied to a necessary bug fix and accepted explicitly in
 the implementation evidence.  Pure source hygiene should assemble byte-for-byte
-or shrink.  V3.4 must satisfy `free_object_words >= 64` before `org 0x4C00` by
-the listing-fit metric, equivalent to `byte_margin >= 128` for PIC18 program
-memory words.  The release cannot proceed with unexplained growth or with less
-than the numeric margin.
+or shrink.  The original refactoring target was `free_object_words >= 64`, but
+the current promoted V3.4 field-fix line intentionally accepted a tighter floor:
+at least 10 free bytes before `org 0x4C00` by the listing-fit metric.  The
+release cannot proceed with unexplained growth or with less than the current
+numeric floor.
 
 Measure after each CONTROL work unit that touches app code.  CONTROL V1.73
 shall record app-space growth and prove it remains below
@@ -483,10 +490,9 @@ PYTHONPATH=src .venv_ep0/bin/python scripts/dlcp_v34_release_flash.py --path "$R
 PYTHONPATH=src .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
 # refresh/export LEFT_HID and RIGHT_HID from the latest identify output
 # Power-cycle CONTROL while holding UP+DOWN for ~6s to enter bootloader; do not press SELECT.
-PYTHONPATH=src .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
-# refresh/export LEFT_HID and RIGHT_HID from the latest bootloader identify output
-scripts/flash_control_safe.sh --path "$LEFT_HID" --hex firmware/patched/releases/DLCP_Control_V1.73.hex --preflight-only
-scripts/flash_control_safe.sh --path "$LEFT_HID" --hex firmware/patched/releases/DLCP_Control_V1.73.hex
+# CONTROL re-enumerates independently; do not reuse MAIN HID paths for CONTROL flashing.
+scripts/flash_control_safe.sh --hex firmware/patched/releases/DLCP_Control_V1.73.hex --preflight-only
+scripts/flash_control_safe.sh --hex firmware/patched/releases/DLCP_Control_V1.73.hex
 # Cold power-cycle CONTROL plus both MAINs before smoke probes.
 PYTHONPATH=src .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
 # refresh/export LEFT_HID and RIGHT_HID from the latest identify output

@@ -9,7 +9,10 @@ This archive keeps older firmware versions and non-recommended releases out of t
 | MAIN | V2.3 | Original Hypex MAIN firmware for PIC18F2455-class DLCP units. |
 | CONTROL | V1.6b | Latest stock CONTROL baseline used for V1.7/V1.71 source rewrite work. |
 
-Stock operation works for normal use, but the firmware has unbounded waits and limited fault visibility.  The V3.2 + V1.71 line fixed those robustness gaps, V3.3 + V1.72 layered per-MAIN Diagnostics identity display on top, and V3.4 + V1.73 promotes the refactoring/robustness hardening wave.
+Stock operation works for normal use, but the firmware has unbounded waits and
+limited fault visibility.  The V3.2 + V1.71 line fixed many robustness gaps,
+V3.3 + V1.72 layered per-MAIN Diagnostics identity display on top, and V3.4 +
+V1.73 is the current recommended pair.
 
 ## MAIN History
 
@@ -22,9 +25,9 @@ Stock operation works for normal use, but the firmware has unbounded waits and l
 | V2.8 | Binary patch | Added delayed mute/hold preset switching. Last practical binary-patched MAIN line. |
 | V3.0 | Source rewrite | Stock-equivalent source-assembled baseline. |
 | V3.1 | Source rewrite | Integrated the V2.x features into source; precursor to V3.2. |
-| V3.2 | Source rewrite | Robustness/Diagnostics baseline MAIN release. |
+| V3.2 | Source rewrite | Historical robustness/Diagnostics MAIN release and rollback reference. |
 | V3.3 | Source rewrite | Previous supported MAIN release; adds cmd `0x25` MAIN identity reply for V1.72 Diagnostics. |
-| V3.4 | Source rewrite | Current supported MAIN release; includes RAM-bank safety hardening, Preset filename lifecycle fixes, chain-TX arbitration, I2C recovery classification, and V3.4 identity plumbing. |
+| V3.4 | Source rewrite | Current supported MAIN release; includes RAM-bank safety hardening, Preset filename lifecycle fixes, SRC4382 estimator-hole/source-loss robustness, DSP coefficient transaction safety, wake I2C phase-order hardening, chain-TX arbitration, I2C recovery classification, and V3.4 identity plumbing. |
 
 ## CONTROL History
 
@@ -35,13 +38,16 @@ Stock operation works for normal use, but the firmware has unbounded waits and l
 | V1.63b | Binary patch | BF/08 parser, LCD `!` indicator, resync-on-clear. |
 | V1.64b | Binary patch | Explicit IR standby/wake endpoints. |
 | V1.7 | Source rewrite | Stock-equivalent source-assembled V1.6b baseline. |
-| V1.71 | Source rewrite | Robustness/Diagnostics baseline CONTROL release. |
+| V1.71 | Source rewrite | Historical robustness/Diagnostics CONTROL release and rollback reference. |
 | V1.72 | Source rewrite | Previous supported CONTROL release; adds per-PB MAIN version/revision display on healthy Diagnostics pages. |
 | V1.73 | Source rewrite | Current supported CONTROL release; carries the V1.72 Diagnostics identity behavior plus V1.73 metadata/build plumbing and RAM-bank alias cleanup. |
 
 ## Compatibility Notes
 
-V3.4 MAIN and V1.73 CONTROL are the current supported pair.  V3.3 MAIN and V1.72 CONTROL remain the previous supported identity-display pair, and V3.2 MAIN plus V1.71 CONTROL remain a useful robustness baseline and rollback pair.
+V3.4 MAIN and V1.73 CONTROL are the current supported pair.  V3.3 MAIN and
+V1.72 CONTROL remain the previous supported identity-display pair, and V3.2
+MAIN plus V1.71 CONTROL remain a useful historical robustness pair and rollback
+reference.
 
 | MAIN | CONTROL | Status |
 |---|---|---|
@@ -51,7 +57,7 @@ V3.4 MAIN and V1.73 CONTROL are the current supported pair.  V3.3 MAIN and V1.72
 | V3.3 | V1.72 | Previous supported pair. |
 | V3.3 | V1.71 | Basic operation; old CONTROL never sends cmd `0x25`, so no MAIN identity suffix. |
 | V3.2 | V1.72 | Basic operation; identity query times out and Diagnostics keeps suffixless `PBn OK`. |
-| V3.2 | V1.71 | Previous supported robustness/Diagnostics baseline pair. |
+| V3.2 | V1.71 | Historical robustness/Diagnostics pair and rollback reference. |
 | V3.2 | V1.64b or older patched CONTROL | Basic operation; no V1.71 diagnostics page or CONTROL Layer 1/2 hardening. |
 | V3.1/V3.0/V2.x | V1.71 | Basic operation; diagnostics pages show `n/a` because older MAINs do not provide V3.2 counters. |
 | V2.8 | V1.64b | Legacy binary-patched fallback pair. |

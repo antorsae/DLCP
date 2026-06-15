@@ -5,6 +5,11 @@ Status: implemented for V1.72/V3.3 Diagnostics identity; preset filename work
 remains separate and out of scope for this change.
 Targets: CONTROL V1.72+ and MAIN V3.3+.
 
+Current-use note: this is the historical identity implementation guide for the
+V1.72/V3.3 wave.  V1.73/V3.4 reuses the identity query/display contract, but
+later work moved preset filename traffic to `cmd 0x26` / `BF/2D..BF/4E` and
+extended MAIN USB `cmd 0x44` to 16 cells.
+
 ## Why This Is Separate From `V32_DIAG_TIER1_SPEC.md`
 
 `docs/V32_DIAG_TIER1_SPEC.md` is the locked V1.71/V3.2 baseline: runtime
@@ -71,8 +76,11 @@ Do not change existing diagnostics contracts:
 - `cmd 0x21` remains the 7-frame runtime burst, `BF/21..BF/27`.
 - `cmd 0x22` remains the 4-frame reset-cause burst, `BF/28..BF/2B`.
 - `cmd 0x23` remains the one-frame health ping, `BF/2C`.
-- HID `cmd 0x44` remains the 11-cell MAIN-local diag snapshot.
-- Preset filename, if implemented, keeps `cmd 0x24` and `BF/2F..BF/4E`.
+- HID `cmd 0x44` remains the 11-cell MAIN-local diag snapshot for V3.3-era
+  firmware; MAIN V3.4 extends the host USB snapshot to 16 cells with appended
+  `N/L/C/T/M`.
+- Preset filename was later implemented on `cmd 0x26` with replies
+  `BF/2D..BF/4E`.  Identity remains on `cmd 0x25` / `BF/4F..BF/53`.
 
 Add one addressed query:
 
@@ -140,10 +148,9 @@ CONTROL accepts the transaction only when:
 Namespace rationale:
 
 - `BF/25` is already a runtime reply byte for counter `R`, but that is in the
-  reply namespace. Request `cmd 0x25` is free after V3.3's planned `cmd 0x24`
-  filename query.
-- `BF/2D..BF/2E` stay unused as the gap between health (`BF/2C`) and filename
-  (`BF/2F..BF/4E`).
+  reply namespace. Request `cmd 0x25` is the identity query; later filename
+  support uses `cmd 0x26`.
+- `BF/2D..BF/4E` is the later filename range.
 - `BF/4F..BF/53` sits immediately after the filename range and is disjoint from
   all V1.71/V3.2 diagnostic reply ranges.
 - The release revision is split into nibbles so revs above `0x7F` never put a
@@ -182,8 +189,10 @@ Implementation steps:
 
 2. Dispatch:
    - Add `cmd 0x25` in `cmd_dispatch_xor_chain`.
-   - If `cmd 0x24` filename support lands first, the XOR chain after `cmd 0x23`
-     should be:
+   - Historical V3.3 branches discussed a possible `cmd 0x24` filename query.
+     In current V3.4 code, identity remains `cmd 0x25` and filename is
+     `cmd 0x26`; keep structural tests explicit for both dispatch constants.
+     The historical XOR sketch was:
      ```asm
      xorlw 0x07            ; 0x23 ^ 0x24 = cmd 0x24
      btfsc STATUS,2,ACCESS
@@ -321,7 +330,7 @@ State machine:
 - On in-transaction bad order, invalid payload, or timeout: clear `PENDING`,
   leave `valid` clear, do not disturb runtime/reset caches, and mark `seen` on
   timeout only.
-- `BF/21..BF/2B` diagnostic replies and `BF/2F..BF/4E` filename replies do not
+- `BF/21..BF/2B` diagnostic replies and `BF/2D..BF/4E` filename replies do not
   alter identity phase or caches.
 
 Banking and scratch contract:
@@ -366,15 +375,17 @@ For all rows, issue/stale/lost/n/a states override identity.
 
 Implemented coverage:
 
-- `tests/sim/test_v172_v33_diag_identity.py`
-  - compact V3.3 cmd `0x25` handler structure
-  - V1.72 identity parser/scheduler source wiring
-  - V1.72 boot splash and Waiting row-2 cleanup
-  - PB1 and PB2 healthy LCD identity titles through the two-MAIN chain
-  - IR volume, mute, preset, standby, and wake dispatch while parked on PB1/PB2
-    identity-enabled Diagnostics pages
-  - issue-state suffix suppression
-  - V1.72 + V3.2 backward compatibility after identity timeout
+	- `tests/sim/test_v172_v33_diag_identity.py`
+	  - compact V3.3 cmd `0x25` handler structure
+	  - V1.72 identity parser/scheduler source wiring
+	  - V1.72 boot splash and Waiting row-2 cleanup
+	  - PB1 and PB2 healthy LCD identity titles through the two-MAIN chain
+	  - IR volume, mute, preset, standby, and wake dispatch while parked on PB1/PB2
+	    identity-enabled Diagnostics pages
+	  - issue-state suffix suppression
+	  - V1.72 + V3.2 backward compatibility after identity timeout
+	  - V1.73/V3.4 Hypex IR volume/mute/preset and standby/wake dispatch on
+	    Diagnostics pages remains covered by the same successor test family.
 - `tests/sim/test_v172_v33_release_builders.py`
   - V3.3 builder bumps EEPROM/runtime/cmd25 identity revision literals
   - V3.3/V1.72 builders roll source/HEX/listing back on assembly failure
@@ -393,7 +404,8 @@ Implemented coverage:
 
 MAIN source tests:
 
-- `cmd 0x25` dispatch exists after `cmd 0x24` when filename support is present.
+- `cmd 0x25` identity dispatch and current `cmd 0x26` filename dispatch both
+  exist when filename support is present.
 - Handler emits exactly `BF/4F..BF/53` and suppresses the legacy ACK echo.
 - START id is `< 0x40`; major/minor/rev payload bytes are `<= 0x0F`; every
   emitted data byte is `< 0x80`.
@@ -462,7 +474,7 @@ Malformed protocol table:
 | `BF/4F, BF/50, BF/52, BF/53` | abort on bad order; no mixed stale commit |
 | late `BF/53` after timeout | ignored; next clean transaction commits |
 | interleaved `BF/21..BF/2B` during identity pending | diagnostic caches update normally; identity phase unchanged |
-| interleaved filename `BF/2F..BF/4E` during identity pending | filename parser behavior unchanged; identity phase unchanged |
+| interleaved filename `BF/2D..BF/4E` during identity pending | filename parser behavior unchanged; identity phase unchanged |
 | old-MAIN ACK/echo data byte after `cmd 0x25` | no parser drift; next diagnostic reply parses |
 | partial `BF/4F` frame then frame-gap timeout then `BF/21` | partial identity frame cleared; runtime diag parses normally |
 

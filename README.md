@@ -115,8 +115,8 @@ effects create startup `I6` or a live wrong DSP image.
 **Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the
 recommended V1.73 + V3.4 pair, each healthy Diagnostics page also shows that
 MAIN's live identity, for example `PB1 OK v3.4 xAC` and `PB2 OK v3.4 xAC`.
-The full counter set, including USB-only SRC/DSP counters, is available over
-USB:
+The full MAIN counter set, including USB-only SRC/DSP counters, is available
+over USB:
 
 ```bash
 .venv_ep0/bin/python scripts/dlcp_diag.py --json --watch --interval 1
@@ -128,9 +128,11 @@ LCD status format:
   snapshot from a V3.4 MAIN and has completed that MAIN's identity query.
 - `PB1 OK` / `PB2 OK`: fresh, healthy snapshot from an older MAIN that does not
   support the identity reply yet, or identity has not completed yet.
-- `PB1! ...` / `PB2! ...`: fresh snapshot with one or more non-zero
-  diagnostics; tokens such as `I7`, `A1`, `S1`, `B1`, or `O1` identify the
-  fields that changed. Version text is intentionally suppressed on issue pages.
+- `PB1! ...` / `PB2! ...`: fresh snapshot with one or more issue counters
+  non-zero, such as `I7`, `D1`, `R1`, `A1`, `P1`, `V1`, `W1`, or `X1`.
+  OK-context tokens such as `S1`, `B1`, or `O1` may also appear when an issue
+  row has room, but they do not select the `PBn!` layout by themselves. Version
+  text is intentionally suppressed on issue pages.
 - `PB1 old` / `PB2 old`: CONTROL has an older snapshot but has not declared the
   PB lost. Version text is intentionally suppressed.
 - `PB1 lost` / `PB2 lost`: CONTROL has not received fresh diagnostics within
@@ -146,20 +148,21 @@ Counters:
 - `A`: AN0 standby triggers
 - `P`: RA1 edge events (sim-only observability; no assigned V3.4 hardware function)
 - `O/V/W/X`: POR, brownout, watchdog-timeout latch, software-reset flags
-- `N/L/C/T/M` (USB only in V1.73): SRC non-PCM mute episodes, Auto Detect
-  source-loss confirmations, route changes, preset table walks, and DSP mute
-  writes
+- `N/L/C/T/M` (MAIN V3.4 USB `cmd 0x44` only; not shown on the V1.73 CONTROL
+  LCD): SRC non-PCM mute episodes, Auto Detect source-loss confirmations, route
+  changes, preset table walks, and DSP mute writes
 
-The simulator fault-injection matrix now covers every displayed Diagnostics
-field from stimulus through MAIN counter, CONTROL cache, and PB1/PB2 LCD
-rendering.  `P` is intentionally scoped to the simulator-only RA1 PORTA-edge
-invariant until PIC18F2455 RA1 analog masking is modeled.  `W` is a structural
-RCON.TO readout bucket; current V1.73/V3.4 releases leave WDT disabled, so it
-should stay 0 unless WDT policy changes or a test injects that reset cause.
-`T`, `M`, and `C` are normal context counters during boot, preset changes,
-standby/wake, source reacquire, and mute transitions; `N` and `L` are useful
-source-condition evidence and should be interpreted against the expected live
-audio state.
+The simulator fault-injection matrix covers every CONTROL LCD-displayed
+Diagnostics field (`I/D/S/B/R/A/P/O/V/W/X`) from stimulus through MAIN counter,
+CONTROL cache, and PB1/PB2 LCD rendering.  `P` is intentionally scoped to the
+simulator-only RA1 PORTA-edge invariant until PIC18F2455 RA1 analog masking is
+modeled.  `W` is a structural RCON.TO readout bucket; current V1.73/V3.4
+releases leave WDT disabled, so it should stay 0 unless WDT policy changes or a
+test injects that reset cause.  The USB-only MAIN `N/L/C/T/M` fields are covered
+by `cmd 0x44`/`dlcp_diag.py` tests, not by CONTROL LCD matrix tests.  `T`, `M`,
+and `C` are normal context counters during boot, preset changes, standby/wake,
+source reacquire, and mute transitions; `N` and `L` are useful source-condition
+evidence and should be interpreted against the expected live audio state.
 
 For raw state capture when USB still works but the chain or LCD is unhealthy:
 
@@ -294,17 +297,19 @@ Hardware runbook:
 
 Core implementation docs:
 
-- MAIN release flow: [docs/V32_RELEASE.md](docs/V32_RELEASE.md) plus V3.4 wrapper `scripts/dlcp_v34_release_flash.py`
-- CONTROL release flow: [docs/V171_RELEASE.md](docs/V171_RELEASE.md) plus V1.73 default in `scripts/flash_control_safe.sh`
+- Current MAIN release flow: `scripts/dlcp_v34_release_flash.py`; historical
+  V3.2 MAIN runbook: [docs/V32_RELEASE.md](docs/V32_RELEASE.md)
+- Current CONTROL release flow: `scripts/flash_control_safe.sh`; historical
+  V1.71 CONTROL runbook: [docs/V171_RELEASE.md](docs/V171_RELEASE.md)
 - V3.4/V1.73 refactoring release: [docs/REFACTORING_V34_V173_SPEC.md](docs/REFACTORING_V34_V173_SPEC.md) and [docs/IMPL_REFACTORING_V34_V173.md](docs/IMPL_REFACTORING_V34_V173.md)
 - V3.4/V1.73 field bug ledger: [docs/V34_FIELD_BUGS_20260610.md](docs/V34_FIELD_BUGS_20260610.md)
-- Active bug ledger: [docs/IMPL_V171_V32_BUG_LEDGER.md](docs/IMPL_V171_V32_BUG_LEDGER.md)
-- Robustness plan: [docs/V32_MAIN_HANG_HARDENING_PLAN.md](docs/V32_MAIN_HANG_HARDENING_PLAN.md)
-- Diagnostics protocol: [docs/V32_DIAG_TIER1_SPEC.md](docs/V32_DIAG_TIER1_SPEC.md)
-- Diagnostics MAIN identity: [docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md](docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md)
-- Diagnostics fault matrix: [docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md](docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
-- Diagnostics matrix implementation: [docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md](docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
-- Simulator details: [docs/SIM_REWRITE_RUST_SPEC.md](docs/SIM_REWRITE_RUST_SPEC.md)
+- Historical V1.71/V3.2 bug ledger: [docs/IMPL_V171_V32_BUG_LEDGER.md](docs/IMPL_V171_V32_BUG_LEDGER.md)
+- Historical V3.2 robustness plan: [docs/V32_MAIN_HANG_HARDENING_PLAN.md](docs/V32_MAIN_HANG_HARDENING_PLAN.md)
+- Base diagnostics protocol inherited by current LCD diagnostics: [docs/V32_DIAG_TIER1_SPEC.md](docs/V32_DIAG_TIER1_SPEC.md)
+- Diagnostics MAIN identity introduced in V1.72/V3.3 and reused by V1.73/V3.4: [docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md](docs/IMPL_V172_V33_DIAG_MAIN_IDENTITY.md)
+- Historical diagnostics fault matrix inherited by current LCD counter tests: [docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md](docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
+- Historical diagnostics matrix implementation: [docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md](docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
+- Historical Rust simulator rewrite spec; current simulator gate is above: [docs/SIM_REWRITE_RUST_SPEC.md](docs/SIM_REWRITE_RUST_SPEC.md)
 
 ## Disclaimer
 

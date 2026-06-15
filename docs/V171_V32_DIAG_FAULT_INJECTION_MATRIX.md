@@ -5,9 +5,13 @@ Scope: deployed `DLCP_Control_V1.71.hex` with `DLCP_Firmware_V3.2.hex`
 Status: simulator matrix implemented; `P` remains hardware-realistic
 not-applicable until PIC18F2455 RA1 analog masking is modeled
 
+Historical note: this matrix closed the V1.71/V3.2 LCD-displayed diagnostics
+surface.  The same 11 LCD fields are inherited by V1.73/V3.4; MAIN V3.4's
+USB-only `N/L/C/T/M` counters are outside this CONTROL LCD matrix.
+
 ## Problem
 
-The Diagnostics page can only be trusted if every displayed counter has an
+The V1.71/V3.2 Diagnostics page can only be trusted if every displayed counter has an
 end-to-end test that starts from a realistic fault or event stimulus and ends
 at the user-visible PB Diagnostics page.
 

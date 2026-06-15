@@ -1,17 +1,22 @@
 # V1.71 CONTROL Release Workflow
 
+Historical note: this is an archived CONTROL runbook for the former V1.71/V3.2
+deployment pair.  The current recommended pair is MAIN V3.4 + CONTROL V1.73;
+`scripts/flash_control_safe.sh` now defaults to
+`firmware/patched/releases/DLCP_Control_V1.73.hex`.
+
 ## Scope
 
-This is the operator runbook for the recommended CONTROL deployment as
+This is the operator runbook for the then-recommended CONTROL deployment as
 of 2026-04-21.
 
-- recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.71.hex`
-- recommended MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
+- historical CONTROL release: `firmware/patched/releases/DLCP_Control_V1.71.hex`
+- historical paired MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
   (see [`docs/V32_RELEASE.md`](V32_RELEASE.md) for the matching MAIN flow)
 - canonical CONTROL builder: `scripts/build_v171_release.py`
-- recommended flashing path: use `scripts/flash_control_safe.sh`
+- historical flashing path: use `scripts/flash_control_safe.sh`
   with `--hex firmware/patched/releases/DLCP_Control_V1.71.hex`
-- active implementation bugs for the V1.71/V3.2 pair are tracked in
+- historical implementation bugs for the V1.71/V3.2 pair are tracked in
   [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md)
 - Diagnostics counter fault-injection closure is tracked separately in
   [`docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`](V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
@@ -167,7 +172,8 @@ The captured preset captures are MAIN-side only and live under
 
 ## Flash Commands
 
-Preflight (no flash):
+Historical V1.71 preflight (no flash).  Current CONTROL flashing omits `--hex`
+unless overriding the V1.73 default:
 
 ```bash
 scripts/flash_control_safe.sh \
@@ -175,7 +181,7 @@ scripts/flash_control_safe.sh \
   --preflight-only
 ```
 
-Live flash (writes to attached CONTROL):
+Historical V1.71 live flash (writes to attached CONTROL):
 
 ```bash
 scripts/flash_control_safe.sh \
@@ -269,16 +275,16 @@ behave as follows:
 - **Layer 2 one-frame-per-trigger** — always active; benefits any
   MAIN release.
 
-For new deployments, flash V3.2 MAIN alongside V1.71 CONTROL.  For
-existing deployments running V3.1 MAIN, V1.71 CONTROL is a drop-in
-CONTROL-only upgrade — the Diagnostics page just shows `n/a` until
-the MAINs are upgraded.
+For new deployments, use the current V3.4/V1.73 release flow in `README.md`.
+For historical deployments running V3.1 MAIN, V1.71 CONTROL was a drop-in
+CONTROL-only upgrade — the Diagnostics page just showed `n/a` until the MAINs
+were upgraded.
 
 ## Compatibility Matrix
 
 | CONTROL | MAIN | Notes |
 |---|---|---|
-| V1.71 | V3.2 | recommended; full Layer 5 Diagnostics + Layer 1/2 hardening |
+| V1.71 | V3.2 | historical then-recommended pair; full Layer 5 Diagnostics + Layer 1/2 hardening |
 | V1.71 | V3.1 | basic operation works; Diagnostics shows `n/a` |
 | V1.71 | V3.0 | basic operation works; Diagnostics shows `n/a` |
 | V1.71 | V2.x | basic operation works; Diagnostics shows `n/a` |
@@ -315,8 +321,8 @@ matrix and implementation plan linked above.
 
 ## Release Notes
 
-- V1.71 is the recommended CONTROL release for chains paired with
-  V3.2 MAIN.
+- V1.71 was the recommended CONTROL release for chains paired with
+  V3.2 MAIN.  Current deployments should use V1.73.
 - V1.64b remains the canonical fallback for chains paired with V3.1
   or earlier MAIN that do not need the Diagnostics page.
 - V1.7 (the byte-identical source rebuild of stock V1.6b) is

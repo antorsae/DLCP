@@ -5,6 +5,11 @@ Scope: implementation plan for `docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`
 Status: implemented for simulator coverage; `P` remains hardware-realistic
 not-applicable until PIC18F2455 RA1 analog masking is modeled
 
+Historical note: this plan implemented the V1.71/V3.2 LCD-displayed diagnostics
+matrix.  V1.73/V3.4 inherits the same 11 CONTROL LCD fields; MAIN V3.4's
+USB-only `N/L/C/T/M` counters are covered by the host `cmd 0x44` diagnostics
+path, not by this CONTROL LCD matrix.
+
 ## Objective
 
 Convert every displayed V1.71/V3.2 Diagnostics counter from seeded or

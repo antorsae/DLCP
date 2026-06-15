@@ -1,17 +1,22 @@
 # V3.2 Release Workflow
 
+Historical note: this is an archived MAIN runbook for the former V3.2/V1.71
+deployment pair.  The current recommended pair is MAIN V3.4 + CONTROL V1.73;
+use `README.md` and `scripts/dlcp_v34_release_flash.py` for current MAIN
+flashing.
+
 ## Scope
 
-This is the operator runbook for the recommended MAIN deployment as of
+This is the operator runbook for the then-recommended MAIN deployment as of
 2026-04-21.
 
-- recommended MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
-- recommended CONTROL release: `firmware/patched/releases/DLCP_Control_V1.71.hex`
+- historical MAIN release: `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
+- historical paired CONTROL release: `firmware/patched/releases/DLCP_Control_V1.71.hex`
   (see [`docs/V171_RELEASE.md`](V171_RELEASE.md) for the matching CONTROL flow)
 - canonical MAIN build path: `scripts/build_v32_release.py` (bumps the EEPROM revision byte, then rebuilds the same canonical hex)
-- recommended flashing path: use `scripts/dlcp_v32_release_flash.py`, which
+- historical flashing path: use `scripts/dlcp_v32_release_flash.py`, which
   bakes preset A/B captures into canonical `V3.2.hex` at flash time
-- active implementation bugs for the V1.71/V3.2 pair are tracked in
+- historical implementation bugs for the V1.71/V3.2 pair are tracked in
   [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md)
 - Diagnostics counter fault-injection closure is tracked separately in
   [`docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md`](V171_V32_DIAG_FAULT_INJECTION_MATRIX.md)
@@ -248,15 +253,15 @@ do not light up:
 - **Layer 2 one-frame-per-trigger full-sync** — V1.71 only; reduces
   burst-rate amplification under reconnect/full-sync churn.
 
-For new deployments, flash V1.71 CONTROL alongside V3.2 MAIN.  For
-existing deployments running V1.64b, V3.2 MAIN is a drop-in MAIN-only
-upgrade if the operator does not need the new Diagnostics screen.
+For new deployments, use the current V3.4/V1.73 release flow in `README.md`.
+For historical deployments running V1.64b, V3.2 MAIN was a drop-in MAIN-only
+upgrade if the operator did not need the new Diagnostics screen.
 
 ## Compatibility Matrix
 
 | MAIN | CONTROL | Notes |
 |---|---|---|
-| V3.2 | V1.71 | recommended; full Layer 5 Diagnostics + Layer 1/2 hardening |
+| V3.2 | V1.71 | historical then-recommended pair; full Layer 5 Diagnostics + Layer 1/2 hardening |
 | V3.2 | V1.64b | basic operation works; no Diagnostics; Layer 1 unbounded |
 | V3.2 | V1.63b | basic operation works; no Diagnostics; Layer 1 unbounded |
 | V3.2 | V1.62b | basic operation works; no Diagnostics; Layer 1 unbounded |
@@ -281,8 +286,10 @@ above.
 
 ## Release Notes
 
-- Canonical `V3.2.hex` is the recommended MAIN release when deployed
-  with baked preset captures (this doc + V1.71 CONTROL).
+- Canonical `V3.2.hex` was the recommended MAIN release when deployed
+  with baked preset captures (this doc + V1.71 CONTROL).  Current users should
+  use `scripts/dlcp_v34_release_flash.py`, including the `--profile hypex|rc5`
+  finalizer when setting MAIN IR profile.
 - `V3.1.hex` remains a viable fallback for single-PB installs that
   don't need the async preset switch fix or the Diagnostics page.
 - `V2.8` remains the legacy binary-patched fallback for users who

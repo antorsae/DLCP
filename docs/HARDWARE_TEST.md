@@ -476,11 +476,13 @@ For release wrappers that currently accept only `--path`, the operator must use
 the role-derived `path` from `identify-mains`. This is mandatory for PB1/PB2
 setups because USB enumeration order is not a safe proxy for physical position.
 
-### 6. Confirm V3.2 release identity and A/B filenames
+### 6. Confirm current MAIN release identity and A/B filenames
 
-After flashing V3.2 with baked LX521.4 captures, run the MAIN-only identity
-gate.  It can be run with one MAIN connected at a time, matching the
-one-board-at-a-time release-flash workflow:
+After flashing the current V3.4 release with baked LX521.4 captures, run the
+MAIN-only identity gate.  The historical pytest name still says `v32`, but the
+current wrapper/HEX under test is `DLCP_Firmware_V3.4.hex`.  It can be run with
+one MAIN connected at a time, matching the one-board-at-a-time release-flash
+workflow:
 
 ```bash
 DLCP_HW_RELEASE_IDENTITY_CONFIRM=1 \
@@ -491,9 +493,9 @@ DLCP_HW_RELEASE_IDENTITY_CONFIRM=1 \
 
 Pass criteria:
 
-- HID reports V3.2.
+- HID reports V3.4, currently rev `0xAC`.
 - runtime EEPROM identity/revision matches
-  `firmware/patched/releases/DLCP_Firmware_V3.2.hex`.
+  `firmware/patched/releases/DLCP_Firmware_V3.4.hex`.
 - preset A active filename RAM and HID cmd `0x03` readback are
   `LX521.4 22MG10F-v5`.
 - preset B active filename RAM and HID cmd `0x03` readback are
@@ -1213,9 +1215,11 @@ again; the unit should re-enumerate and re-flash cleanly.
 This abort/recovery test is operator-discretion — it requires power
 control on the unit and isn't part of the routine 2-cycle gate.
 
-## Diagnostics page (V1.71 + V3.2 Layer 5)
+## Diagnostics page (V1.73 + V3.4 current; V1.71 + V3.2 historical Layer 5)
 
-Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
+Validates the current V1.73 CONTROL Diagnostics page against V3.4 MAIN counters.
+The same page shape originated in V1.71 + V3.2 Layer 5, so older test names and
+some linked historical docs still use that wording.
 
 > **Updated 2026-05-09 (BUG-DIAG-01/02 fix).**  Pre-2026-05-04 versions
 > of this runbook described the Diagnostics page as a single
@@ -1226,7 +1230,7 @@ Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
 > `docs/V32_DIAG_TIER1_SPEC.md` and `dlcp_control_v171.asm:4805+`)
 > split that single-screen layout into per-PB pages at states 4
 > (PB1) and 5 (PB2), each rendering one of four `PBn` / `n/a` /
-> `OK` / `PBn:` layouts.  Current V1.71/V3.2 firmware must update the
+> `OK` / `PBn!` layouts.  Current V1.73/V3.4 firmware must update the
 > active PB page from a static wait.  LEFT/RIGHT cycling is no longer an
 > accepted workaround for persistent `PBn` / `n/a`; after about 1 second
 > on the page, `n/a` is acceptable only when that PB is genuinely absent
@@ -1234,13 +1238,11 @@ Validates the V1.71 CONTROL Diagnostics page against V3.2 MAIN counters.
 
 ### Prerequisites
 
-- both MAINs flashed with `firmware/patched/releases/DLCP_Firmware_V3.2.hex`
-  (use `scripts/dlcp_v32_release_flash.py --left` / `--right` per
-  [`docs/V32_RELEASE.md`](V32_RELEASE.md))
-- CONTROL flashed with `firmware/patched/releases/DLCP_Control_V1.71.hex`
-  (use `scripts/flash_control_safe.sh --hex ...` per
-  [`docs/V171_RELEASE.md`](V171_RELEASE.md))
-- both MAINs cold-booted at least once after flash so the V3.2 RCON-gated
+- both MAINs flashed with `firmware/patched/releases/DLCP_Firmware_V3.4.hex`
+  (use `scripts/dlcp_v34_release_flash.py --left` / `--right`)
+- CONTROL flashed with `firmware/patched/releases/DLCP_Control_V1.73.hex`
+  (use `scripts/flash_control_safe.sh`, which defaults to V1.73)
+- both MAINs cold-booted at least once after flash so the V3.4 RCON-gated
   cold-init has cleared the diag block
 
 ### Operator walk-through (5 minutes)
@@ -1260,8 +1262,8 @@ health (per `dlcp_control_v171.asm:3484+,3603+`):
 |---|---|---|
 | Absent (PB has never replied) | `PBn` (+ 13 spaces) | `n/a` (+ 13 spaces) |
 | Healthy (all 7 runtime counters + abnormal reset flags V/W/X == 0; the POR `O` reset-cause flag may be 1 on normal cold boot) | `PBn` (+ 13 spaces) | `OK` (+ 14 spaces) |
-| Degraded (1..9 non-zero cells) | `PBn:` + up to 4 cell entries | up to 5 cell entries |
-| Overflow (10..11 non-zero cells) | `PBn:` + 4 cell entries (full) | 5 cell entries + `..` overflow indicator |
+| Degraded (1..9 non-zero cells) | `PBn!` + up to 4 issue/context entries | up to 5 entries |
+| Overflow (10..11 non-zero cells) | `PBn!` + 4 entries (full) | 5 entries + `..` overflow indicator |
 
 Walk-through:
 
@@ -1275,16 +1277,16 @@ Walk-through:
    PB1
    n/a
    ```
-   It must then update to `PB1` / `OK` (all-zero counters) or
-   `PB1:` + cell entries (some non-zero counters).  If it stays
-   `PB1` / `n/a`, PB1 is absent/silent or the diagnostics reply path
-   is broken.
+   It must then update to `PB1 OK v3.4 xAC` / optional OK-context tokens on
+   the current pair, or `PB1!` + cell entries when issue counters are non-zero.
+   Older MAINs may show suffixless `PB1 OK`.  If it stays `PB1` / `n/a`, PB1 is
+   absent/silent or the diagnostics reply path is broken.
 4. While still on PB1 Diag, verify normal controls remain responsive:
    volume up/down, mute, preset A/B, standby, and wake IR actions must
    still dispatch.  LEFT/RIGHT physical navigation must not feel stalled.
 5. To check PB2: press the physical `RIGHT` touch button once more (PB1 Diag → PB2 Diag,
    state 4 → 5).  PB2's page renders the same `PBn` / `n/a` /
-   `OK` / `PBn:` layouts independently.  Wait about 1 second and
+   `OK` / `PBn!` layouts independently.  Wait about 1 second and
    require the same static update behavior.
 6. Press the physical `LEFT` touch button repeatedly to return to Volume.
    CONTROL's diag query path is page-local, so leaving the page
@@ -1299,7 +1301,7 @@ once for PB2 at state 5):
 |---|---|---|
 | Row 0 renders `PB1` (PB1 page) or `PB2` (PB2 page) prefix | yes | If wrong literal appears: V1.71 CONTROL not flashed correctly, or operator did not navigate to the correct state (4 or 5) |
 | Row 1 may briefly show `n/a`, then reaches `OK` or cell entries within about 1 second of static wait | yes | If row 1 stays `n/a`: that PB is genuinely absent/silent, that PB's MAIN doesn't recognize cmd 0x21 (V3.2 not flashed), or there is a real reply-path bug |
-| Row 0 flips to `PBn:` + cell entries when at least 1 counter is non-zero | yes | If row 0 stays bare `PBn` literal with non-zero counter activity expected: V1.71 layout dispatch broken |
+| Row 0 flips to `PBn!` + cell entries when at least 1 issue counter is non-zero | yes | If row 0 stays bare `PBn` literal with non-zero counter activity expected: Diagnostics layout dispatch broken |
 | Physical LEFT/RIGHT navigate away from each PB page promptly | yes | If CONTROL hangs or misses the touch: diagnostics foreground service is starving normal button scan |
 | Volume, mute, preset, standby, and wake IR actions still dispatch while on PB1/PB2 pages | yes | If actions are delayed or ignored: diagnostics foreground service is starving normal UI/IR dispatch |
 | No effect on Volume/Preset/Input/Setup operation after leaving Diagnostics | yes | Diag traffic is page-local; if other features regress, send_query may be leaking outside the screen body |
@@ -1494,16 +1496,17 @@ the logical gate closed with hardware latches still enabled.
 ## SRC4382 Auto Detect Acoustic Gate
 
 This closes the hardware side of `BUG-SRC4382-AD-01` after the simulator has
-proved the SRC4382 route/TAS3108 contract and the reduced Auto Detect polling
-cadence.  The live check is intentionally acoustic because the previous bad
-audio observation was caused by speaker misconnection; the gate now verifies
-the corrected speaker path, the rev `0x6E` fixed-digital route-priming fix,
-and future route/TAS regressions.
+proved the SRC4382 route/TAS3108 contract, reduced Auto Detect polling cadence,
+RXCKR estimator-hole/source-loss handling, and volume-dirty robustness.  The
+live check is intentionally acoustic because the previous bad audio observation
+was caused by speaker misconnection; the gate now verifies the corrected
+speaker path, the V3.4 fixed-digital route-priming and source-loss fixes, and
+future route/TAS regressions.
 
 ### Prerequisites
 
-- CONTROL flashed with canonical V1.71.
-- both MAINs flashed with canonical V3.2.
+- CONTROL flashed with canonical V1.73, currently rev `0x47`.
+- both MAINs flashed with canonical V3.4, currently rev `0xAC`.
 - known audio source available on at least one fixed digital input and through
   Auto Detect; if possible, exercise `S/PDIF`, `USB Audio`, `AES`, and
   `Optical` individually.
