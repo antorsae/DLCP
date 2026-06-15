@@ -1,10 +1,12 @@
 # V3.4 Size-Reclaim Campaign — Findings and Landed Result
 
-Status: **target met 2026-06-12** by the original S-series, then refreshed
-**2026-06-14** after the FIELD safety fixes had spent the reserve down to the
-user-relaxed 10-byte floor.  Current MAIN V3.4 rev `0xA5` margin before the
-`0x4C00` preset-table wall: **102 bytes** (`listing_app_end=0x4B9A`), from
-the immediate pre-campaign 10-byte floor (`listing_app_end=0x4BF6`).
+Status: **target met 2026-06-12** by the original S-series, refreshed
+**2026-06-14** by T1 after FIELD safety fixes had spent the reserve down to the
+user-relaxed 10-byte floor, and refreshed again after FIELD-9/FIELD-10.  Current
+recommended MAIN V3.4 rev `0xAC` margin before the `0x4C00` preset-table wall:
+**14 bytes** (`last_used_pre_preset_b=0x4BF1`, `listing_app_end=0x4BF2`,
+`free_object_words=7`).  This is intentionally above the current 10-byte floor,
+but below the intermediate post-T1 rev `0xA5` margin of 102 bytes.
 
 Historical 2026-06-12 result: margin was **250 bytes by the headroom-gate
 measure** (raw listing scan: 252; the gate convention is authoritative), from
@@ -63,9 +65,15 @@ S3: four duplicated 4-cell movff runs factored into plain subroutines
 | S3 duplicate-run subroutines, 4 pairs | 154 B |
 | S4 block descriptors + single-db packing | **250 B** (gate measure) |
 | FIELD safety/counter work through rev 0xA4 | 10 B |
-| T1 SRC4382 secondary-write table walker, rev 0xA5 | **102 B** |
+| T1 SRC4382 secondary-write table walker, rev 0xA5 | 102 B |
+| FIELD-9/FIELD-10 safety work through rev 0xAC | **14 B** |
 
 ## T1 SRC4382 secondary-write table walker — landed 2026-06-14
+
+T1 was a reclaim wave, not the final shipped margin.  It rebuilt the reserve
+from the 10-byte floor to 102 bytes at rev `0xA5`; later FIELD-9/FIELD-10 safety
+work consumed most of that reserve and the recommended rev `0xAC` line now sits
+at 14 bytes.
 
 Scope:
 
@@ -84,6 +92,26 @@ Measured result:
 - Net reclaim: **+92 bytes** of margin.
 - Canonical build: `scripts/build_v34_release.py`, EEPROM rev
   `0xA4 -> 0xA5`.
+
+## Current rev 0xAC size snapshot
+
+FIELD-9/FIELD-10 safety fixes after T1 consumed 88 bytes of the rev-`0xA5`
+reserve.  The current accepted floor is 10 bytes before `org 0x4C00`, not the
+older 64-object-word refactoring target.
+
+Measured from the current `src/dlcp_fw/asm/dlcp_main_v34.lst` and the FIELD-10
+ledger:
+
+- current canonical MAIN: V3.4 rev `0xAC`
+- final instruction before `org 0x4C00`: two-word `goto` at `0x4BEE..0x4BF1`
+- `listing_app_end=0x4BF2`
+- `contiguous_free_before_0x4C00=14 bytes`
+- `free_object_words=7`
+- `erased_holes_before_0x4C00=160 bytes`
+
+The 14-byte margin is tight but currently intentional: it keeps the promoted
+FIELD-10 safety line above the user-relaxed floor while preserving both preset
+capture banks at `0x4C00..0x55FF` and `0x5600..0x5FFF`.
 
 Behavior-preservation proof:
 
@@ -132,11 +160,26 @@ PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim
 # 1630 passed, 2 skipped, 3 xfailed, 4 warnings in 4307.58s
 ```
 
+Post-FIELD-10 release evidence is tracked in
+`docs/V34_FIELD_BUGS_20260610.md`:
+
+```text
+PYTHONPATH=src .venv_ep0/bin/python scripts/build_v34_release.py
+# EEPROM rev 0xAB -> 0xAC
+# V3.4 app_end=0x4BF2, last_used_pre_preset_b=0x4BF1
+# contiguous_free_before_0x4C00=14 bytes, free_object_words=7
+# erased_holes_before_0x4C00=160 bytes
+
+PYTHONPATH=src .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
+# 1655 passed, 2 skipped, 3 xfailed, 7 warnings
+```
+
 Parked/rejected follow-up levers for this wave:
 
 - The additional `movlw/movwf` init runs around source lines 5334/6043/9845
-  were not touched: they need a different RAM/SFR table writer, and T1 already
-  met the target with a smaller proof surface.
+  were not touched by T1 because they need a different RAM/SFR table writer.
+  With the current rev-`0xAC` line back down to 14 bytes, the 5334 POR SFR-init
+  run is now the best first reclaim candidate if more safety work needs room.
 - XOR dispatch ladders remain rejected: likely break-even on PIC18 and higher
   behavioral risk.
 - New `chain_copy`/descriptor rewrites remain rejected for this wave because
@@ -204,6 +247,9 @@ Parked/rejected follow-up levers for this wave:
 
 | Candidate | Est. | Notes |
 | --- | --- | --- |
+| POR SFR-init walker around source line 5334 | ~+30-50 B net | Best next lever.  The 10 ACCESS-bank `(value -> SFR)` writes preserve order and can use a small `(value, sfr_lo)` table plus indirect SFR write.  Stop before the interleaved banked `stock_0FE_b0` write unless an escape row is proven smaller.  Confirm no target SFR aliases FSR/TBLPTR scratch and preserve OSCCON/SSPCON1 ordering. |
+| Sequential RAM fill around source line 6043 | marginal, maybe +0-15 B | Values are ascending but not a clean arithmetic run (`0x20,21,22,23,25,27,28`), so a compact loop may be smaller than a table only if W/FSR liveness is favorable. |
+| cmd25 identity staging around source line 9845 | reject for now | Builder/release ceremony patches identity literals by matching inline bytes; tabling them risks breaking revision stamping unless the builder is redesigned. |
 | Per-route trim-ladder table rewrite (`flow_cmd_dispatch_gated_19d6`) | ~+20 B | touches the rev-0x87 SAFETY selector + an empirically load-bearing clrf; do not attempt casually |
 | Feature demotion: RA1 edge counter (`diag_p`, sim-only) | ~+20-30 B | needs a ledger entry + test retirement + user sign-off |
 | Hand passes over the top functions (32f8/adc_boot_gate_exit/2bb8/2328/38a2/19e6/39a6) | 10-20 % each | the proven road if more is ever needed |
