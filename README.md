@@ -5,7 +5,13 @@ Drop-in replacement firmware for the **Hypex DLCP**.  The recommended release pa
 - MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.4.hex`](firmware/patched/releases/DLCP_Firmware_V3.4.hex) (`V3.4 / rev 0xAC`)
 - CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x47 / build 20260611`)
 
-This README focuses on the recommended V3.4 + V1.73 deployment.  V3.4/V1.73 carries the V3.2/V1.71 robustness and diagnostics base, the V3.3/V1.72 MAIN version/revision display, and the V3.4/V1.73 RAM-bank, preset-LCD lifecycle, chain-TX, ISR scratch, SRC4382, DSP coefficient, and wake I2C phase-order hardening.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
+This README focuses on the recommended V3.4 + V1.73 deployment.  All
+user-facing comparisons below use stock MAIN V2.3 + CONTROL V1.6b as the
+baseline.  Against that stock baseline, V3.4/V1.73 adds A/B presets, PB1/PB2
+diagnostics, MAIN identity display, bounded I2C and chain recovery, RAM-bank
+and ISR scratch hardening, SRC4382 robustness, DSP coefficient safety, and wake
+I2C phase-order hardening.  Older patched and rewrite releases are historical
+implementation steps; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
 
 ## Fresh Clone Setup
 
@@ -50,7 +56,10 @@ PYTHONPATH=src .venv_ep0/bin/python -c "from dlcp_fw.paths import V173_CONTROL_H
 
 ## Why Upgrade
 
-Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `WAITING FOR DLCP` and require a full power cycle.  The V3.4 + V1.73 pair is built around robustness fixes for the real failure modes seen on hardware and shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
+Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into
+`WAITING FOR DLCP` and require a full power cycle.  The V3.4 + V1.73 pair is
+built around robustness fixes for the real failure modes seen on hardware and
+shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 
 | Area | Stock V2.3 + V1.6b | V3.4 + V1.73 |
 |---|---|---|
@@ -62,7 +71,7 @@ Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `W
 | SRC/input routing | Auto Detect and manual digital inputs can flap or depend on stale receiver/TAS state. | Auto Detect is rate-limited and debounced, locked RXCKR estimator holes hold route, hard loss/reacquire is explicit, and fixed inputs prime the receiver/TAS path. |
 | Presets | One active DSP configuration. | A/B DSP preset banks with coordinated delayed switching, validated per-row APPLY, and no unmute until the selected coefficient image is proven. |
 | Flashing | Firmware update can be opaque and resets are hard to reason about. | CLI path prints before/after identity, preserves user settings, and performs post-flash finalizers. |
-| IR | Stock RC5 command handling only. | Stock-compatible RC5 path plus V1.71+ shortcuts for preset A/B and explicit standby/wake. |
+| IR | Stock RC5 command handling only. | Stock-compatible RC5 path plus shortcuts for preset A/B and explicit standby/wake. |
 
 ## What You Get
 
@@ -73,19 +82,28 @@ Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `W
 - `0x3A`: standby
 - `0x3B`: wake
 
-**Coordinated switching.**  In a two-MAIN chain, V3.4 keeps the V3.2 mute/wait/apply sequence so left and right switch together instead of one side audibly moving first, with parser/chain-TX arbitration hardened to prevent forwarded frames from colliding with local replies.  Current V3.4 also makes preset APPLY transaction-owned and validates each DSP row header before advancing, so a preset change cannot commit a partial or mixed coefficient image and then unmute.
+**Coordinated switching.**  Stock firmware has one active DSP configuration and
+no coordinated A/B preset handoff.  In a two-MAIN chain, V3.4 uses a
+mute/wait/apply sequence so left and right switch together instead of one side
+audibly moving first, with parser/chain-TX arbitration hardened to prevent
+forwarded frames from colliding with local replies.  Current V3.4 also makes
+preset APPLY transaction-owned and validates each DSP row header before
+advancing, so a preset change cannot commit a partial or mixed coefficient
+image and then unmute.
 
-**SRC4382 input handling.**  V3.4 keeps the V3.2 SRC4382 changes: reduced Auto Detect
-polling, debounces source-loss detection, and primes the SRC route when a
-fixed digital input is selected.  The rationale is practical: Auto Detect
-should not spend the foreground loop constantly querying the receiver, a single
-transient status sample should not flap the selected route, and selecting
-S/PDIF/USB/AES/Optical manually must restore the receiver/TAS path without
-depending on a previous Auto Detect scan.  Current V3.4 additionally treats
-`RXCKR=0` with `UNLOCK=0` as a locked estimator hole instead of hard source
-loss, keeps route refresh from dirtying master volume while unmuted, records
-SRC/DSP forensic counters over USB (`N/L/C/T/M`), and classifies bounded
-SEN/PEN timeout exits through the same visible I2C recovery path.
+**SRC4382 input handling.**  Stock Auto Detect can flap on transient receiver
+status and manual digital input selection can depend on stale receiver/TAS
+state.  V3.4 reduces Auto Detect polling, debounces source-loss detection, and
+primes the SRC route when a fixed digital input is selected.  The rationale is
+practical: Auto Detect should not spend the foreground loop constantly querying
+the receiver, a single transient status sample should not flap the selected
+route, and selecting S/PDIF/USB/AES/Optical manually must restore the
+receiver/TAS path without depending on a previous Auto Detect scan.  Current
+V3.4 additionally treats `RXCKR=0` with `UNLOCK=0` as a locked estimator hole
+instead of hard source loss, keeps route refresh from dirtying master volume
+while unmuted, records SRC/DSP forensic counters over USB (`N/L/C/T/M`), and
+classifies bounded SEN/PEN timeout exits through the same visible I2C recovery
+path.
 
 **Wake/reconnect DSP safety.**  The wake path now keeps audio muted, drains
 route/channel sync before the final selected-preset writer, runs the final
@@ -94,7 +112,11 @@ device-init barrier, then applies late input-route side effects and volume
 restore.  This preserves the route-sync fix without letting early I2C side
 effects create startup `I6` or a live wrong DSP image.
 
-**Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the recommended V1.73 + V3.4 pair, each healthy Diagnostics page also shows that MAIN's live identity, for example `PB1 OK v3.4 xAC` and `PB2 OK v3.4 xAC`.  The full counter set, including USB-only SRC/DSP counters, is available over USB:
+**Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the
+recommended V1.73 + V3.4 pair, each healthy Diagnostics page also shows that
+MAIN's live identity, for example `PB1 OK v3.4 xAC` and `PB2 OK v3.4 xAC`.
+The full counter set, including USB-only SRC/DSP counters, is available over
+USB:
 
 ```bash
 .venv_ep0/bin/python scripts/dlcp_diag.py --json --watch --interval 1
@@ -102,11 +124,17 @@ effects create startup `I6` or a live wrong DSP image.
 
 LCD status format:
 
-- `PB1 OK v3.4 xNN` / `PB2 OK v3.4 xNN`: V1.73 CONTROL has a fresh, healthy snapshot from a V3.4 MAIN and has completed that MAIN's identity query.
-- `PB1 OK` / `PB2 OK`: fresh, healthy snapshot from an older MAIN that does not support the identity reply yet, or identity has not completed yet.
-- `PB1! ...` / `PB2! ...`: fresh snapshot with one or more non-zero diagnostics; tokens such as `I7`, `A1`, `S1`, `B1`, or `O1` identify the fields that changed. Version text is intentionally suppressed on issue pages.
-- `PB1 old` / `PB2 old`: CONTROL has an older snapshot but has not declared the PB lost. Version text is intentionally suppressed.
-- `PB1 lost` / `PB2 lost`: CONTROL has not received fresh diagnostics within the loss window. Version text is intentionally suppressed.
+- `PB1 OK v3.4 xNN` / `PB2 OK v3.4 xNN`: V1.73 CONTROL has a fresh, healthy
+  snapshot from a V3.4 MAIN and has completed that MAIN's identity query.
+- `PB1 OK` / `PB2 OK`: fresh, healthy snapshot from an older MAIN that does not
+  support the identity reply yet, or identity has not completed yet.
+- `PB1! ...` / `PB2! ...`: fresh snapshot with one or more non-zero
+  diagnostics; tokens such as `I7`, `A1`, `S1`, `B1`, or `O1` identify the
+  fields that changed. Version text is intentionally suppressed on issue pages.
+- `PB1 old` / `PB2 old`: CONTROL has an older snapshot but has not declared the
+  PB lost. Version text is intentionally suppressed.
+- `PB1 lost` / `PB2 lost`: CONTROL has not received fresh diagnostics within
+  the loss window. Version text is intentionally suppressed.
 
 Counters:
 
@@ -118,7 +146,9 @@ Counters:
 - `A`: AN0 standby triggers
 - `P`: RA1 edge events (sim-only observability; no assigned V3.4 hardware function)
 - `O/V/W/X`: POR, brownout, watchdog-timeout latch, software-reset flags
-- `N/L/C/T/M` (USB only in V1.73): SRC non-PCM mute episodes, Auto Detect source-loss confirmations, route changes, preset table walks, and DSP mute writes
+- `N/L/C/T/M` (USB only in V1.73): SRC non-PCM mute episodes, Auto Detect
+  source-loss confirmations, route changes, preset table walks, and DSP mute
+  writes
 
 The simulator fault-injection matrix now covers every displayed Diagnostics
 field from stimulus through MAIN counter, CONTROL cache, and PB1/PB2 LCD
@@ -141,9 +171,16 @@ For raw state capture when USB still works but the chain or LCD is unhealthy:
 
 There are two supported ways to flash the release pair.
 
-Use the **CLI path** for the normal two-PB deployment.  It is the canonical path because it bakes A/B preset captures when local captures are available, applies L/R routing, verifies identity, and preserves user settings.  With no local captures, it flashes the release unbaked and prints the post-flash DSP upload instructions.
+Use the **CLI path** for the normal two-PB deployment.  It is the canonical
+path because it bakes A/B preset captures when local captures are available,
+applies L/R routing, verifies identity, and preserves user settings.  With no
+local captures, it flashes the release unbaked and prints the post-flash DSP
+upload instructions.
 
-Use the **HFD path** only when you want a stock-style firmware update through Hypex Filter Design.  HFD can stream the HEX files, but it does not run the repo's A/B capture baking, L/R routing, or post-flash verification/finalization steps.
+Use the **HFD path** only when you want a stock-style firmware update through
+Hypex Filter Design.  HFD can stream the HEX files, but it does not run the
+repo's A/B capture baking, L/R routing, or post-flash verification/finalization
+steps.
 
 ### Prepare
 
@@ -193,7 +230,11 @@ scripts/flash_control_safe.sh --preflight-only
 scripts/flash_control_safe.sh
 ```
 
-`scripts/flash_control_safe.sh` defaults to `firmware/patched/releases/DLCP_Control_V1.73.hex`. CONTROL must be in its bootloader before the live flash.  Power-cycle while holding **UP + DOWN** for about 6 seconds; do not press SELECT.  After CONTROL flashing, power-cycle once so V1.73 starts cleanly from cold boot.
+`scripts/flash_control_safe.sh` defaults to
+`firmware/patched/releases/DLCP_Control_V1.73.hex`. CONTROL must be in its
+bootloader before the live flash.  Power-cycle while holding **UP + DOWN** for
+about 6 seconds; do not press SELECT.  After CONTROL flashing, power-cycle once
+so V1.73 starts cleanly from cold boot.
 
 Useful post-flash checks:
 
@@ -210,13 +251,19 @@ Hypex Filter Design can be used for a basic firmware update with the same releas
 - MAIN firmware: `firmware/patched/releases/DLCP_Firmware_V3.4.hex`
 - CONTROL firmware: `firmware/patched/releases/DLCP_Control_V1.73.hex`
 
-For CONTROL V1.6b/V1.71/V1.72/V1.73, enter the CONTROL bootloader manually first: power-cycle while holding **UP + DOWN** for about 6 seconds.  Then run the HFD control firmware update.
+For CONTROL V1.6b/V1.71/V1.72/V1.73, enter the CONTROL bootloader manually
+first: power-cycle while holding **UP + DOWN** for about 6 seconds.  Then run
+the HFD control firmware update.
 
 Important HFD caveats:
 
 - HFD flashes the HEX payload; it does not bake local A/B preset captures.
 - HFD does not set all MAIN channels to left/right after flashing.
-- HFD does not run the repo's post-flash filename, identity, settings-preservation, and diagnostics checks.
+- HFD does not set or verify the MAIN IR profile.  Set the intended profile
+  afterward (`hypex` for the Hypex remote, or `rc5` for standard RC5), or use
+  the CLI flasher/finalizer so the setting is applied and read back.
+- HFD does not run the repo's post-flash filename, identity,
+  settings-preservation, and diagnostics checks.
 - For the full V3.4 + V1.73 two-MAIN deployment, use the CLI path.
 
 ## Validate
@@ -238,7 +285,8 @@ Current non-hardware verification snapshot:
 - V3.4/V1.73 FIELD-10 focused regressions: `2 passed`
 - V3.4/V1.73 focused bug/regression set: `95 passed, 3 xfailed`
 - full simulator gate: `1655 passed, 2 skipped, 3 xfailed, 7 warnings`
-- 30-minute exploratory hunt against MAIN V3.4 rev `0xAC` + CONTROL V1.73: no live wrong coefficient image and no unreconciled HIGH/MEDIUM safety finding
+- 30-minute exploratory hunt against MAIN V3.4 rev `0xAC` + CONTROL V1.73: no
+  live wrong coefficient image and no unreconciled HIGH/MEDIUM safety finding
 
 Hardware runbook:
 
@@ -260,6 +308,10 @@ Core implementation docs:
 
 ## Disclaimer
 
-**NO WARRANTY, EXPRESS OR IMPLIED.** The Hypex DLCP is end-of-life hardware.  This firmware is a community bugfix, not a supported product.  Use it entirely at your own risk.
+**NO WARRANTY, EXPRESS OR IMPLIED.** The Hypex DLCP is end-of-life hardware.
+This firmware is a community bugfix, not a supported product.  Use it entirely
+at your own risk.
 
-Recovery from a bad flash may require a PICkit programmer and direct MCU recovery.  Do not flash these images unless you are comfortable with PIC firmware recovery.
+Recovery from a bad flash may require a PICkit programmer and direct MCU
+recovery.  Do not flash these images unless you are comfortable with PIC
+firmware recovery.
