@@ -2,10 +2,10 @@
 
 Drop-in replacement firmware for the **Hypex DLCP**.  The recommended release pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.4.hex`](firmware/patched/releases/DLCP_Firmware_V3.4.hex) (`V3.4 / rev 0x7D`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x40 / build 20260608`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.4.hex`](firmware/patched/releases/DLCP_Firmware_V3.4.hex) (`V3.4 / rev 0xAC`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x47 / build 20260611`)
 
-This README focuses on the recommended V3.4 + V1.73 deployment.  V3.4/V1.73 carries the V3.2/V1.71 robustness and diagnostics base, the V3.3/V1.72 MAIN version/revision display, and the V3.4/V1.73 RAM-bank, preset-LCD lifecycle, chain-TX, and I2C recovery hardening.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
+This README focuses on the recommended V3.4 + V1.73 deployment.  V3.4/V1.73 carries the V3.2/V1.71 robustness and diagnostics base, the V3.3/V1.72 MAIN version/revision display, and the V3.4/V1.73 RAM-bank, preset-LCD lifecycle, chain-TX, ISR scratch, SRC4382, DSP coefficient, and wake I2C phase-order hardening.  Older patched and rewrite releases are historical; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
 
 ## Fresh Clone Setup
 
@@ -55,11 +55,12 @@ Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `W
 | Area | Stock V2.3 + V1.6b | V3.4 + V1.73 |
 |---|---|---|
 | Chain hangs | Unbounded waits can leave CONTROL stuck on `WAITING FOR DLCP`. | Bounded waits, UART recovery, reconnect hardening, and a front-panel WAITING escape after the grace window. |
-| I2C/MSSP | MAIN can spin forever on DSP/SRC bus conditions. | Runtime Start/Restart/Stop/ACKEN/BF/SSPIF waits are bounded and route through recovery helpers. |
+| I2C/MSSP | MAIN can spin forever on DSP/SRC bus conditions. | Runtime Start/Restart/Stop/ACKEN/BF/SSPIF waits are bounded; wake/reconnect now separates route sync, device-init barrier, late input-route side effects, and volume restore. |
 | DSP faults | No user-visible fault reporting. | MAIN advertises persistent DSP-path faults with `BF/08`; CONTROL shows `!` and resyncs when the fault clears. |
 | Diagnostics | No useful live PB health view. | PB1/PB2 LCD diagnostics, per-MAIN version/rev on healthy pages, plus USB HID snapshots for counters and reset causes. |
 | UI under diagnostics | Not applicable. | Diagnostics pages refresh near 1 Hz and keep buttons/IR responsive. |
-| Presets | One active DSP configuration. | A/B DSP preset banks with coordinated delayed switching across two MAINs. |
+| SRC/input routing | Auto Detect and manual digital inputs can flap or depend on stale receiver/TAS state. | Auto Detect is rate-limited and debounced, locked RXCKR estimator holes hold route, hard loss/reacquire is explicit, and fixed inputs prime the receiver/TAS path. |
+| Presets | One active DSP configuration. | A/B DSP preset banks with coordinated delayed switching, validated per-row APPLY, and no unmute until the selected coefficient image is proven. |
 | Flashing | Firmware update can be opaque and resets are hard to reason about. | CLI path prints before/after identity, preserves user settings, and performs post-flash finalizers. |
 | IR | Stock RC5 command handling only. | Stock-compatible RC5 path plus V1.71+ shortcuts for preset A/B and explicit standby/wake. |
 
@@ -72,7 +73,7 @@ Stock DLCP firmware, especially **MAIN V2.3 + CONTROL V1.6b**, can wedge into `W
 - `0x3A`: standby
 - `0x3B`: wake
 
-**Coordinated switching.**  In a two-MAIN chain, V3.4 keeps the V3.2 mute/wait/apply sequence so left and right switch together instead of one side audibly moving first, with parser/chain-TX arbitration hardened to prevent forwarded frames from colliding with local replies.
+**Coordinated switching.**  In a two-MAIN chain, V3.4 keeps the V3.2 mute/wait/apply sequence so left and right switch together instead of one side audibly moving first, with parser/chain-TX arbitration hardened to prevent forwarded frames from colliding with local replies.  Current V3.4 also makes preset APPLY transaction-owned and validates each DSP row header before advancing, so a preset change cannot commit a partial or mixed coefficient image and then unmute.
 
 **SRC4382 input handling.**  V3.4 keeps the V3.2 SRC4382 changes: reduced Auto Detect
 polling, debounces source-loss detection, and primes the SRC route when a
@@ -80,11 +81,20 @@ fixed digital input is selected.  The rationale is practical: Auto Detect
 should not spend the foreground loop constantly querying the receiver, a single
 transient status sample should not flap the selected route, and selecting
 S/PDIF/USB/AES/Optical manually must restore the receiver/TAS path without
-depending on a previous Auto Detect scan.  V3.4 also classifies bounded
-SEN/PEN timeout exits and routes preset-apply recovery through the same visible
-I2C recovery path.
+depending on a previous Auto Detect scan.  Current V3.4 additionally treats
+`RXCKR=0` with `UNLOCK=0` as a locked estimator hole instead of hard source
+loss, keeps route refresh from dirtying master volume while unmuted, records
+SRC/DSP forensic counters over USB (`N/L/C/T/M`), and classifies bounded
+SEN/PEN timeout exits through the same visible I2C recovery path.
 
-**Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the recommended V1.73 + V3.4 pair, each healthy Diagnostics page also shows that MAIN's live identity, for example `PB1 OK v3.4 x7D` and `PB2 OK v3.4 x7D`.  The same counter data is available over USB:
+**Wake/reconnect DSP safety.**  The wake path now keeps audio muted, drains
+route/channel sync before the final selected-preset writer, runs the final
+reassert through the validated preset-table path, waits for the post-wake
+device-init barrier, then applies late input-route side effects and volume
+restore.  This preserves the route-sync fix without letting early I2C side
+effects create startup `I6` or a live wrong DSP image.
+
+**Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the recommended V1.73 + V3.4 pair, each healthy Diagnostics page also shows that MAIN's live identity, for example `PB1 OK v3.4 xAC` and `PB2 OK v3.4 xAC`.  The full counter set, including USB-only SRC/DSP counters, is available over USB:
 
 ```bash
 .venv_ep0/bin/python scripts/dlcp_diag.py --json --watch --interval 1
@@ -108,6 +118,7 @@ Counters:
 - `A`: AN0 standby triggers
 - `P`: RA1 edge events (sim-only observability; no assigned V3.4 hardware function)
 - `O/V/W/X`: POR, brownout, watchdog-timeout latch, software-reset flags
+- `N/L/C/T/M` (USB only in V1.73): SRC non-PCM mute episodes, Auto Detect source-loss confirmations, route changes, preset table walks, and DSP mute writes
 
 The simulator fault-injection matrix now covers every displayed Diagnostics
 field from stimulus through MAIN counter, CONTROL cache, and PB1/PB2 LCD
@@ -115,6 +126,10 @@ rendering.  `P` is intentionally scoped to the simulator-only RA1 PORTA-edge
 invariant until PIC18F2455 RA1 analog masking is modeled.  `W` is a structural
 RCON.TO readout bucket; current V1.73/V3.4 releases leave WDT disabled, so it
 should stay 0 unless WDT policy changes or a test injects that reset cause.
+`T`, `M`, and `C` are normal context counters during boot, preset changes,
+standby/wake, source reacquire, and mute transitions; `N` and `L` are useful
+source-condition evidence and should be interpreted against the expected live
+audio state.
 
 For raw state capture when USB still works but the chain or LCD is unhealthy:
 
@@ -220,10 +235,10 @@ Full simulator gate:
 
 Current non-hardware verification snapshot:
 
-- `tests --collect-only`: `1482 tests collected`
-- V3.4/V1.73 static/release-adjacent gate: `44 passed`
-- V3.4/V1.73 focused Preset filename LCD gate: `17 passed`
-- full simulator gate: `1463 passed, 1 skipped, 7 warnings`
+- V3.4/V1.73 FIELD-10 focused regressions: `2 passed`
+- V3.4/V1.73 focused bug/regression set: `95 passed, 3 xfailed`
+- full simulator gate: `1655 passed, 2 skipped, 3 xfailed, 7 warnings`
+- 30-minute exploratory hunt against MAIN V3.4 rev `0xAC` + CONTROL V1.73: no live wrong coefficient image and no unreconciled HIGH/MEDIUM safety finding
 
 Hardware runbook:
 
@@ -234,6 +249,7 @@ Core implementation docs:
 - MAIN release flow: [docs/V32_RELEASE.md](docs/V32_RELEASE.md) plus V3.4 wrapper `scripts/dlcp_v34_release_flash.py`
 - CONTROL release flow: [docs/V171_RELEASE.md](docs/V171_RELEASE.md) plus V1.73 default in `scripts/flash_control_safe.sh`
 - V3.4/V1.73 refactoring release: [docs/REFACTORING_V34_V173_SPEC.md](docs/REFACTORING_V34_V173_SPEC.md) and [docs/IMPL_REFACTORING_V34_V173.md](docs/IMPL_REFACTORING_V34_V173.md)
+- V3.4/V1.73 field bug ledger: [docs/V34_FIELD_BUGS_20260610.md](docs/V34_FIELD_BUGS_20260610.md)
 - Active bug ledger: [docs/IMPL_V171_V32_BUG_LEDGER.md](docs/IMPL_V171_V32_BUG_LEDGER.md)
 - Robustness plan: [docs/V32_MAIN_HANG_HARDENING_PLAN.md](docs/V32_MAIN_HANG_HARDENING_PLAN.md)
 - Diagnostics protocol: [docs/V32_DIAG_TIER1_SPEC.md](docs/V32_DIAG_TIER1_SPEC.md)
