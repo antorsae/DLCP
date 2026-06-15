@@ -592,6 +592,35 @@ def format_route_entries(entries: tuple[RouteEntry, ...]) -> str:
     return ", ".join(f"CH{entry.channel}={entry.label}" for entry in entries)
 
 
+def _looks_like_chain_frame_cadence(raw: bytes) -> bool:
+    """Detect a RAM-window read that is really the UART RX ring.
+
+    A valid config filename is printable ASCII plus padding.  The live
+    2026-06-14 failure returned bytes such as
+    ``00 BF 2C 00 B1 23 00 ...`` from the filename slot: MAIN health
+    replies (BF/2C/00) and CONTROL health queries (B1/B2/23/00).  That
+    is a transport/window failure, not a trustworthy active-config name.
+    """
+    if not raw:
+        return False
+    frames = (
+        b"\xBF\x2C\x00",
+        b"\xB1\x23\x00",
+        b"\xB2\x23\x00",
+    )
+    hits = 0
+    for i in range(max(0, len(raw) - 2)):
+        if raw[i : i + 3] in frames:
+            hits += 1
+    if hits >= 2:
+        return True
+    non_ascii = sum(
+        1 for b in raw.rstrip(b"\x00\xFF")
+        if b not in (0x00, 0xFF) and not (0x20 <= b <= 0x7E)
+    )
+    return hits >= 1 and non_ascii >= 1
+
+
 def _name_slot_to_cmd03_payload(name_slot: bytes) -> bytes:
     if len(name_slot) != FILENAME_LEN:
         raise ValueError(f"name slot must be {FILENAME_LEN} bytes")
@@ -600,6 +629,12 @@ def _name_slot_to_cmd03_payload(name_slot: bytes) -> bytes:
         vv = value & 0xFF
         payload[idx] = 0x00 if vv in (0x00, 0xFF) else vv
     return bytes(payload)
+
+
+def _name_slot_to_cmd03_ram(name_slot: bytes) -> bytes:
+    if len(name_slot) != FILENAME_LEN:
+        raise ValueError(f"name slot must be {FILENAME_LEN} bytes")
+    return bytes(0xFF if (b & 0xFF) in (0x00, 0xFF) else (b & 0xFF) for b in name_slot)
 
 
 def _parse_cmd03_filename_response(resp: bytes, *, subcmd: int) -> bytes:
@@ -731,34 +766,41 @@ def _cmd03_write_filename_slot(
     attempts: int = 3,
     retry_delay_s: float = 0.05,
 ) -> bytes:
+    expected_slot = _name_slot_to_cmd03_ram(name_slot)
     if all((b & 0xFF) == 0xFF for b in name_slot):
+        subcmd = CMD03_FILENAME_ERASE_SUBCMD
+        payload = b""
+    else:
+        subcmd = CMD03_FILENAME_WRITE_SUBCMD
+        payload = _name_slot_to_cmd03_payload(name_slot)
+
+    last_readback: bytes | None = None
+    for attempt in range(max(1, attempts)):
         _cmd03_exchange_filename_checked(
             dev,
-            subcmd=CMD03_FILENAME_ERASE_SUBCMD,
+            subcmd=subcmd,
+            payload=payload,
             timeout_ms=timeout_ms,
             attempts=attempts,
             retry_delay_s=retry_delay_s,
         )
-        return _cmd03_read_filename_slot(
+        last_readback = _cmd03_read_filename_slot(
             dev,
             timeout_ms=timeout_ms,
             attempts=attempts,
             retry_delay_s=retry_delay_s,
         )
+        if last_readback == expected_slot:
+            return last_readback
+        if attempt + 1 < max(1, attempts):
+            time.sleep(retry_delay_s)
 
-    _cmd03_exchange_filename_checked(
-        dev,
-        subcmd=CMD03_FILENAME_WRITE_SUBCMD,
-        payload=_name_slot_to_cmd03_payload(name_slot),
-        timeout_ms=timeout_ms,
-        attempts=attempts,
-        retry_delay_s=retry_delay_s,
-    )
-    return _cmd03_read_filename_slot(
-        dev,
-        timeout_ms=timeout_ms,
-        attempts=attempts,
-        retry_delay_s=retry_delay_s,
+    assert last_readback is not None
+    raise RuntimeError(
+        "cmd 0x03 filename write readback mismatch after "
+        f"{max(1, attempts)} attempts: expected "
+        f"{decode_filename_slot(expected_slot)!r} ({expected_slot.hex()}), got "
+        f"{decode_filename_slot(last_readback)!r} ({last_readback.hex()})"
     )
 
 
@@ -1438,6 +1480,12 @@ def _probe_ep0_app_ram(
     ep0 = _make_dlcp_ep0(vid=vid, pid=pid, path=path)
     route_raw = _read_ep0_window(ep0, start=ROUTE_RAM_BASE, size=ROUTE_LEN)
     filename_raw = _read_ep0_window(ep0, start=FILENAME_RAM_BASE, size=FILENAME_LEN)
+    if _looks_like_chain_frame_cadence(filename_raw):
+        raise RuntimeError(
+            "EP0 active-config RAM probe returned current-loop frame cadence "
+            f"from the filename window; refusing to trust Config/Channels "
+            f"(raw={filename_raw.hex()})"
+        )
     return decode_filename_slot(filename_raw), decode_route_entries(route_raw)
 
 

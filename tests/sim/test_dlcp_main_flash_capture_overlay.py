@@ -199,6 +199,51 @@ def test_cmd03_write_retries_after_stale_post_flash_reply(monkeypatch) -> None:
     assert responses == []
 
 
+def test_cmd03_write_rewrites_after_corrupt_filename_readback(monkeypatch) -> None:
+    slot = b"LX521.4 22MG10F-v7" + (b"\xFF" * (FILENAME_LEN - 18))
+    corrupt = bytearray(slot)
+    corrupt[15] = 0xBF
+    corrupt_slot = bytes(corrupt)
+    responses = [
+        bytes([0x03, CMD03_FILENAME_WRITE_SUBCMD]) + slot + bytes(64 - 2 - FILENAME_LEN),
+        bytes([0x03, CMD03_FILENAME_READ_SUBCMD]) + corrupt_slot + bytes(64 - 2 - FILENAME_LEN),
+        bytes([0x03, CMD03_FILENAME_WRITE_SUBCMD]) + slot + bytes(64 - 2 - FILENAME_LEN),
+        bytes([0x03, CMD03_FILENAME_READ_SUBCMD]) + slot + bytes(64 - 2 - FILENAME_LEN),
+    ]
+
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._cmd03_exchange_filename",
+        lambda *args, **kwargs: responses.pop(0),
+    )
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.sleep", lambda _: None)
+
+    assert _cmd03_write_filename_slot(object(), name_slot=slot) == slot
+    assert responses == []
+
+
+def test_cmd03_write_refuses_corrupt_live_bf_readback(monkeypatch) -> None:
+    slot = b"LX521.4 22MG10F-v7" + (b"\xFF" * (FILENAME_LEN - 18))
+    corrupt = bytearray(slot)
+    corrupt[15] = 0xBF
+    corrupt_slot = bytes(corrupt)
+    responses = [
+        bytes([0x03, CMD03_FILENAME_WRITE_SUBCMD]) + slot + bytes(64 - 2 - FILENAME_LEN),
+        bytes([0x03, CMD03_FILENAME_READ_SUBCMD]) + corrupt_slot + bytes(64 - 2 - FILENAME_LEN),
+        bytes([0x03, CMD03_FILENAME_WRITE_SUBCMD]) + slot + bytes(64 - 2 - FILENAME_LEN),
+        bytes([0x03, CMD03_FILENAME_READ_SUBCMD]) + corrupt_slot + bytes(64 - 2 - FILENAME_LEN),
+    ]
+
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._cmd03_exchange_filename",
+        lambda *args, **kwargs: responses.pop(0),
+    )
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.time.sleep", lambda _: None)
+
+    with pytest.raises(RuntimeError, match="readback mismatch"):
+        _cmd03_write_filename_slot(object(), name_slot=slot, attempts=2)
+    assert responses == []
+
+
 def test_cli_capture_a_overlays_stream_before_flash(monkeypatch, tmp_path: Path) -> None:
     base_hex = tmp_path / "base.hex"
     capture = tmp_path / "presetA.bin"

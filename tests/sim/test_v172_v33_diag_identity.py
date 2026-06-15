@@ -63,6 +63,14 @@ IR_PROFILE_MUTE_PHYS = 0x026
 MAIN_ACTIVE_FLAGS_PHYS = 0x05E
 MAIN_ACTIVE_PRESET_MASK = 0x04
 MAIN_ACTIVE_GATE_MASK = 0x08
+MAIN_ACTIVE_MUTE_MASK = 0x10
+MAIN_SRC_ROUTE_REQUEST_PHYS = 0x093
+MAIN_ROUTE_SHADOW_PHYS = 0x0AB
+SRC_REG_NON_PCM = 0x12
+SRC_REG_RX_STATUS = 0x13
+SRC_REG_RX_LOCK = 0x14
+TAS_REG_VOLUME_COEFF = 0x30
+ONE_S_TICKS = 48_000_000
 IR_ADDR_HYPEX = 0x10
 IR_CMD_HYPEX_POWER = 0x32
 IR_CMD_HYPEX_VOL_UP = 0x33
@@ -234,6 +242,37 @@ def _main_active_gates(chain) -> tuple[int, int]:  # type: ignore[no-untyped-def
     )
 
 
+def _seed_locked_auto_detect_source(chain) -> None:  # type: ignore[no-untyped-def]
+    for unit in (0, 1):
+        chain.poke_main_src4382_reg(unit, SRC_REG_RX_STATUS, 0x01)
+        chain.poke_main_src4382_reg(unit, SRC_REG_RX_LOCK, 0x00)
+        chain.poke_main_src4382_reg(unit, SRC_REG_NON_PCM, 0x00)
+    chain.step_ticks(4 * ONE_S_TICKS)
+
+
+def _assert_connected_live_route_sane(chain, *, expected_route: int | None = None) -> int:  # type: ignore[no-untyped-def]
+    assert chain.is_connected() and not chain.is_waiting(), (
+        f"CONTROL lost connection or showed WAITING; lcd={chain.lcd_lines()!r}"
+    )
+    routes = tuple(chain.read_main_reg(unit, MAIN_ROUTE_SHADOW_PHYS) for unit in (0, 1))
+    requests = tuple(chain.read_main_reg(unit, MAIN_SRC_ROUTE_REQUEST_PHYS) for unit in (0, 1))
+    gates = _main_active_gates(chain)
+    mute_bits = tuple(
+        chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS_PHYS) & MAIN_ACTIVE_MUTE_MASK
+        for unit in (0, 1)
+    )
+    volumes = tuple(chain.read_main_dsp_write_payload(unit, TAS_REG_VOLUME_COEFF) for unit in (0, 1))
+
+    assert routes[0] != 0 and routes[0] == routes[1], f"bad route shadows: {routes!r}"
+    assert requests == routes, f"route request/shadow mismatch: requests={requests!r} routes={routes!r}"
+    if expected_route is not None:
+        assert routes == (expected_route, expected_route)
+    assert gates == (1, 1), f"MAIN gates not both open: {gates!r}"
+    assert mute_bits == (0, 0), f"unexpected active mute bits: {mute_bits!r}"
+    assert all(payload is not None for payload in volumes), f"missing TAS volume writes: {volumes!r}"
+    return routes[0]
+
+
 def _expected_v33_diag_title(pb_idx: int) -> str:
     rev = read_v33_release_revision(V33_MAIN_ASM)
     return f"PB{pb_idx + 1} OK v3.3 x{rev:02X} "
@@ -365,6 +404,46 @@ def test_v173_v34_diag_ok_title_shows_visible_main_identity(
         limit=700,
     )
     assert lines[0] == expected
+
+
+@pytest.mark.slow
+def test_v173_v34_auto_detect_live_route_survives_diag_identity_happy_path(
+    v173_hex: Path, v34_hex: Path
+) -> None:
+    chain = _connected_chain(v173_hex, v34_hex)
+    _seed_locked_auto_detect_source(chain)
+
+    route = _assert_connected_live_route_sane(chain)
+    chain.step_ticks(10 * ONE_S_TICKS)
+    _assert_connected_live_route_sane(chain, expected_route=route)
+
+    _navigate_to_diag_page(chain, 0)
+    expected_pb1 = _expected_v34_diag_title(0)
+    lines = _wait_for_lcd(
+        chain,
+        lambda lcd: chain.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
+        and lcd[0] == expected_pb1,
+        limit=700,
+    )
+    assert lines[0] == expected_pb1
+    chain.step_ticks(3 * ONE_S_TICKS)
+    assert chain.lcd_lines()[0] == expected_pb1
+    _assert_connected_live_route_sane(chain, expected_route=route)
+
+    _tap_key(chain, "RIGHT")
+    for _ in range(8):
+        chain.step()
+    expected_pb2 = _expected_v34_diag_title(1)
+    lines = _wait_for_lcd(
+        chain,
+        lambda lcd: chain.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB2_DIAG
+        and lcd[0] == expected_pb2,
+        limit=700,
+    )
+    assert lines[0] == expected_pb2
+    chain.step_ticks(3 * ONE_S_TICKS)
+    assert chain.lcd_lines()[0] == expected_pb2
+    _assert_connected_live_route_sane(chain, expected_route=route)
 
 
 @pytest.mark.slow

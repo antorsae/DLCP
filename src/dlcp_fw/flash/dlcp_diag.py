@@ -345,25 +345,29 @@ def query_diag(
     pid: int = DEFAULT_PID,
     path: Optional[bytes] = None,
     timeout_ms: int = 1000,
+    probe_version: bool = True,
+    probe_eeprom: bool = True,
     probe_routes: bool = True,
 ) -> DiagReport:
-    """Open one HID device, query cmd 0x06 (version) + cmd 0x44 (diag),
-    and (optionally) probe the channel-routing RAM window via EP0.
+    """Open one HID device, query cmd 0x44 (diag), optionally query
+    cmd 0x06 (version), and optionally probe EEPROM / route metadata.
     Returns a combined :class:`DiagReport`.
 
     If multiple HID devices match VID:PID, ``path`` must be specified.
 
-    Setting ``probe_routes=False`` skips the EP0 probe (used by tests
-    that don't want to require the EP0 helper to be importable / by
-    callers that just want the cmd 0x44 snapshot).
+    Setting all ``probe_*`` flags false except the implicit cmd 0x44
+    read gives the least-invasive live watch path: no EP0 pointer
+    pokes and no cmd 0x43 EEPROM memread traffic.
     """
     info = _pick_device(vid, pid, path)
     dev = _open_hid(info.path)
     try:
-        try:
-            version = _probe_cmd06_version(dev, timeout_ms=timeout_ms)
-        except RuntimeError:
-            version = None
+        version = None
+        if probe_version:
+            try:
+                version = _probe_cmd06_version(dev, timeout_ms=timeout_ms)
+            except RuntimeError:
+                version = None
         snapshot = _probe_cmd44_diag(dev, timeout_ms=timeout_ms)
     finally:
         try:
@@ -371,16 +375,18 @@ def query_diag(
         except Exception:
             pass
     eeprom_marker: Optional[int] = None
-    try:
-        from dlcp_fw.flash.dlcp_main_flash import _probe_device_eeprom_version
+    if probe_eeprom:
+        try:
+            from dlcp_fw.flash.dlcp_main_flash import _probe_device_eeprom_version
 
-        eeprom_version = _probe_device_eeprom_version(
-            info=info,
-            timeout_ms=timeout_ms,
-        )
-        eeprom_marker = eeprom_version.revision
-    except Exception:
-        eeprom_marker = None
+            eeprom_version = _probe_device_eeprom_version(
+                info=info,
+                timeout_ms=timeout_ms,
+                progress=False,
+            )
+            eeprom_marker = eeprom_version.revision
+        except Exception:
+            eeprom_marker = None
 
     routes: Optional[Tuple[object, ...]] = None
     active_config_name: Optional[str] = None
@@ -893,6 +899,29 @@ def main(argv: Optional[List[str]] = None) -> int:
         help="emit a JSON report instead of human-readable text",
     )
     ap.add_argument(
+        "--cmd44-only",
+        action="store_true",
+        help=(
+            "least-invasive mode: only send HID cmd 0x44.  Skips cmd "
+            "0x06 version, cmd 0x43 EEPROM marker, and EP0 route/config "
+            "RAM probes; recommended for live --watch logging."
+        ),
+    )
+    ap.add_argument(
+        "--no-ep0-routes",
+        action="store_true",
+        help="skip EP0 route/config RAM probing while keeping version + EEPROM marker probes",
+    )
+    ap.add_argument(
+        "--full-watch-probes",
+        action="store_true",
+        help=(
+            "in --watch mode, opt back into the full one-shot probe set "
+            "(cmd 0x06, cmd 0x43, and EP0 route/config RAM reads).  By "
+            "default watch mode polls only read-only cmd 0x44."
+        ),
+    )
+    ap.add_argument(
         "--watch",
         action="store_true",
         help="loop and re-query every --interval seconds (Ctrl-C to exit)",
@@ -927,6 +956,19 @@ def main(argv: Optional[List[str]] = None) -> int:
         ),
     )
     args = ap.parse_args(argv)
+    watch_cmd44_only = (
+        args.watch
+        and not args.cmd44_only
+        and not args.no_ep0_routes
+        and not args.full_watch_probes
+    )
+    probe_version = not (args.cmd44_only or watch_cmd44_only)
+    probe_eeprom = not (args.cmd44_only or watch_cmd44_only)
+    probe_routes = not (
+        args.cmd44_only
+        or args.no_ep0_routes
+        or watch_cmd44_only
+    )
 
     # Parse --ch-map values into an ordered dict.  Reject malformed entries
     # loudly rather than silently dropping them -- a typo in the mapping
@@ -958,6 +1000,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                     pid=args.pid,
                     path=path_bytes,
                     timeout_ms=args.timeout_ms,
+                    probe_version=probe_version,
+                    probe_eeprom=probe_eeprom,
+                    probe_routes=probe_routes,
                 )
             ]
         # Per-device errors: print the failure inline so a single bad
@@ -971,6 +1016,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         pid=args.pid,
                         path=dev.path,
                         timeout_ms=args.timeout_ms,
+                        probe_version=probe_version,
+                        probe_eeprom=probe_eeprom,
+                        probe_routes=probe_routes,
                     )
                 )
             except RuntimeError as exc:

@@ -58,6 +58,7 @@ _USER_SETUP_PROFILE_SENTINEL = 0x03
 
 _HID_REPORT_LEN = 64
 _CMD_DIAG_MEMREAD = 0x43
+_CMD_DIAG_TIER1 = 0x44
 _DIAG_MEMREAD_REGION_EEPROM = 0x01
 
 
@@ -185,6 +186,38 @@ def test_v32_firmware_hid_report_enters_dispatch_and_reads_eeprom() -> None:
     assert chain.read_main_reg(1, 0x0410) & 0x80
     in_buf = bytes(chain.read_main_reg(1, 0x046C + i) for i in range(6))
     assert in_buf == bytes(resp[:6])
+
+
+def test_sim_hub_runs_dlcp_diag_cmd44_query_through_firmware() -> None:
+    """The operator diag path must be runnable against the sim hub.
+
+    This closes the fidelity gap where ``Chain.firmware_hid_report``
+    supported cmd 0x44, but ``SimHidBackend`` rejected it before the
+    firmware dispatcher could see it.
+    """
+    from dlcp_fw.flash import dlcp_diag
+
+    chain = _open_chain()
+    hub = make_sim_hub(chain)
+    info = hub.enumerate_devices(SimUsbHub.DEFAULT_VID, SimUsbHub.DEFAULT_PID)[1]
+
+    with install_sim_hub(hub):
+        report = dlcp_diag.query_diag(
+            vid=SimUsbHub.DEFAULT_VID,
+            pid=SimUsbHub.DEFAULT_PID,
+            path=info.path,
+            probe_version=False,
+            probe_eeprom=False,
+            probe_routes=False,
+        )
+
+    assert report.version is None
+    assert report.eeprom_marker is None
+    assert report.routes is None
+    assert report.snapshot.active_reset_cause == "por"
+    assert chain.read_main_reg(1, 0x042C) == _CMD_DIAG_TIER1
+    assert chain.read_main_reg(1, 0x040C) & 0x80
+    assert chain.read_main_reg(1, 0x0410) & 0x80
 
 
 # ---------------------------------------------------------------------------

@@ -15,6 +15,8 @@ from dlcp_fw.flash.dlcp_main_flash import (
     VolumeRuntimeInfo,
     _looks_like_main_boot_ack,
     _apply_ir_profile_ep0,
+    _looks_like_chain_frame_cadence,
+    _probe_ep0_app_ram,
     bootloader_mismatch_addresses,
     build_main_stream,
     decode_filename_slot,
@@ -181,6 +183,43 @@ def test_parse_cmd06_version_response_rejects_wrong_echo() -> None:
 def test_decode_filename_slot_strips_padding() -> None:
     assert decode_filename_slot(b"ConfigA\x00\xff\xff") == "ConfigA"
     assert decode_filename_slot(b"\xff" * 8) == ""
+
+
+def test_chain_frame_cadence_detector_matches_live_ep0_config_fault() -> None:
+    raw = bytes.fromhex(
+        "00bf2c00b12300bf2c00b12300bf2c00b12300b12300bf2c00b12300bf2c"
+    )
+    assert _looks_like_chain_frame_cadence(raw)
+    assert not _looks_like_chain_frame_cadence(b"LX521.4 22MG10F-v5\x00\xff")
+
+
+def test_probe_ep0_app_ram_rejects_current_loop_frame_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Do not trust EP0 Config/Channels when the filename window is RX traffic."""
+    from dlcp_fw.flash import dlcp_main_flash as mf
+
+    live_fault = bytes.fromhex(
+        "00bf2c00b12300bf2c00b12300bf2c00b12300b12300bf2c00b12300bf2c"
+    )
+
+    class _FakeEp0:
+        pointer = 0
+
+        def set_pointer(self, addr: int) -> None:
+            self.pointer = addr
+
+        def read_exact(self, size: int) -> bytes:
+            if self.pointer == mf.ROUTE_RAM_BASE:
+                return bytes([2, 1, 1, 1, 1, 1])[:size]
+            if self.pointer == mf.FILENAME_RAM_BASE:
+                return live_fault[:size]
+            raise AssertionError(f"unexpected EP0 pointer 0x{self.pointer:04X}")
+
+    monkeypatch.setattr(mf, "_make_dlcp_ep0", lambda **kwargs: _FakeEp0())
+
+    with pytest.raises(RuntimeError, match="current-loop frame cadence"):
+        _probe_ep0_app_ram(vid=0x04D8, pid=0xFF89, path=b"DevSrvsID:fault")
 
 
 def test_decode_route_entries_labels_known_and_unknown() -> None:

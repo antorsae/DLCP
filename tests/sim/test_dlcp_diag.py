@@ -866,3 +866,249 @@ def test_query_diag_round_trip(monkeypatch: pytest.MonkeyPatch) -> None:
     assert report.status == "HEALTHY"
     # HID device closed cleanly.
     assert fake.closed
+
+
+def test_query_diag_cmd44_only_skips_all_metadata_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Live watch mode must be able to read only cmd 0x44.
+
+    This is the low-impact path for hardware forensics: no cmd 0x06
+    version query, no cmd 0x43 EEPROM marker read, and no EP0 route /
+    filename RAM window probe.
+    """
+    from dlcp_fw.flash import dlcp_diag
+    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
+
+    cmd44_payload = _build_cmd44_response(
+        counters=(0, 0, 1, 1, 0, 0, 0),
+        reset_flags=(1, 0, 0, 0),
+    )
+    fake = _MockHidDevice(version=(3, 3, 2), cmd44_payload=cmd44_payload)
+    fake_info = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"DevSrvsID:fake",
+        manufacturer_string="Hypex BV",
+        product_string="DLCP",
+        serial_number="",
+    )
+
+    def _unexpected(*args, **kwargs):
+        raise AssertionError("metadata probe should not run in cmd44-only mode")
+
+    monkeypatch.setattr(dlcp_diag, "_pick_device", lambda vid, pid, path: fake_info)
+    monkeypatch.setattr(dlcp_diag, "_open_hid", lambda path: fake)
+    monkeypatch.setattr(dlcp_diag, "_probe_cmd06_version", _unexpected)
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_device_eeprom_version",
+        _unexpected,
+    )
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_ep0_app_ram",
+        _unexpected,
+    )
+
+    report = dlcp_diag.query_diag(
+        probe_version=False,
+        probe_eeprom=False,
+        probe_routes=False,
+    )
+
+    assert [w[0] for w in fake.writes] == [0x44]
+    assert report.version is None
+    assert report.eeprom_marker is None
+    assert report.routes is None
+    assert report.active_config_name is None
+    assert report.status == "HEALTHY"
+
+
+def test_query_diag_eeprom_marker_probe_is_progress_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The diag CLI must not leak read-progress lines into JSON output."""
+    from dlcp_fw.flash import dlcp_diag
+    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
+
+    cmd44_payload = _build_cmd44_response(
+        counters=(0, 0, 1, 1, 0, 0, 0),
+        reset_flags=(1, 0, 0, 0),
+    )
+    fake = _MockHidDevice(version=(3, 3, 2), cmd44_payload=cmd44_payload)
+    fake_info = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"DevSrvsID:fake",
+        manufacturer_string="Hypex BV",
+        product_string="DLCP",
+        serial_number="",
+    )
+    seen_kwargs: dict[str, object] = {}
+
+    def _fake_eeprom_probe(**kwargs):
+        seen_kwargs.update(kwargs)
+        return type("EepromVersion", (), {"revision": 0xA5})()
+
+    monkeypatch.setattr(dlcp_diag, "_pick_device", lambda vid, pid, path: fake_info)
+    monkeypatch.setattr(dlcp_diag, "_open_hid", lambda path: fake)
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash._probe_device_eeprom_version",
+        _fake_eeprom_probe,
+    )
+
+    report = dlcp_diag.query_diag(probe_routes=False)
+
+    assert report.eeprom_marker == 0xA5
+    assert seen_kwargs["progress"] is False
+
+
+def test_cli_cmd44_only_json_pass_uses_lightweight_query(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`--cmd44-only --json` wires through the lightweight query flags."""
+    from dlcp_fw.flash import dlcp_diag
+    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
+
+    fake_info = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"DevSrvsID:fake",
+        manufacturer_string="Hypex BV",
+        product_string="DLCP",
+        serial_number="",
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_query(**kwargs):
+        calls.append(dict(kwargs))
+        return _make_report(_snap(counters=(0, 0, 1, 1, 0, 0, 0)))
+
+    monkeypatch.setattr(dlcp_diag, "enumerate_devices", lambda vid, pid: [fake_info])
+    monkeypatch.setattr(dlcp_diag, "query_diag", _fake_query)
+
+    assert dlcp_diag.main(["--json", "--cmd44-only"]) == 0
+
+    assert calls == [
+        {
+            "vid": 0x04D8,
+            "pid": 0xFF89,
+            "path": b"DevSrvsID:fake",
+            "timeout_ms": 1000,
+            "probe_version": False,
+            "probe_eeprom": False,
+            "probe_routes": False,
+        }
+    ]
+    assert '"mains"' in capsys.readouterr().out
+
+
+def test_cli_no_ep0_routes_keeps_version_and_eeprom_probes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--no-ep0-routes` isolates EP0 while keeping richer HID metadata."""
+    from dlcp_fw.flash import dlcp_diag
+    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
+
+    fake_info = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"DevSrvsID:fake",
+        manufacturer_string="Hypex BV",
+        product_string="DLCP",
+        serial_number="",
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_query(**kwargs):
+        calls.append(dict(kwargs))
+        return _make_report(_snap(counters=(0, 0, 1, 1, 0, 0, 0)))
+
+    monkeypatch.setattr(dlcp_diag, "enumerate_devices", lambda vid, pid: [fake_info])
+    monkeypatch.setattr(dlcp_diag, "query_diag", _fake_query)
+
+    assert dlcp_diag.main(["--no-ep0-routes"]) == 0
+
+    assert calls[0]["probe_version"] is True
+    assert calls[0]["probe_eeprom"] is True
+    assert calls[0]["probe_routes"] is False
+
+
+def test_cli_watch_json_defaults_to_cmd44_only(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Repeated JSON logging must not default to invasive metadata probes."""
+    from dlcp_fw.flash import dlcp_diag
+    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
+
+    fake_info = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"DevSrvsID:fake",
+        manufacturer_string="Hypex BV",
+        product_string="DLCP",
+        serial_number="",
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_query(**kwargs):
+        calls.append(dict(kwargs))
+        return _make_report(_snap(counters=(0, 0, 1, 1, 0, 0, 0)))
+
+    def _stop_after_first_sleep(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(dlcp_diag, "enumerate_devices", lambda vid, pid: [fake_info])
+    monkeypatch.setattr(dlcp_diag, "query_diag", _fake_query)
+    monkeypatch.setattr(dlcp_diag.time, "sleep", _stop_after_first_sleep)
+
+    assert dlcp_diag.main(["--watch", "--interval", "1", "--json"]) == 0
+
+    assert calls == [
+        {
+            "vid": 0x04D8,
+            "pid": 0xFF89,
+            "path": b"DevSrvsID:fake",
+            "timeout_ms": 1000,
+            "probe_version": False,
+            "probe_eeprom": False,
+            "probe_routes": False,
+        }
+    ]
+    assert '"mains"' in capsys.readouterr().out
+
+
+def test_cli_watch_full_probes_opt_in_keeps_one_shot_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Full metadata probing during watch is explicit because EP0 is invasive."""
+    from dlcp_fw.flash import dlcp_diag
+    from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
+
+    fake_info = HidDeviceInfo(
+        vendor_id=0x04D8,
+        product_id=0xFF89,
+        path=b"DevSrvsID:fake",
+        manufacturer_string="Hypex BV",
+        product_string="DLCP",
+        serial_number="",
+    )
+    calls: list[dict[str, object]] = []
+
+    def _fake_query(**kwargs):
+        calls.append(dict(kwargs))
+        return _make_report(_snap(counters=(0, 0, 1, 1, 0, 0, 0)))
+
+    def _stop_after_first_sleep(_seconds: float) -> None:
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(dlcp_diag, "enumerate_devices", lambda vid, pid: [fake_info])
+    monkeypatch.setattr(dlcp_diag, "query_diag", _fake_query)
+    monkeypatch.setattr(dlcp_diag.time, "sleep", _stop_after_first_sleep)
+
+    assert dlcp_diag.main(["--watch", "--full-watch-probes"]) == 0
+
+    assert calls[0]["probe_version"] is True
+    assert calls[0]["probe_eeprom"] is True
+    assert calls[0]["probe_routes"] is True

@@ -319,7 +319,7 @@ def make_sim_ep0(
 
 # ============================================================================
 # SimHidBackend / SimUsbHub: HID feature-report path for cmd 0x03 / 0x06 /
-# 0x40 / 0x41 / 0x43.
+# 0x40 / 0x41 / 0x43 / 0x44.
 # ============================================================================
 #
 # The flasher's HID surface uses 64-byte reports written via ``dev.write(buf)``
@@ -338,9 +338,8 @@ def make_sim_ep0(
 #   The running firmware in the sim is the post-flash V3.2 image already; the
 #   stream just exercises the wire protocol shape.
 #
-# * cmd 0x03 / 0x06 / 0x43 -- mirror the firmware-visible effect via direct
-#   chain pokes / reads.  Same pattern as ``test_v32_usb_filename_xact_gate.py``
-#   for cmd 0x03's WRITE / ERASE.
+# * cmd 0x03 / 0x06 / 0x43 / 0x44 -- dispatched through the app firmware's
+#   EP1 OUT/IN service path via ``Chain.firmware_hid_report``.
 # ============================================================================
 
 import contextlib
@@ -377,6 +376,7 @@ _CMD06_VERSION_SUBCMD = 0x01
 # DIAG_MEMREAD constants (mirror real firmware-side handler in
 # ``crates/dlcp-sim/src/peripherals/usb.rs::handle_memread``).
 _CMD_DIAG_MEMREAD = 0x43
+_CMD_DIAG_TIER1 = 0x44
 _DIAG_MEMREAD_REGION_FLASH = 0x00
 _DIAG_MEMREAD_REGION_EEPROM = 0x01
 _DIAG_MEMREAD_MAX_LEN = 0x3D
@@ -584,7 +584,7 @@ class SimHidBackend:
             return self._echo_with_status(cmd, status=0xFE)
 
         # App mode dispatch.
-        if cmd in (0x06, 0x03, _CMD_DIAG_MEMREAD):
+        if cmd in (0x06, 0x03, _CMD_DIAG_MEMREAD, _CMD_DIAG_TIER1):
             return self._dispatch_app_report_via_firmware(payload)
         if cmd == 0x40:
             return self._handle_app_to_bootloader_switch(payload)
