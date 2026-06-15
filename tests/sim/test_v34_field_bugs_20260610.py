@@ -293,6 +293,70 @@ def test_field4b_no_dsp_coefficient_writes_after_preset_unmute(
 
 # --- FIELD-10: wake input-route I2C must wait for post-wake device init -----
 
+@pytest.mark.parametrize("unit", (0, 1))
+def test_field10_src4382_not_ready_window_does_not_hit_during_active7_lifecycle(
+    field_chain_hexes: tuple[Path, Path],
+    unit: int,
+) -> None:
+    """A realistic short SRC4382 not-ready window must be consumed only after
+    the wake lifecycle/preset-reassert phase is over, or else be made visibly
+    safe by mute/fault/barrier state.
+
+    This is the discovery-class FIELD-10 guard.  The old rev consumed the two
+    address NACKs while ``active_flags.bit7`` was still set, with no mute,
+    fault, or barrier ownership visible, yielding the live-hardware-style
+    ``I6 R0`` fingerprint.  The test checks the runtime state machine, not the
+    source shape.
+    """
+    chain = _connected_field_chain(field_chain_hexes)
+    _drive_standby_then_faulted_wake(
+        chain, unit=unit, fault_kind="address", count=2
+    )
+
+    observed_nack = False
+    unsafe_samples: list[dict[str, object]] = []
+    for sample in range(100):
+        chain.step_ticks(WAKE_SETTLE_TICKS)
+        stats = chain.read_main_src4382_stats(unit)
+        consumed = int(stats["address_nacks_consumed"])
+        if consumed <= 0:
+            continue
+        observed_nack = True
+        active = chain.read_main_reg(unit, ACTIVE_FLAGS)
+        events = chain.read_main_reg(unit, EVENT_FLAGS)
+        dsp = chain.read_main_reg(unit, DSP_FAULT_FLAGS)
+        latch = chain.read_main_reg(unit, STOCK_094)
+        lifecycle_pending = bool(active & 0x80)
+        visibly_safe = bool(
+            (active & (ACTIVE_MUTE_MASK | ACTIVE_FAULT_MUTE_OWNER_MASK))
+            or (latch & FIELD10_BARRIER_PENDING_MASK)
+            or (dsp & (DSP_ACKSTAT_MASK | DSP_FAULT_MASK))
+        )
+        if lifecycle_pending and not visibly_safe:
+            unsafe_samples.append(
+                {
+                    "sample": sample,
+                    "consumed": consumed,
+                    "remaining": int(stats["address_nack_count_remaining"]),
+                    "active": f"0x{active:02X}",
+                    "events": f"0x{events:02X}",
+                    "dsp": f"0x{dsp:02X}",
+                    "stock_094": f"0x{latch:02X}",
+                    "diag_i": chain.read_main_reg(unit, DIAG_I),
+                    "diag_r": chain.read_main_reg(unit, DIAG_R),
+                    "tas30": [
+                        p.hex()
+                        for p in chain.read_main_dsp_write_payloads(unit, 0x30)[-4:]
+                    ],
+                }
+            )
+        if consumed >= 2 and int(stats["address_nack_count_remaining"]) == 0:
+            break
+
+    assert observed_nack, f"MAIN{unit} did not exercise the SRC4382 readiness window"
+    assert not unsafe_samples, unsafe_samples
+
+
 @pytest.mark.parametrize("fault_kind", ("address", "data"))
 @pytest.mark.parametrize("unit", (0, 1))
 def test_field10_faulted_wake_barrier_keeps_main_muted_and_fault_visible(
