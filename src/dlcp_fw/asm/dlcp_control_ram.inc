@@ -493,32 +493,37 @@ V171_DIAG_POLL_RELOAD_LO   equ  0x00
 V171_DIAG_POLL_RELOAD_HI   equ  0x5A
 
 ; --- V1.72/V3.3 Diagnostics MAIN identity cache (BANK 2) ---
-; Physical 0x245..0x254.  EQU operands are BANKED-form values; every
-; firmware access must assert `movlb 0x02`.
+; Physical 0x245..0x254 plus V1.73 16-bit revision extension cells at
+; 0x26C..0x26E.  EQU operands are BANKED-form values; every firmware
+; access must assert `movlb 0x02`.
 v172_diag_id_pb1_major     equ  0x045
 v172_diag_id_pb1_minor     equ  0x046
-v172_diag_id_pb1_rev       equ  0x047
+v172_diag_id_pb1_rev       equ  0x047   ; V1.73: low byte of 16-bit rev
 v172_diag_id_pb2_major     equ  0x048
 v172_diag_id_pb2_minor     equ  0x049
-v172_diag_id_pb2_rev       equ  0x04A
+v172_diag_id_pb2_rev       equ  0x04A   ; V1.73: low byte of 16-bit rev
 v172_diag_id_valid_mask    equ  0x04B
 v172_diag_id_seen_mask     equ  0x04C
 v172_diag_id_pending_id    equ  0x04D
 v172_diag_id_flags         equ  0x04E
 V172_DIAG_ID_FLAG_PENDING  equ  0x00
 V172_DIAG_ID_FLAG_TARGET   equ  0x01
+V172_DIAG_ID_FLAG_RETRIED  equ  0x02
 v172_diag_id_timeout       equ  0x04F
 v172_diag_id_next_gen      equ  0x050
 v172_diag_id_expected_cmd  equ  0x051
 v172_diag_id_tmp_major     equ  0x052
 v172_diag_id_tmp_minor     equ  0x053
 v172_diag_id_tmp_rev_hi    equ  0x054
+v173_diag_id_pb1_rev_hi    equ  0x06C   ; physical 0x26C, high byte of 16-bit rev
+v173_diag_id_pb2_rev_hi    equ  0x06D   ; physical 0x26D, high byte of 16-bit rev
+v173_diag_id_tmp_rev_lo    equ  0x06E   ; physical 0x26E, staged low byte
 V172_DIAG_ID_TIMEOUT_RELOAD equ 0x04
 
 ; --- V1.72/V3.3 Preset filename LCD cache/state (BANK 2) ---
 ; Physical 0x220..0x244 and 0x255..0x25D.  Keep 0x245..0x254
-; reserved for diagnostics identity above.  EQU operands are BANKED-form
-; values; every firmware access must assert `movlb 0x02`.
+; reserved for the legacy diagnostics identity block above.  EQU operands
+; are BANKED-form values; every firmware access must assert `movlb 0x02`.
 v172_fname_cache           equ  0x020  ; physical 0x220..0x23D, 30 chars
 v172_fname_len             equ  0x03E
 v172_fname_expected_len    equ  0x03F
@@ -1126,4 +1131,13 @@ v173_isr_decode_save_b2_phys     EQU  0x260    ; physical address for movff/lfsr
 v173_mute_reassert_div_b2        EQU  0x26B    ; phys 0x26B, bank 2, owner v173_mute_reassert_div
 v173_mute_reassert_div_b2_op     EQU  0x6B     ; 8-bit f operand for v173_mute_reassert_div_b2
 v173_mute_reassert_div_b2_phys   EQU  0x26B    ; physical address for movff/lfsr
+v173_diag_id_pb1_rev_hi_b2       EQU  0x26C    ; phys 0x26C, bank 2, owner v173_diag_id_pb1_rev_hi
+v173_diag_id_pb1_rev_hi_b2_op    EQU  0x6C     ; 8-bit f operand for v173_diag_id_pb1_rev_hi_b2
+v173_diag_id_pb1_rev_hi_b2_phys  EQU  0x26C    ; physical address for movff/lfsr
+v173_diag_id_pb2_rev_hi_b2       EQU  0x26D    ; phys 0x26D, bank 2, owner v173_diag_id_pb2_rev_hi
+v173_diag_id_pb2_rev_hi_b2_op    EQU  0x6D     ; 8-bit f operand for v173_diag_id_pb2_rev_hi_b2
+v173_diag_id_pb2_rev_hi_b2_phys  EQU  0x26D    ; physical address for movff/lfsr
+v173_diag_id_tmp_rev_lo_b2       EQU  0x26E    ; phys 0x26E, bank 2, owner v173_diag_id_tmp_rev_lo
+v173_diag_id_tmp_rev_lo_b2_op    EQU  0x6E     ; 8-bit f operand for v173_diag_id_tmp_rev_lo_b2
+v173_diag_id_tmp_rev_lo_b2_phys  EQU  0x26E    ; physical address for movff/lfsr
 ; --- RAM bank safety generated aliases: END ---

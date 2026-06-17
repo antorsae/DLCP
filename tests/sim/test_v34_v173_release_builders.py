@@ -15,10 +15,12 @@ pytestmark = pytest.mark.dual_supported
 
 _V34_FIXTURE = (
     "runtime_identity:\n"
-    "        movlw   0x79 ; V3.4_RUNTIME_EEPROM_REV\n"
+    "        movlw   0x79 ; V3.4_RUNTIME_EEPROM_REV_LO\n"
     "cmd25_identity_query_handler:\n"
-    "        movlw       0x07                        ; V3.4_IDENTITY_REV_HI\n"
-    "        movlw       0x09                        ; V3.4_IDENTITY_REV_LO\n"
+    "        movlw       0x07                        ; V3.4_IDENTITY_REV_LO_HI\n"
+    "        movlw       0x09                        ; V3.4_IDENTITY_REV_LO_LO\n"
+    "        movlw       0x00                        ; V3.4_IDENTITY_REV_HI_HI\n"
+    "        movlw       0x01                        ; V3.4_IDENTITY_REV_HI_LO\n"
     "org 0xF00000\n"
     "        db      0x03, 0x04, 0x79\n"
 )
@@ -57,12 +59,60 @@ def test_build_v34_release_bumps_runtime_identity_and_runs_ram_safety(
     old_rev, new_rev, built_hex = build_v34_release(asm_path=asm_path, output_hex=output_hex)
 
     text = asm_path.read_text(encoding="utf-8")
-    assert (old_rev, new_rev, built_hex) == (0x79, 0x7A, output_hex)
+    assert (old_rev, new_rev, built_hex) == (0x0179, 0x017A, output_hex)
     assert events == ["assemble", "ram"]
-    assert "movlw   0x7A ; V3.4_RUNTIME_EEPROM_REV" in text
-    assert "movlw       0x07                        ; V3.4_IDENTITY_REV_HI" in text
-    assert "movlw       0x0A                        ; V3.4_IDENTITY_REV_LO" in text
+    assert "movlw   0x7A ; V3.4_RUNTIME_EEPROM_REV_LO" in text
+    assert "movlw       0x07                        ; V3.4_IDENTITY_REV_LO_HI" in text
+    assert "movlw       0x0A                        ; V3.4_IDENTITY_REV_LO_LO" in text
+    assert "movlw       0x00                        ; V3.4_IDENTITY_REV_HI_HI" in text
+    assert "movlw       0x01                        ; V3.4_IDENTITY_REV_HI_LO" in text
     assert "db      0x03, 0x04, 0x7A" in text
+    assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
+
+
+def test_build_v34_release_wraps_16bit_revision_from_ffff_to_0000(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    asm_path = tmp_path / "dlcp_main_v34.asm"
+    asm_path.write_text(
+        "runtime_identity:\n"
+        "        movlw   0xFF ; V3.4_RUNTIME_EEPROM_REV_LO\n"
+        "cmd25_identity_query_handler:\n"
+        "        movlw       0x0F                        ; V3.4_IDENTITY_REV_LO_HI\n"
+        "        movlw       0x0F                        ; V3.4_IDENTITY_REV_LO_LO\n"
+        "        movlw       0x0F                        ; V3.4_IDENTITY_REV_HI_HI\n"
+        "        movlw       0x0F                        ; V3.4_IDENTITY_REV_HI_LO\n"
+        "org 0xF00000\n"
+        "        db      0x03, 0x04, 0xFF\n",
+        encoding="utf-8",
+    )
+    output_hex = tmp_path / "DLCP_Firmware_V3.4.hex"
+    events: list[str] = []
+
+    def _fake_assemble(_asm: Path, out_hex: Path, *, output_lst=None, gpasm="gpasm"):
+        events.append("assemble")
+        out_hex.write_text(":00000001FF\n", encoding="ascii")
+        if output_lst is not None:
+            output_lst.write_text("; ok\n", encoding="ascii")
+
+    def _fake_ram_safety(targets: list[str]) -> None:
+        events.append("ram")
+        assert targets == ["main-v34"]
+
+    monkeypatch.setattr("dlcp_fw.patch.build_v34_release.assemble_v30", _fake_assemble)
+    monkeypatch.setattr("dlcp_fw.patch.build_v34_release.assert_targets_safe", _fake_ram_safety)
+
+    old_rev, new_rev, built_hex = build_v34_release(asm_path=asm_path, output_hex=output_hex)
+
+    text = asm_path.read_text(encoding="utf-8")
+    assert (old_rev, new_rev, built_hex) == (0xFFFF, 0x0000, output_hex)
+    assert events == ["assemble", "ram"]
+    assert "movlw   0x00 ; V3.4_RUNTIME_EEPROM_REV_LO" in text
+    assert "movlw       0x00                        ; V3.4_IDENTITY_REV_LO_HI" in text
+    assert "movlw       0x00                        ; V3.4_IDENTITY_REV_LO_LO" in text
+    assert "movlw       0x00                        ; V3.4_IDENTITY_REV_HI_HI" in text
+    assert "movlw       0x00                        ; V3.4_IDENTITY_REV_HI_LO" in text
+    assert "db      0x03, 0x04, 0x00" in text
     assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
 
 

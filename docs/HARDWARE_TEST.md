@@ -1277,7 +1277,7 @@ Walk-through:
    PB1
    n/a
    ```
-   It must then update to `PB1 OK v3.4 xAC` / optional OK-context tokens on
+   It must then update to `PB1 OK v3.4 NNNN` / optional OK-context tokens on
    the current pair, or `PB1!` + cell entries when issue counters are non-zero.
    Older MAINs may show suffixless `PB1 OK`.  If it stays `PB1` / `n/a`, PB1 is
    absent/silent or the diagnostics reply path is broken.

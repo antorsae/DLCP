@@ -64,7 +64,15 @@ def _find_hid_version_bytes(hex_path: Path) -> tuple[int, int, int] | None:
         movlw  MINOR → [MINOR, 0x0E]
         movwf  0x5D  → [0x5D, 0x6F]
 
-    Total: 14 bytes. We match the fixed bytes and extract the literals.
+    V3.4 may use a compact form when FLAG == MAJOR:
+        movlw  FLAG  -> [FLAG, 0x0E]
+        movlb  0x1   -> [0x01, 0x01]
+        movwf  0x5B  -> [0x5B, 0x6F]
+        movwf  0x5C  -> [0x5C, 0x6F]
+        movlw  MINOR -> [MINOR, 0x0E]
+        movwf  0x5D  -> [0x5D, 0x6F]
+
+    We match the fixed bytes and extract the literals.
     """
     ih = IntelHex(str(hex_path))
     for addr in range(0x1000, 0x5600, 2):
@@ -79,6 +87,17 @@ def _find_hid_version_bytes(hex_path: Path) -> tuple[int, int, int] | None:
             flag = ih[addr]      # movlw literal byte
             major = ih[addr + 6]
             minor = ih[addr + 10]
+            return (flag, major, minor)
+        # Compact same-literal flag/major form.
+        if (ih[addr + 1] == 0x0E and          # movlw FLAG_AND_MAJOR
+                ih[addr + 2] == 0x01 and ih[addr + 3] == 0x01 and  # movlb 0x1
+                ih[addr + 4] == 0x5B and ih[addr + 5] == 0x6F and  # movwf 0x5B
+                ih[addr + 6] == 0x5C and ih[addr + 7] == 0x6F and  # movwf 0x5C
+                ih[addr + 9] == 0x0E and                            # movlw MINOR
+                ih[addr + 10] == 0x5D and ih[addr + 11] == 0x6F):  # movwf 0x5D
+            flag = ih[addr]
+            major = ih[addr]
+            minor = ih[addr + 8]
             return (flag, major, minor)
     return None
 
@@ -148,7 +167,7 @@ def test_v34_usb_and_eeprom_version_match_release_identity() -> None:
     assert hid[1:] == (0x03, 0x04)
 
     eeprom = _read_eeprom_version(V34_MAIN_HEX)
-    assert eeprom == (0x03, 0x04, read_v34_release_revision()), (
+    assert eeprom == (0x03, 0x04, read_v34_release_revision() & 0xFF), (
         f"V3.4 EEPROM identity mismatch: got {eeprom!r}"
     )
 

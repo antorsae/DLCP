@@ -280,7 +280,7 @@ def _expected_v33_diag_title(pb_idx: int) -> str:
 
 def _expected_v34_diag_title(pb_idx: int) -> str:
     rev = read_v34_release_revision(V34_MAIN_ASM)
-    return f"PB{pb_idx + 1} OK v3.4 x{rev:02X} "
+    return f"PB{pb_idx + 1} OK v3.4 {rev:04X}"
 
 
 def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
@@ -304,6 +304,33 @@ def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
     assert "bra         diag_send_burst_xx" in body
     assert "V3.3_IDENTITY_REV_HI" in body
     assert "V3.3_IDENTITY_REV_LO" in body
+
+
+def test_v34_cmd25_identity_handler_emits_16bit_revision_nibbles() -> None:
+    """V3.4 extends cmd 0x25 to seven frames while preserving the compact burst loop."""
+    text = V34_MAIN_ASM.read_text(encoding="utf-8")
+    match = re.search(
+        r"cmd25_identity_query_handler:\n(?P<body>.*?)(?:\n; -+\n; cmd 0x26|\n; -+\n; diag_send_burst_xx)",
+        text,
+        re.DOTALL,
+    )
+    assert match is not None, "cmd25_identity_query_handler block not found"
+    body = match.group("body")
+
+    assert body.count("rcall       uart_tx_byte_blocking") == 2, (
+        "cmd 0x25 should explicitly emit only the 4F/id START payload after "
+        "the shared BF header helper; "
+        "the six payload frames must reuse diag_send_burst_xx"
+    )
+    assert "rcall       bf_frame_header_tx" in body
+    assert "lfsr        FSR0, saved_w_b0_phys" in body
+    assert "movlw       0x56" in body
+    assert "movlw       0x50" in body
+    assert "bra         diag_send_burst_xx" in body
+    assert "V3.4_IDENTITY_REV_LO_HI" in body
+    assert "V3.4_IDENTITY_REV_LO_LO" in body
+    assert "V3.4_IDENTITY_REV_HI_HI" in body
+    assert "V3.4_IDENTITY_REV_HI_LO" in body
 
 
 def test_v172_source_contains_separate_identity_parser_and_scheduler() -> None:

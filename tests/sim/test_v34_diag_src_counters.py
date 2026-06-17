@@ -30,7 +30,7 @@ from dlcp_fw.flash.dlcp_diag import (  # noqa: E402
     _format_src_line,
     parse_cmd44_diag_response,
 )
-from dlcp_fw.paths import V173_CONTROL_HEX, V34_MAIN_HEX  # noqa: E402
+from dlcp_fw.paths import V173_CONTROL_HEX, V34_MAIN_ASM, V34_MAIN_HEX  # noqa: E402
 from dlcp_fw.sim.dlcp_sim_native import Chain  # noqa: E402
 
 DIAG_SRC_N = 0x3C0
@@ -194,6 +194,31 @@ def test_cmd44_extended_payload_reflects_cells(settled_chain) -> None:
     assert snap.src_counters == (
         cells["N"], cells["L"], cells["C"], cells["T"], cells["M"]
     )
+
+
+def test_cmd44_source_uses_counted_copy_helper() -> None:
+    """V3.4 cmd 0x44 keeps the 7/4/5-cell layout via one counted copier."""
+    text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    helper = text.split("copy_postinc0_to_postinc2_count_w:", 1)[1].split(
+        "hid_cmd_diag_snapshot:", 1
+    )[0]
+    body = text.split("hid_cmd_diag_snapshot:", 1)[1].split(
+        "; DSP Preset Table B", 1
+    )[0]
+
+    assert "movwf       stock_04C_acc, ACCESS" in helper
+    assert "movf        POSTINC0, W, ACCESS" in helper
+    assert "movwf       POSTINC2, ACCESS" in helper
+    assert "decfsz      stock_04C_acc, F, ACCESS" in helper
+    assert "return      0" in helper
+
+    assert body.count("rcall       copy_postinc0_to_postinc2_count_w") == 3
+    assert "movlw       0x07" in body
+    assert "movlw       0x04" in body
+    assert "movlw       0x05" in body
+    assert "hid_diag_snap_cnt:" not in body
+    assert "hid_diag_snap_flag:" not in body
+    assert "hid_diag_snap_src:" not in body
 
 
 def test_counter_saturates_at_0x0f(settled_chain) -> None:

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the canonical V3.4 MAIN release and bump its EEPROM revision."""
+"""Build the canonical V3.4 MAIN release and bump its 16-bit revision."""
 
 from __future__ import annotations
 
@@ -14,68 +14,89 @@ from dlcp_fw.paths import V34_MAIN_ASM, V34_MAIN_HEX
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
 
-_EEPROM_REV_RE = re.compile(
+_EEPROM_REV_LO_RE = re.compile(
     r"(^\s*db\s+0x03,\s*0x04,\s*0x)([0-9A-Fa-f]{2})(\b.*$)",
     re.MULTILINE,
 )
-_RUNTIME_REV_RE = re.compile(
-    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.4_RUNTIME_EEPROM_REV\b.*$)",
+_RUNTIME_REV_LO_RE = re.compile(
+    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.4_RUNTIME_EEPROM_REV(?:_LO)?\b.*$)",
     re.MULTILINE,
 )
-_IDENTITY_REV_HI_RE = re.compile(
-    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.4_IDENTITY_REV_HI\b.*$)",
+_IDENTITY_REV_LO_HI_RE = re.compile(
+    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.4_IDENTITY_REV_LO_HI\b.*$)",
     re.MULTILINE,
 )
-_IDENTITY_REV_LO_RE = re.compile(
-    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.4_IDENTITY_REV_LO\b.*$)",
+_IDENTITY_REV_LO_LO_RE = re.compile(
+    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.4_IDENTITY_REV_LO_LO\b.*$)",
+    re.MULTILINE,
+)
+_IDENTITY_REV_HI_HI_RE = re.compile(
+    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.4_IDENTITY_REV_HI_HI\b.*$)",
+    re.MULTILINE,
+)
+_IDENTITY_REV_HI_LO_RE = re.compile(
+    r"(^\s*movlw\s+0x)([0-9A-Fa-f]{2})(\s*;\s*V3\.4_IDENTITY_REV_HI_LO\b.*$)",
     re.MULTILINE,
 )
 
 
 def read_v34_release_revision(asm_path: Path = V34_MAIN_ASM) -> int:
     text = asm_path.read_text(encoding="utf-8")
-    org_pos = text.find("org 0xF00000")
-    if org_pos < 0:
-        raise RuntimeError(f"EEPROM data block not found in {asm_path}")
-    match = _EEPROM_REV_RE.search(text, pos=org_pos)
+    try:
+        return _read_identity_revision(text)
+    except RuntimeError as exc:
+        raise RuntimeError(f"{exc} in {asm_path}") from exc
+
+
+def _read_identity_revision(text: str) -> int:
+    nibbles = []
+    for regex, label in (
+        (_IDENTITY_REV_HI_HI_RE, "V3.4 identity revision high-byte high nibble"),
+        (_IDENTITY_REV_HI_LO_RE, "V3.4 identity revision high-byte low nibble"),
+        (_IDENTITY_REV_LO_HI_RE, "V3.4 identity revision low-byte high nibble"),
+        (_IDENTITY_REV_LO_LO_RE, "V3.4 identity revision low-byte low nibble"),
+    ):
+        match = regex.search(text)
+        if match is None:
+            raise RuntimeError(f"{label} literal not found")
+        value = int(match.group(2), 16)
+        if value > 0x0F:
+            raise RuntimeError(f"{label} literal is not a nibble: 0x{value:02X}")
+        nibbles.append(value)
+    return (nibbles[0] << 12) | (nibbles[1] << 8) | (nibbles[2] << 4) | nibbles[3]
+
+
+def _rewrite_match(text: str, regex: re.Pattern[str], value: int, label: str) -> str:
+    match = regex.search(text)
     if match is None:
-        raise RuntimeError(f"V3.4 EEPROM version tuple not found in {asm_path}")
-    return int(match.group(2), 16)
+        raise RuntimeError(f"{label} literal not found")
+    return text[: match.start(2)] + f"{value:02X}" + text[match.end(2) :]
 
 
 def _rewrite_v34_release_revision(text: str) -> tuple[str, int, int]:
     org_pos = text.find("org 0xF00000")
     if org_pos < 0:
         raise RuntimeError("EEPROM data block not found")
-    match = _EEPROM_REV_RE.search(text, pos=org_pos)
+    match = _EEPROM_REV_LO_RE.search(text, pos=org_pos)
     if match is None:
         raise RuntimeError("V3.4 EEPROM version tuple not found")
-    old_rev = int(match.group(2), 16)
-    if old_rev >= 0xFF:
-        raise RuntimeError(
-            f"V3.4 EEPROM revision already at 0x{old_rev:02X}; cannot bump further"
-        )
-    new_rev = old_rev + 1
-    updated = text[: match.start(2)] + f"{new_rev:02X}" + text[match.end(2) :]
-    runtime_match = _RUNTIME_REV_RE.search(updated)
-    if runtime_match is not None:
-        updated = (
-            updated[: runtime_match.start(2)]
-            + f"{new_rev:02X}"
-            + updated[runtime_match.end(2) :]
-        )
+    old_rev = _read_identity_revision(text)
+    new_rev = (old_rev + 1) & 0xFFFF
+    new_lo = new_rev & 0xFF
+    updated = text[: match.start(2)] + f"{new_lo:02X}" + text[match.end(2) :]
+    updated = _rewrite_match(
+        updated,
+        _RUNTIME_REV_LO_RE,
+        new_lo,
+        "V3.4 runtime EEPROM revision low byte",
+    )
     for regex, value in (
-        (_IDENTITY_REV_HI_RE, (new_rev >> 4) & 0x0F),
-        (_IDENTITY_REV_LO_RE, new_rev & 0x0F),
+        (_IDENTITY_REV_LO_HI_RE, (new_rev >> 4) & 0x0F),
+        (_IDENTITY_REV_LO_LO_RE, new_rev & 0x0F),
+        (_IDENTITY_REV_HI_HI_RE, (new_rev >> 12) & 0x0F),
+        (_IDENTITY_REV_HI_LO_RE, (new_rev >> 8) & 0x0F),
     ):
-        ident_match = regex.search(updated)
-        if ident_match is None:
-            raise RuntimeError("V3.4 identity revision literal not found")
-        updated = (
-            updated[: ident_match.start(2)]
-            + f"{value:02X}"
-            + updated[ident_match.end(2) :]
-        )
+        updated = _rewrite_match(updated, regex, value, "V3.4 identity revision nibble")
     return updated, old_rev, new_rev
 
 
@@ -150,7 +171,7 @@ def build_v34_release(
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(
         description=(
-            "Bump the canonical V3.4 EEPROM revision and assemble "
+            "Bump the canonical V3.4 16-bit release revision and assemble "
             "firmware/patched/releases/DLCP_Firmware_V3.4.hex"
         ),
     )
@@ -160,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
     old_rev, new_rev, output_hex = build_v34_release(gpasm=args.gpasm)
     print(
         "built canonical V3.4 release: "
-        f"{output_hex} (EEPROM rev 0x{old_rev:02X} -> 0x{new_rev:02X})"
+        f"{output_hex} (release rev 0x{old_rev:04X} -> 0x{new_rev:04X})"
     )
     return 0
 

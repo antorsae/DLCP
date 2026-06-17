@@ -462,9 +462,9 @@ speaker-connected playback:
 4. Record the expected MAIN revision emitted by the fixed
    `scripts/build_v34_release.py`. Run `scripts/dlcp_diag.py --json --ch-map
    LEFT="$LEFT_HID" --ch-map RIGHT="$RIGHT_HID"` before and after. Capture PB1
-   and PB2 Diagnostics LCD pages showing fresh `PB1 OK v3.4 xNN` /
-   `PB2 OK v3.4 xNN` identity where `xNN` exactly matches that expected fixed
-   build revision on both MAINs after flash/re-enumeration.
+   and PB2 Diagnostics LCD pages showing fresh `PB1 OK v3.4 NNNN` /
+   `PB2 OK v3.4 NNNN` identity where `NNNN` exactly matches that expected
+   fixed build revision on both MAINs after flash/re-enumeration.
 5. Verify both MAINs expose A=`LX521.4 22MG10F-v5` and
    B=`LX521.4 22MG10F-v7`.
 6. Hardware cannot currently prove live TAS coefficient equality from normal

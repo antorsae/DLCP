@@ -1235,17 +1235,19 @@ v171_bf08_set_fault:
 
 v172_bf4f_identity_case_check:
         ; ---------------------------------------------------------------
-        ; V1.72/V3.3: BF/4F..BF/53 MAIN identity replies for the healthy
-        ; Diagnostics title.  Keep this parser separate from BF/21..2B
-        ; counters so malformed identity traffic cannot drift diag state.
+        ; V1.73/V3.4: BF/4F..BF/55 MAIN identity replies for the healthy
+        ; Diagnostics title.  BF/52..53 remain the legacy low revision byte
+        ; for V1.72/V3.3 compatibility; BF/54..55 add the high byte.
+        ; Keep this parser separate from BF/21..2B counters so malformed
+        ; identity traffic cannot drift diag state.
         ; ---------------------------------------------------------------
         movlw   0x4F
         cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x4F? -> filename/BF/2x path
         bra     v172_bf4f_check_upper
         bra     v172_fname_case_check
 v172_bf4f_check_upper:
-        movlw   0x54
-        cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x54? -> identity
+        movlw   0x56
+        cpfslt  rx_parsed_cmd_acc, A                          ; cmd < 0x56? -> identity
         bra     v171_bf2x_case_check
         movlb   0x02
         btfss   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
@@ -1308,14 +1310,52 @@ v172_bf4f_payload_rev_hi:
         movwf   v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_exit_bsr0
 v172_bf4f_payload_rev_lo:
-        ; Expected BF/53; anything else was caught by the earlier exact
-        ; expected-cmd check.  Commit the staged tuple atomically.
+        movlw   0x53
+        cpfseq  v172_diag_id_expected_cmd_b2, BANKED
+        bra     v172_bf4f_payload_rev16_hi
+        ; BF/53 completes the legacy low revision byte.  V3.4+ continues
+        ; with BF/54..55 for the high byte; older identities commit here
+        ; with high byte 0.
         swapf   v172_diag_id_tmp_rev_hi_b2, W, BANKED
         andlw   0xF0
         iorwf   rx_parsed_data_acc, W, A
+        movwf   v173_diag_id_tmp_rev_lo_b2, BANKED
+        movlw   0x03
+        cpfseq  v172_diag_id_tmp_major_b2, BANKED
+        bra     v172_bf4f_commit_rev8
+        movlw   0x04
+        cpfseq  v172_diag_id_tmp_minor_b2, BANKED
+        bra     v172_bf4f_commit_rev8
+        movlw   0x54
+        movwf   v172_diag_id_expected_cmd_b2, BANKED
+        bra     v172_bf4f_exit_bsr0
+v172_bf4f_commit_rev8:
+        clrf    v172_diag_id_tmp_rev_hi_b2, BANKED
+        bra     v172_bf4f_commit_common
+v172_bf4f_payload_rev16_hi:
+        movlw   0x54
+        cpfseq  v172_diag_id_expected_cmd_b2, BANKED
+        bra     v172_bf4f_payload_rev16_lo
+        movf    rx_parsed_data_acc, W, A
+        movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
+        movlw   0x55
+        movwf   v172_diag_id_expected_cmd_b2, BANKED
+        bra     v172_bf4f_exit_bsr0
+v172_bf4f_payload_rev16_lo:
+        movlw   0x55
+        cpfseq  v172_diag_id_expected_cmd_b2, BANKED
+        bra     v172_bf4f_abort
+        swapf   v172_diag_id_tmp_rev_hi_b2, W, BANKED
+        andlw   0xF0
+        iorwf   rx_parsed_data_acc, W, A
+        movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
+v172_bf4f_commit_common:
         btfsc   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
         bra     v172_bf4f_commit_pb2
+        movf    v173_diag_id_tmp_rev_lo_b2, W, BANKED
         movwf   v172_diag_id_pb1_rev_b2, BANKED
+        movf    v172_diag_id_tmp_rev_hi_b2, W, BANKED
+        movwf   v173_diag_id_pb1_rev_hi_b2, BANKED
         movf    v172_diag_id_tmp_major_b2, W, BANKED
         movwf   v172_diag_id_pb1_major_b2, BANKED
         movf    v172_diag_id_tmp_minor_b2, W, BANKED
@@ -1324,7 +1364,10 @@ v172_bf4f_payload_rev_lo:
         bsf     v172_diag_id_seen_mask_b2, 0, BANKED
         bra     v172_bf4f_commit_done
 v172_bf4f_commit_pb2:
+        movf    v173_diag_id_tmp_rev_lo_b2, W, BANKED
         movwf   v172_diag_id_pb2_rev_b2, BANKED
+        movf    v172_diag_id_tmp_rev_hi_b2, W, BANKED
+        movwf   v173_diag_id_pb2_rev_hi_b2, BANKED
         movf    v172_diag_id_tmp_major_b2, W, BANKED
         movwf   v172_diag_id_pb2_major_b2, BANKED
         movf    v172_diag_id_tmp_minor_b2, W, BANKED
@@ -1333,6 +1376,7 @@ v172_bf4f_commit_pb2:
         bsf     v172_diag_id_seen_mask_b2, 1, BANKED
 v172_bf4f_commit_done:
         bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_RETRIED, BANKED
         movlb   0x01
         bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
         movlb   0x02
@@ -4086,6 +4130,7 @@ v172_diag_entry_identity_pb2:
         bcf     v172_diag_id_seen_mask_b2, 1, BANKED
 v172_diag_entry_identity_common:
         bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_RETRIED, BANKED
         clrf    v172_diag_id_timeout_b2, BANKED
         clrf    v172_diag_id_expected_cmd_b2, BANKED
         movlb   0x00
@@ -4953,7 +4998,7 @@ v171_diag_emit_nib_sat:
         return  0x0
 
 ; ---------------------------------------------------------------------------
-; V1.72 Diagnostics MAIN identity LCD helpers.
+; V1.73 Diagnostics MAIN identity LCD helpers.
 ; ---------------------------------------------------------------------------
 v172_diag_render_identity_suffix:
         movlb   0x01
@@ -4978,8 +5023,16 @@ v172_diag_render_identity_suffix:
         rcall   v172_diag_emit_hex_nib_w
         movlw   ' '
         call    lcd_char_write, 0x0
-        movlw   'x'
-        call    lcd_char_write, 0x0
+        movlb   0x02
+        movf    v173_diag_id_pb1_rev_hi_b2, W, BANKED
+        movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
+        swapf   v172_diag_id_tmp_rev_hi_b2, W, BANKED
+        movlb   0x00
+        rcall   v172_diag_emit_hex_nib_w
+        movlb   0x02
+        movf    v173_diag_id_pb1_rev_hi_b2, W, BANKED
+        movlb   0x00
+        rcall   v172_diag_emit_hex_nib_w
         movlb   0x02
         movf    v172_diag_id_pb1_rev_b2, W, BANKED
         movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
@@ -4990,7 +5043,7 @@ v172_diag_render_identity_suffix:
         movf    v172_diag_id_pb1_rev_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
-        bra     v172_diag_render_identity_pad_one
+        return  0x0
 v172_diag_render_identity_pb2:
         movlb   0x02
         btfss   v172_diag_id_valid_mask_b2, 1, BANKED
@@ -5011,8 +5064,16 @@ v172_diag_render_identity_pb2:
         rcall   v172_diag_emit_hex_nib_w
         movlw   ' '
         call    lcd_char_write, 0x0
-        movlw   'x'
-        call    lcd_char_write, 0x0
+        movlb   0x02
+        movf    v173_diag_id_pb2_rev_hi_b2, W, BANKED
+        movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
+        swapf   v172_diag_id_tmp_rev_hi_b2, W, BANKED
+        movlb   0x00
+        rcall   v172_diag_emit_hex_nib_w
+        movlb   0x02
+        movf    v173_diag_id_pb2_rev_hi_b2, W, BANKED
+        movlb   0x00
+        rcall   v172_diag_emit_hex_nib_w
         movlb   0x02
         movf    v172_diag_id_pb2_rev_b2, W, BANKED
         movwf   v172_diag_id_tmp_rev_hi_b2, BANKED
@@ -5023,12 +5084,6 @@ v172_diag_render_identity_pb2:
         movf    v172_diag_id_pb2_rev_b2, W, BANKED
         movlb   0x00
         rcall   v172_diag_emit_hex_nib_w
-v172_diag_render_identity_pad_one:
-        movlb   0x01
-        movlw   0x01
-        movwf   v171_diag_lcd_pad_count_b1, BANKED
-        movlb   0x00
-        call    v171_diag_pad_spaces, 0x0
         return  0x0
 v172_diag_render_identity_absent:
         movlb   0x01
@@ -5146,6 +5201,8 @@ v172_diag_identity_pending:
         bsf     STATUS, C, A
         return  0x0
 v172_diag_identity_timeout:
+        btfss   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_RETRIED, BANKED
+        bra     v172_diag_identity_retry
         btfsc   v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_TARGET, BANKED
         bra     v172_diag_identity_timeout_pb2
         bsf     v172_diag_id_seen_mask_b2, 0, BANKED
@@ -5153,6 +5210,11 @@ v172_diag_identity_timeout:
 v172_diag_identity_timeout_pb2:
         bsf     v172_diag_id_seen_mask_b2, 1, BANKED
 v172_diag_identity_timeout_done:
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
+        bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_RETRIED, BANKED
+        bra     v172_diag_identity_noop
+v172_diag_identity_retry:
+        bsf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_RETRIED, BANKED
         bcf     v172_diag_id_flags_b2, V172_DIAG_ID_FLAG_PENDING, BANKED
 v172_diag_identity_noop:
         movlb   0x00
@@ -6436,6 +6498,13 @@ v172_clear_identity_cache_loop:
         clrf    POSTINC0, A
         decfsz  (Common_RAM + 4), F, A
         bra     v172_clear_identity_cache_loop
+        lfsr    0x0, v173_diag_id_pb1_rev_hi_b2_phys                         ; V1.73 identity rev16 extension
+        movlw   0x03
+        movwf   (Common_RAM + 4), A
+v173_clear_identity_ext_loop:
+        clrf    POSTINC0, A
+        decfsz  (Common_RAM + 4), F, A
+        bra     v173_clear_identity_ext_loop
         movlw   0x01
         movwf   (Common_RAM + 15), A                        ; reg: 0x00f
         movlw   0x2c
@@ -8120,7 +8189,7 @@ flow_ccs_1912_19EE:                                                  ; address: 
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x37, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x31, 0x00 ; "Rev x47 20260611"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x39, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x36, 0x00 ; "Rev x49 20260616"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -8128,8 +8197,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x47                    ; V1.73 + monotonic release revision
-        db      0x20, 0x26, 0x06, 0x11                    ; build date 20260611 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x33, 0x49                    ; V1.73 + monotonic release revision
+        db      0x20, 0x26, 0x06, 0x16                    ; build date 20260616 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

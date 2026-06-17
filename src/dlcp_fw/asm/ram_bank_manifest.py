@@ -533,12 +533,29 @@ def cells_by_source_name(target: str) -> dict[str, RamCell]:
 
 
 def alias_equate_lines(target: str) -> list[str]:
-    """Return the generated alias block for *target*."""
-    cells = load_manifest(target)
+    """Return the generated alias block for *target*'s shared include file."""
+    spec = TARGET_SPECS[target]
+    include_targets = [
+        key for key, other in TARGET_SPECS.items() if other.inc_path == spec.inc_path
+    ]
+    cells: dict[str, RamCell] = {}
+    for include_target in sorted(include_targets):
+        for cell in load_manifest(include_target).values():
+            if cell.alias_of is not None:
+                continue
+            existing = cells.get(cell.alias)
+            if existing is not None:
+                if (existing.phys, existing.access) != (cell.phys, cell.access):
+                    raise ValueError(
+                        f"conflicting RAM alias {cell.alias}: "
+                        f"0x{existing.phys:03X}/{existing.access} vs "
+                        f"0x{cell.phys:03X}/{cell.access}"
+                    )
+                continue
+            cells[cell.alias] = cell
     primary = [
         cell
         for name, cell in cells.items()
-        if cell.alias_of is None
     ]
     primary.sort(key=lambda c: (c.phys, c.alias))
     lines = [

@@ -704,7 +704,7 @@ Focused behavioral tests:
 - simulator fixture proves V3.4/V1.73 HEX/listing artifacts are loaded;
 - Preset A/B filename matrix: A, B, A->B, B->A, A->B->A, B->A->B;
 - Preset B -> next page -> STDBY -> WAKE -> Preset returns as B with filename;
-- Diagnostics PB1/PB2 identity shows `v3.4 xNN` with V1.73;
+- Diagnostics PB1/PB2 identity shows `v3.4 NNNN` with V1.73;
 - V1.73 remains backward-compatible with V3.3/V3.2 identity/no-identity cases
   where existing V1.72 tests require compatibility;
 - mixed-version matrix covers V1.73+V3.4, V1.73+V3.3, V1.72+V3.4,
@@ -779,7 +779,7 @@ If approved later:
    PYTHONPATH=src .venv_ep0/bin/python scripts/dlcp_diag.py --json --ch-map LEFT="$LEFT_HID" --ch-map RIGHT="$RIGHT_HID"
    ```
 6. Before trusting Preset OCR, verify app-resident PB1/PB2 Diagnostics MAIN
-   identity reports `v3.4 xNN` from both MAINs.
+   identity reports `v3.4 NNNN` from both MAINs.
 7. Capture Preset A/B, Preset B -> next menu -> STDBY -> WAKE -> Preset, and
    Diagnostics PB1/PB2 LCD evidence with `scripts/hardware_lcd_probe.py` or
    an equivalent raw LCD/OCR artifact.

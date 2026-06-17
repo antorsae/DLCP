@@ -37,7 +37,7 @@ Status values:
 - `done`: sim and hardware gates have passed.
 - `blocked`: cannot advance without a named external artifact or operator step.
 
-Historical completion criteria for this ledger:
+Completion criteria for this ledger:
 
 - Every active bug in this historical table has a simulator red/green test listed
   in the table
@@ -86,7 +86,11 @@ Release closure criteria beyond this bug ledger:
   V1.71/V3.2 release closure because live-rig evidence is still required
   separately.
 
-## Historical V1.71/V3.2 Bug Rows
+## Active Bugs
+
+These rows are archived from the former V1.71/V3.2 release-candidate period,
+but they remain the parser-visible active ledger table for the historical
+hardware-gate tooling.
 
 | ID | Status | Area | Symptom | Required red test |
 | --- | --- | --- | --- | --- |
@@ -102,7 +106,7 @@ Release closure criteria beyond this bug ledger:
 | BUG-SETTINGS-01 | green | MAIN release flash / user settings | MAIN app HID cmd `0x40` is a firmware-update handoff, but the V3.2 handler flushed factory defaults into EEPROM first, resetting volume to `-96 dB`, input to analog 1, and potentially the shared setup/profile byte after flash. | `tests/sim/test_dlcp_main_flash.py::test_v32_cmd40_bootloader_entry_preserves_saved_settings_in_source`, `tests/sim/test_v32_flasher_sim_backend_hid.py::test_sim_hid_cmd40_preserves_user_volume_and_input_settings`, and `test_v32_release_flash_sim_full_main_post_flash_state`. |
 | BUG-SRC4382-AD-01 | blocked | MAIN SRC4382 Auto Detect | V3.2 overpolls SRC4382 in Auto Detect; the broad rewrite broke the route/TAS contract, while the later bad-audio observation was retested on 2026-05-20 as a speaker-wiring false alarm. Canonical V3.2 rev `0x6E` now contains an in-place countdown candidate, source-loss debounce, explicit route reconciliation for fixed inputs, the real front-panel S/PDIF path (`B0/06/05` -> route `1`), and external-mux route priming, but closure remains blocked on structured hardware retest/soak evidence. | `tests/sim/test_v32_src4382_audio_path_regression.py::{test_v32_autodetect_source_present_drives_route_event_and_dsp_refresh,test_v32_audio_path_safety_guard_rejects_missing_route_event_mutation,test_v32_audio_path_safety_guard_rejects_missing_tas_refresh_mutation}`, `tests/sim/test_v32_src4382_autodetect_polling.py::{test_v32_src4382_autodetect_no_source_cadence_is_reduced,test_v32_cadence_guard_rejects_unthrottled_receiver_select_mutation,test_v32_src4382_autodetect_source_present_cadence_is_reduced,test_v32_source_present_cadence_guard_rejects_unthrottled_monitor_mutation,test_v32_src4382_no_source_scan_does_not_read_non_pcm_status,test_v32_src4382_source_present_latches_non_pcm_status,test_v32_src4382_single_source_loss_sample_does_not_flap_route,test_v32_src4382_sustained_source_loss_resumes_scan_within_1s,test_v32_src4382_writes_0d_only_when_candidate_changes,test_v32_src4382_full_scan_detects_worst_position_source_within_500ms,test_v32_discovery_guard_rejects_overly_slow_candidate_settle_mutation,test_v32_src4382_explicit_input_preempts_autodetect_and_converges_route,test_v32_src4382_external_mux_input_primes_default_receiver_route,test_v171_v32_control_spdif_menu_selects_route_after_autodetect,test_v32_src4382_fixed_input_goes_quiet_after_route_converges,test_v32_src4382_autodetect_mute_unmute_remain_responsive,test_v32_src4382_autodetect_standby_wake_remain_responsive,test_v32_src4382_autodetect_preset_change_remains_responsive,test_v32_src4382_nack_does_not_block_volume_command,test_v171_v32_src4382_autodetect_dual_main_chain_soak_stays_responsive}`, and `tests/sim/test_v32_release_flash_sim.py::test_v32_lx521_a_b_payloads_reach_each_main_tas3108`. |
 
-## Historical Verification Snapshot (V1.71/V3.2, May 2026)
+## Current Verification Snapshot
 
 Green simulator runs through 2026-05-20:
 

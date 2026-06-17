@@ -19,6 +19,14 @@ def _label_body(text: str, label: str, next_labels: list[str] | tuple[str, ...])
     return text[start.start() : end]
 
 
+def _assert_ordered(body: str, *needles: str) -> None:
+    pos = -1
+    for needle in needles:
+        next_pos = body.find(needle, pos + 1)
+        assert next_pos >= 0, f"missing {needle!r} after offset {pos}"
+        pos = next_pos
+
+
 def test_v34_main_i2c_service_2100_classifies_sen_and_pen_timeouts() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     body = _label_body(text, "flow_main_i2c_service_2100_2286", ["main_i2c_service_2100_timeout"])
@@ -38,6 +46,33 @@ def test_v34_main_i2c_service_2100_classifies_sen_and_pen_timeouts() -> None:
         body,
     )
     assert pen_match is not None, "PEN/STOP timeout must use PEN-specific recovery"
+
+
+def test_v34_shared_i2c_start_helper_preserves_carry_timeout_contract() -> None:
+    text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    helper = _label_body(text, "i2c_start_after_idle_bounded", ["i2c_secondary_dev_random_read"])
+    _assert_ordered(
+        helper,
+        "rcall       i2c_wait_bus_idle",
+        "bsf         SSPCON2, 0, ACCESS",
+        "bra         wait_sen_bounded",
+    )
+
+    expected = {
+        "i2c_secondary_dev_random_read": (
+            ["i2c_secondary_dev_random_timeout"],
+            "bc          i2c_secondary_dev_random_timeout",
+        ),
+        "i2c_tas3108_reg1f_write": (["i2c_reg1f_done"], "bc          i2c_reg1f_timeout"),
+        "i2c_tas3108_coeff_write": (["coeff_write_pen_done"], "bc          coeff_write_timeout"),
+    }
+    for label, (next_labels, carry_branch) in expected.items():
+        body = _label_body(text, label, next_labels)
+        _assert_ordered(
+            body,
+            "rcall       i2c_start_after_idle_bounded",
+            carry_branch,
+        )
 
 
 def test_v34_i2c_timeout_recovery_sets_visible_diag_and_carry_contract() -> None:
@@ -69,14 +104,12 @@ def test_v34_async_apply_timeout_retries_same_entry_after_visible_recovery() -> 
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     apply_body = _label_body(text, "preset_job_apply", ["preset_job_apply_retry"])
     retry_body = _label_body(text, "preset_job_apply_retry", ["preset_job_commit"])
-    recover_body = _label_body(text, "preset_job_apply_i2c_recover", ["preset_select_handler"])
+    timeout_body = _label_body(text, "preset_job_apply_i2c_timeout", ["preset_select_handler"])
     helper_body = _label_body(text, "i2c_timeout_recover_advertise", ["cmd21_diag_query_handler"])
 
     assert "bc          preset_job_apply_retry" in apply_body
     assert "bc          preset_job_apply_retry" in retry_body
-    assert (
-        "call        i2c_timeout_recover_advertise, 0x0" in recover_body
-        or "rcall       i2c_timeout_recover_advertise" in recover_body
-    )
+    assert "preset_job_apply_i2c_recover:" not in text
+    assert "bra         i2c_timeout_recover_advertise" in timeout_body
     assert "bsf         STATUS, 0, ACCESS" in helper_body
     assert "incf        preset_job_index_b2" not in retry_body

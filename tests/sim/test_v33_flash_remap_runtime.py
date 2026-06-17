@@ -18,7 +18,14 @@ from dlcp_fw.flash.dlcp_hfd_upload import (
     _build_upload_reports,
     _looks_like_upload_ack,
 )
-from dlcp_fw.paths import V172_CONTROL_HEX, V33_MAIN_ASM, V33_MAIN_HEX
+from dlcp_fw.paths import (
+    V172_CONTROL_HEX,
+    V173_CONTROL_HEX,
+    V33_MAIN_ASM,
+    V33_MAIN_HEX,
+    V34_MAIN_ASM,
+    V34_MAIN_HEX,
+)
 from dlcp_fw.sim.v30_symbols import load_gpasm_symbols_for_hex
 
 try:
@@ -47,24 +54,28 @@ def _require_rust() -> None:
         pytest.fail(f"rust facade not importable: {_RUST_ERROR!r}")
 
 
-def _v33_hid_symbols() -> tuple[int, int]:
-    symbols = load_gpasm_symbols_for_hex(V33_MAIN_HEX)
+def _v3x_hid_symbols(main_hex) -> tuple[int, int]:  # type: ignore[no-untyped-def]
+    symbols = load_gpasm_symbols_for_hex(main_hex)
     if not symbols:
-        pytest.skip("missing V3.3 gpasm listing for HID entry symbols")
+        pytest.skip(f"missing gpasm listing for HID entry symbols: {main_hex}")
     try:
         return int(symbols["main_usb_service_3a26"]), int(symbols["hid_command_dispatch"])
     except KeyError as exc:
-        pytest.fail(f"missing V3.3 HID symbol in gpasm listing: {exc}")  # pragma: no cover
+        pytest.fail(f"missing V3.x HID symbol in gpasm listing: {exc}")  # pragma: no cover
 
 
 def _firmware_hid_report_v33(chain, unit: int, report: bytes) -> bytes:  # type: ignore[no-untyped-def]
+    return _firmware_hid_report_v3x(chain, unit, report, V33_MAIN_HEX)
+
+
+def _firmware_hid_report_v3x(chain, unit: int, report: bytes, main_hex) -> bytes:  # type: ignore[no-untyped-def]
     if len(report) != _HID_REPORT_LEN:
         raise ValueError(f"expected {_HID_REPORT_LEN}-byte report")
-    service_pc, dispatch_pc = _v33_hid_symbols()
+    service_pc, dispatch_pc = _v3x_hid_symbols(main_hex)
     response, dispatch_hits = chain._inner.firmware_hid_report(  # noqa: SLF001
         int(unit),
         [int(b) & 0xFF for b in report],
-        20_000,
+        60_000,
         service_pc,
         dispatch_pc,
     )
@@ -162,3 +173,60 @@ def test_v33_hid_flash_access_to_active_preset_b_remaps_physical_flash() -> None
     after_b = chain.read_core_flash(core_idx, _PRESET_B_BASE, _FIRST_FLUSH_SIZE)
     assert after_a == original_a
     assert after_b == bytes([0xFF] * _FIRST_FLUSH_SIZE)
+
+
+def test_v34_hid_flash_upload_copy_loop_preserves_active_preset_b_remap() -> None:
+    """V3.4's pointerized 0x07 upload copy still feeds the flash staging page."""
+    _require_rust()
+    if not V173_CONTROL_HEX.is_file() or not V34_MAIN_HEX.is_file():
+        pytest.skip("missing V1.73 / V3.4 firmware artifacts")
+
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(V173_CONTROL_HEX),
+        main_hex_path=str(V34_MAIN_HEX),
+    )
+    chain.run_until_connected(limit=400)
+    assert chain.is_connected() and not chain.is_waiting()
+    chain.step_ticks(50_000_000)
+
+    unit = 1
+    core_idx = 2
+    original_a = bytes((0x40 + i) & 0xFF for i in range(_FIRST_FLUSH_SIZE))
+    original_b = bytes((0x80 + i) & 0xFF for i in range(_FIRST_FLUSH_SIZE))
+    chain.patch_core_flash(core_idx, _PRESET_A_BASE, original_a)
+    chain.patch_core_flash(core_idx, _PRESET_B_BASE, original_b)
+    chain.write_main_reg(
+        unit,
+        _ACTIVE_FLAGS,
+        chain.read_main_reg(unit, _ACTIVE_FLAGS) | _ACTIVE_PRESET_B,
+    )
+
+    table = _first_flush_table()
+    for cmd, report in _build_upload_reports(table)[: _FIRST_FLUSH_SIZE // SLOT_SIZE]:
+        response = _firmware_hid_report_v3x(chain, unit, report, V34_MAIN_HEX)
+        assert _looks_like_upload_ack(response, expected_cmd=cmd), response[:4].hex()
+
+    after_a = chain.read_core_flash(core_idx, _PRESET_A_BASE, _FIRST_FLUSH_SIZE)
+    after_b = chain.read_core_flash(core_idx, _PRESET_B_BASE, _FIRST_FLUSH_SIZE)
+    assert after_a == original_a
+    assert after_b == bytes([0xFF] * _FIRST_FLUSH_SIZE)
+
+
+def test_v34_flash_upload_copy_loop_keeps_legacy_nonzero_source_skew() -> None:
+    text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    start = text.index("flow_main_flash_service_2bb8_2bdc:")
+    end = text.index("flow_main_flash_service_2bb8_2ca6:", start)
+    body = text[start:end]
+
+    assert "lfsr        FSR2, stock_11E_b1_phys" in body
+    assert "movf        stock_11B_b1, W, BANKED" in body
+    assert "bz          flow_main_flash_service_2bb8_src_ready" in body
+    assert "movlw       0x02" in body
+    assert "subwf       FSR2L, F, ACCESS" in body
+    assert "movlw       0x14" in body
+    assert "call        copy_postinc2_to_postinc1_count_w, 0x0" in body
+
+    helper_start = text.index("copy_postinc2_to_postinc1_count_w:")
+    helper_end = text.index("copy4_postinc0_to_postinc2_rewind2:", helper_start)
+    helper_body = text[helper_start:helper_end]
+    assert "movff       POSTINC2, POSTINC1" in helper_body

@@ -362,10 +362,10 @@ pointer to fit the job plus pacing state into the 12-byte window:
 
 | phys | cell | meaning |
 | --- | --- | --- |
-| `0x2F4` | `fn_job_state` | 0 = IDLE, 1 = SEND_START, 2 = SEND_LEN, 3 = SEND_CHARS, 4 = SEND_END |
+| `0x2F4` | `fn_job_state` | 0 = IDLE, 1 = SEND_START, 2 = SEND_LEN, 3 = SEND_CHAR_OR_END |
 | `0x2F5` | `fn_job_id` | byte echoed in START/END = full query `id = (gen<<2)\|(target<<1)\|slot` |
 | `0x2F6` | `fn_job_idx` | current char index 0..30 |
-| `0x2F7` | `fn_job_src_kind` | 0 = active RAM `0x2C0`, 1 = EEPROM A, 2 = EEPROM B |
+| `0x2F7` | `fn_job_src_kind` | 0 = active RAM `0x2C0`; nonzero = EEPROM filename base (`0x60` for A, `0x83` for B) |
 | `0x2F8` | `filename_rev` | global byte covering **all** filename backing-store mutations: active RAM slot and A/B EEPROM filename bytes |
 | `0x2F9` | `fn_job_rev` | snapshot of `filename_rev` at arm; odd/in-progress or mismatch aborts |
 | `0x2FA` | `fn_job_start_cmd` | `0x2E` tail-first or `0x2F` prefix-first |
@@ -429,7 +429,7 @@ reclaim code first; do not move the table silently.
      physical PB, but echoing it makes the protocol multi-PB-ready.
    - Pick the requested-slot source: `slot == active_flags.2` → RAM
      `preset_filename_ram_base` (`fn_job_src_kind = 0`); else → EEPROM
-     A/B (`fn_job_src_kind = 1/2`).
+     A/B (`fn_job_src_kind = 0x60/0x83`, the direct EEPROM byte base).
    - **Direction hint (§3.5):** read the first 16 chars of slot A and slot B
      (each from RAM if it is the currently active slot, else from its EEPROM
      base) and set `fn_job_start_cmd = 0x2E` iff they are equal (tail-first),
@@ -470,16 +470,14 @@ reclaim code first; do not move the table silently.
    ;             (no END emitted -> CONTROL never validates a torn name)
    IDLE        -> return
    SEND_START  -> emit BF / fn_job_start_cmd / fn_job_id ; state = SEND_LEN
-   SEND_LEN    -> emit BF / 0x2D / (fn_job_id ^ fn_job_len); state = SEND_CHARS
-   SEND_CHARS  -> if fn_job_idx >= preset_filename_len (30): state = SEND_END; return  ; bound FIRST (R3-2)
-                  read byte at (source + fn_job_idx)          ; RAM via FSR, EEPROM via inline read
-                  if fn_job_idx >= fn_job_len: state = SEND_END; return
-                  if printable(byte): emit BF / (0x30+fn_job_idx) / clamp(byte); fn_job_idx++
-                  else:               state = SEND_END
-   SEND_END    -> emit BF / 0x4E / fn_job_id ; state = IDLE
+   SEND_LEN    -> emit BF / 0x2D / (fn_job_id ^ fn_job_len); state = SEND_CHAR_OR_END
+   SEND_CHAR_OR_END -> if fn_job_idx >= fn_job_len:
+                          emit BF / 0x4E / fn_job_id ; state = IDLE ; return
+                       read byte at (source + fn_job_idx)          ; RAM via FSR, EEPROM via inline read
+                       emit BF / (0x30+fn_job_idx) / byte ; fn_job_idx++
    ```
-   The `idx >= 30` bound is checked **before** the read and the `0x30+idx` cmd
-   calc (R3-2), so idx never reads past the 30-byte field nor computes a char
+   The handler computes `fn_job_len` up front with a 30-byte cap, so
+   `SEND_CHAR_OR_END` never reads past the 30-byte field nor computes a char
    cmd of `0x4E` (= END). The `filename_rev` abort runs each pass before any
    emit.
    Each frame is 3× `uart_tx_byte_blocking` (bounded) within the single pass, so

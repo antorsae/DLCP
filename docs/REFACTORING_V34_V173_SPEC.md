@@ -311,9 +311,10 @@ owns only visible validity and pending state.
 
 Diagnostics identity epoch behavior shall be precise:
 
-- page entry, reconnect, or source change may issue one identity query per
-  source;
-- timeout marks the source seen and suppresses retries until page re-entry or
+- page entry, reconnect, or source change may issue one initial identity query
+  plus one bounded retry per source;
+- the first timeout retries without marking the source seen; the second timeout
+  marks the source seen and suppresses further retries until page re-entry or
   reconnect;
 - stale/lost replies suppress the suffix without resetting the epoch;
 - issue pages suppress identity suffix display without clearing valid cached
@@ -512,7 +513,7 @@ Hardware acceptance for Preset filename LCD still requires OCR/raw capture
 evidence; a blank row alone is not proof.
 
 If hardware smoke runs, first verify app-resident PB1/PB2 Diagnostics MAIN
-identity reports `v3.4 xNN`, then verify Preset page A/B row0 and filename
+identity reports `v3.4 NNNN`, then verify Preset page A/B row0 and filename
 rows, Preset B -> next menu -> standby -> wake -> Preset, and rollback commands.
 Record exact flash commands, HID paths/routes, release identities, LCD
 probe/OCR or raw LCD captures, and a JSON/text report artifact under
