@@ -2,8 +2,8 @@
 
 Drop-in replacement firmware for the **Hypex DLCP**.  The recommended release pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.4.hex`](firmware/patched/releases/DLCP_Firmware_V3.4.hex) (`V3.4 / rev 0xAC`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x47 / build 20260611`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.4.hex`](firmware/patched/releases/DLCP_Firmware_V3.4.hex) (`V3.4 / rev 0x0083`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x49 / build 20260616`)
 
 This README focuses on the recommended V3.4 + V1.73 deployment.  All
 user-facing comparisons below use stock MAIN V2.3 + CONTROL V1.6b as the
@@ -114,7 +114,7 @@ effects create startup `I6` or a live wrong DSP image.
 
 **Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the
 recommended V1.73 + V3.4 pair, each healthy Diagnostics page also shows that
-MAIN's live identity, for example `PB1 OK v3.4 xAC` and `PB2 OK v3.4 xAC`.
+MAIN's live identity, for example `PB1 OK v3.4 0083` and `PB2 OK v3.4 0083`.
 The full MAIN counter set, including USB-only SRC/DSP counters, is available
 over USB:
 
@@ -124,7 +124,7 @@ over USB:
 
 LCD status format:
 
-- `PB1 OK v3.4 xNN` / `PB2 OK v3.4 xNN`: V1.73 CONTROL has a fresh, healthy
+- `PB1 OK v3.4 NNNN` / `PB2 OK v3.4 NNNN`: V1.73 CONTROL has a fresh, healthy
   snapshot from a V3.4 MAIN and has completed that MAIN's identity query.
 - `PB1 OK` / `PB2 OK`: fresh, healthy snapshot from an older MAIN that does not
   support the identity reply yet, or identity has not completed yet.
@@ -287,9 +287,10 @@ Current non-hardware verification snapshot:
 
 - V3.4/V1.73 FIELD-10 focused regressions: `2 passed`
 - V3.4/V1.73 focused bug/regression set: `95 passed, 3 xfailed`
-- full simulator gate: `1655 passed, 2 skipped, 3 xfailed, 7 warnings`
-- 30-minute exploratory hunt against MAIN V3.4 rev `0xAC` + CONTROL V1.73: no
-  live wrong coefficient image and no unreconciled HIGH/MEDIUM safety finding
+- full non-hardware gate: `1728 passed, 20 skipped, 3 xfailed`
+- 1-hour exploratory hunt and targeted replay triage against MAIN V3.4 rev
+  `0x0083` + CONTROL V1.73: no live wrong coefficient image and no
+  unreconciled HIGH/MEDIUM safety finding
 
 Hardware runbook:
 
