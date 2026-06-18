@@ -674,13 +674,13 @@ class Chain:
         This models a configured EP1 transaction at the firmware
         dispatcher boundary rather than emulating command semantics in
         Python: the rust facade stages the EP1 OUT BDT/data buffer,
-        invokes ``main_usb_service_3a26`` twice, and returns the EP1 IN
+        invokes ``usb_hid_dispatch_out_report_if_ready`` twice, and returns the EP1 IN
         data buffer.  The second tuple element is the number of observed
         entries into ``hid_command_dispatch``.
         """
         report = [int(b) & 0xFF for b in payload]
         main_usb_service_pc = _main_symbol_for_hex(
-            self._main_hex_path, "main_usb_service_3a26", 0x3436
+            self._main_hex_path, "usb_hid_dispatch_out_report_if_ready", 0x3436
         )
         hid_command_dispatch_pc = _main_symbol_for_hex(
             self._main_hex_path, "hid_command_dispatch", 0x10AC
@@ -1173,7 +1173,7 @@ class Chain:
         looking" word like ``0x0500`` gets a clear error instead
         of an unexpected sub-threshold sample.
 
-        V3.x's ``adc_boot_gate`` (`asm:4041`) busy-waits until
+        V3.x's ``run_wake_rail_gate_and_dsp_cold_init`` (`asm:4041`) busy-waits until
         AN0 crosses ``>= 0x0236`` (runtime hysteresis
         ``0x0229/0x0228``).  Default factory seed is ``0x0300``
         (well above threshold) for both MAINs.

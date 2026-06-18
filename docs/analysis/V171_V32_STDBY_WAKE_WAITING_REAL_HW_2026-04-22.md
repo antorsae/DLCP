@@ -61,7 +61,7 @@ sentinel-clearing `BF/05/07/03/06/1D` burst.  That was true for the
 older wake path, but it is no longer the best explanation for the
 current canonical source.
 
-Current `V3.2` `adc_boot_gate` now does all of the following:
+Current `V3.2` `run_wake_rail_gate_and_dsp_cold_init` now does all of the following:
 
 - quiesces the UART before the long wake-time blind window
 - re-arms TX before wake-time housekeeping traffic

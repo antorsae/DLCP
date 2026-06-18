@@ -87,7 +87,7 @@ and [`docs/IMPL_V171_V32_BUG_LEDGER.md`](IMPL_V171_V32_BUG_LEDGER.md).
   in the data byte's low nibble; consumed by the V1.71 CONTROL
   Diagnostics screen
 - pop-free flash entry — the HID `cmd 0x40` re-flash trigger now
-  routes through `flash_entry_quiet_shutdown` (DSP digital mute,
+  routes through `flash_entry_mute_and_reset` (DSP digital mute,
   secondary-device rail drop, graceful LAT pin drop, 100 ms timer3
   settle) before the bootloader-entry `RESET`.  Suppresses the
   audible POP that pre-V3.2 builds emit at re-flash time.  See

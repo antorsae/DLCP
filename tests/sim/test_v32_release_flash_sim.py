@@ -804,7 +804,7 @@ def test_v32_release_flash_sim_inject_preset_broadcast_during_xact_gate_does_not
         # ---- Step 2: Inject CONTROL preset broadcast for OPPOSITE preset ----
         # The firmware's preset_select_handler (asm:9525) reads
         # filename_dirty_flags.6 first; if set, it BRA's to
-        # preset_select_handler_done without storing the target or
+        # preset_select_handler__return_to_parser without storing the target or
         # toggling preset.  Without the gate, the request would call
         # preset_load_filename which clobbers RAM 0x2C0..0x2DD with
         # the incoming preset's stored EEPROM filename -- corrupting

@@ -143,7 +143,7 @@ pub struct Chain {
     /// more master cores via `couple_tas3108`.  Phase-3.5
     /// uses these to ACK V3.1 MAIN's `dsp_ping` and
     /// `volume_dsp_write` so the firmware advances past
-    /// `wait_bf_clear_loop` instead of spin-retrying.
+    /// `wait_bf_clear_bounded__poll_until_bf_clear` instead of spin-retrying.
     pub tas3108_slaves: Vec<Tas3108>,
     /// (master_core, slave_idx) coupling list parallel to
     /// `pinnet.i2c`.  After each `execute_core_step`, the

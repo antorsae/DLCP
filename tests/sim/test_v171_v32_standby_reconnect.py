@@ -9,11 +9,11 @@ The field failure for the current recommended pair was:
 
 This file pins the MAIN-side hardening that fixes that path:
 
-* `adc_boot_gate` must quiesce the UART before the long wake delays,
+* `run_wake_rail_gate_and_dsp_cold_init` must quiesce the UART before the long wake delays,
   then re-run the cold-boot UART init before resuming traffic.
 * MAIN's OERR recovery must drain the 2-byte hardware FIFO before
   re-enabling CREN.
-* `adc_boot_gate_exit` must re-emit the `B0/03/01` WAKE broadcast post-gate
+* `adc_boot_gate__start_dsp_cold_init` must re-emit the `B0/03/01` WAKE broadcast post-gate
   so a downstream MAIN that received only the truncated `B0/03` from this
   MAIN's pre-gate forward (because `uart_quiesce_for_wake` killed TX before
   byte 3 hit the wire) gets a complete frame and can dispatch
@@ -51,33 +51,33 @@ pytestmark = pytest.mark.dual_supported
 def test_v32_source_hardens_wake_uart_path() -> None:
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
 
-    adc_start = text.find("adc_boot_gate:")
+    adc_start = text.find("run_wake_rail_gate_and_dsp_cold_init:")
     adc_end = text.find("flash_write:", adc_start)
-    assert adc_start != -1 and adc_end > adc_start, "adc_boot_gate body not found"
+    assert adc_start != -1 and adc_end > adc_start, "run_wake_rail_gate_and_dsp_cold_init body not found"
     adc_body = text[adc_start:adc_end]
     for token in (
         "call        uart_quiesce_for_wake, 0x0",
-        "call        main_uart_tx_only_service, 0x0",
+        "call        uart_wake_reconfigure_tx_only_and_resync_parser, 0x0",
         "call        cmd_dispatch_gated, 0x0",
         "call        send_status_burst, 0x0",
-        "call        main_uart_service_4938, 0x0",
+        "call        uart_reconfigure_and_resync_parser, 0x0",
         "bsf         PIE1, 5, ACCESS",
     ):
-        assert token in adc_body, f"adc_boot_gate missing {token!r}"
-    assert adc_body.index("call        main_uart_tx_only_service, 0x0") < adc_body.index(
+        assert token in adc_body, f"run_wake_rail_gate_and_dsp_cold_init missing {token!r}"
+    assert adc_body.index("call        uart_wake_reconfigure_tx_only_and_resync_parser, 0x0") < adc_body.index(
         "call        cmd_dispatch_gated, 0x0"
     ), "wake TX-only rearm must happen before cmd_dispatch_gated can emit BF/08"
     assert adc_body.index("call        cmd_dispatch_gated, 0x0") < adc_body.index(
         "call        send_status_burst, 0x0"
     ), "wake-time state reconciliation must finish before MAIN advertises sentinel-clearing status"
     assert adc_body.index("call        send_status_burst, 0x0") < adc_body.index(
-        "call        main_uart_service_4938, 0x0"
+        "call        uart_reconfigure_and_resync_parser, 0x0"
     ), "full UART RX rearm must happen after the post-wake sentinel burst"
 
 
 def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
-    """Bug #45 H2 source-contract: adc_boot_gate_exit must re-emit
-    `B0/03/01` AFTER `main_uart_tx_only_service` re-arms TX and BEFORE
+    """Bug #45 H2 source-contract: adc_boot_gate__start_dsp_cold_init must re-emit
+    `B0/03/01` AFTER `uart_wake_reconfigure_tx_only_and_resync_parser` re-arms TX and BEFORE
     `cmd_dispatch_gated` runs.  Without this, a downstream MAIN that
     only received the truncated `B0/03` from this MAIN's pre-gate
     forward (because uart_quiesce_for_wake at gate entry killed the TX
@@ -93,14 +93,14 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
     import re as _re
 
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    exit_start = text.find("adc_boot_gate_exit:")
+    exit_start = text.find("adc_boot_gate__start_dsp_cold_init:")
     exit_end = text.find("flash_write:", exit_start)
-    assert exit_start != -1 and exit_end > exit_start, "adc_boot_gate_exit body not found"
+    assert exit_start != -1 and exit_end > exit_start, "adc_boot_gate__start_dsp_cold_init body not found"
     body = text[exit_start:exit_end]
-    rearm_match = _re.search(r"call\s+main_uart_tx_only_service\s*,\s*0x0", body)
+    rearm_match = _re.search(r"call\s+uart_wake_reconfigure_tx_only_and_resync_parser\s*,\s*0x0", body)
     dispatch_match = _re.search(r"call\s+cmd_dispatch_gated\s*,\s*0x0", body)
-    assert rearm_match is not None, "missing call to main_uart_tx_only_service in adc_boot_gate_exit"
-    assert dispatch_match is not None, "missing call to cmd_dispatch_gated in adc_boot_gate_exit"
+    assert rearm_match is not None, "missing call to uart_wake_reconfigure_tx_only_and_resync_parser in adc_boot_gate__start_dsp_cold_init"
+    assert dispatch_match is not None, "missing call to cmd_dispatch_gated in adc_boot_gate__start_dsp_cold_init"
     rebroadcast = body[rearm_match.start():dispatch_match.start()]
 
     # Pair each movlw with its uart_tx_byte_blocking call, in order.
@@ -125,7 +125,7 @@ def test_v32_source_re_emits_wake_broadcast_post_gate() -> None:
     pairs = pair_pattern.findall(rebroadcast)
     assert [b.upper() for b in pairs[:3]] == ["B0", "03", "01"], (
         "Bug #45 H2 re-emit: expected three (movlw, call uart_tx_byte_blocking) "
-        f"pairs in order B0/03/01 between main_uart_tx_only_service and "
+        f"pairs in order B0/03/01 between uart_wake_reconfigure_tx_only_and_resync_parser and "
         f"cmd_dispatch_gated; got {pairs!r}"
     )
 
@@ -146,8 +146,8 @@ def test_v32_duplicate_standby_preserves_pending_shutdown_event() -> None:
     assert handler_start >= 0 and handler_end > handler_start, "standby_request_handler body not found"
     body = text[handler_start:handler_end]
 
-    closed_start = body.find("flow_main_uart_service_1be6_1ca2:")
-    closed_end = body.find("flow_main_uart_service_1be6_1ca6:", closed_start)
+    closed_start = body.find("uart_link_parser__standby_duplicate_preserve_pending_event:")
+    closed_end = body.find("uart_link_parser__standby_close_gate_if_event_pending:", closed_start)
     assert closed_start >= 0 and closed_end > closed_start, "closed-gate duplicate-standby branch not found"
     closed_branch = body[closed_start:closed_end]
 
@@ -204,11 +204,11 @@ def test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit() -> None:
 
     Three firmware fixes are gated by this test:
 
-      * §C (V3.2 MAIN, asm:4055-4081): `adc_boot_gate` is bounded by a
+      * §C (V3.2 MAIN, asm:4055-4081): `run_wake_rail_gate_and_dsp_cold_init` is bounded by a
         ~50-iter timeout so a depressed AN0 cannot pin a MAIN inside
         the polling loop indefinitely.
 
-      * H2 (V3.2 MAIN, asm:4119-4138): `adc_boot_gate_exit` re-emits
+      * H2 (V3.2 MAIN, asm:4119-4138): `adc_boot_gate__start_dsp_cold_init` re-emits
         the `B0/03/01` WAKE broadcast post-gate so a downstream MAIN
         that received only the truncated `B0/03` from this MAIN's
         pre-gate forward (because `uart_quiesce_for_wake` killed TX
@@ -340,7 +340,7 @@ def test_v32_source_oerr_recover_uses_full_fifo_drain() -> None:
     Bug #45 H2 source-contract + dynamic regression tests were added."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     isr_start = text.find("uart_oerr_recover:")
-    isr_end = text.find("flow_main_isr_dispatch_3b8c:", isr_start)
+    isr_end = text.find("main_isr_dispatch__restore_fsr2_and_return:", isr_start)
     assert isr_start != -1 and isr_end > isr_start, "uart_oerr_recover body not found"
     isr_body = text[isr_start:isr_end]
     assert "call        uart_soft_recover_full, 0x0" in isr_body, (

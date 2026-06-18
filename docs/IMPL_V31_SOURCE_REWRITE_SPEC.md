@@ -71,7 +71,7 @@ app_entry:              ; 0x1000 — boot exit target
 isr_high_entry:         ; 0x1008 — HIGH-PRIORITY ISR (all interrupts)
     movff FSR2L, isr_save_fsr2l
     movff FSR2H, isr_save_fsr2h
-    call  main_isr_dispatch, 0x1
+    call  isr_high_priority_dispatch, 0x1
 app_init:               ; 0x1014 — shifts freely
     goto main_flash_service
 isr_low_stub:           ; 0x1018 — LOW-PRIORITY ISR (dead, safety stub)

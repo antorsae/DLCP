@@ -68,18 +68,18 @@ Explicit user decisions:
 - `_tas30()` at `tests/sim/test_v34_v173_field_repros_20260613.py:132` reads
   the last direct `0x30` payload. Actual TAS register bytes are available via
   `read_main_dsp_reg`.
-- `src/dlcp_fw/asm/dlcp_main_v34.asm:4282` in `adc_boot_gate` writes zero TAS
-  `0x30`, then calls `main_core_service_4574`, the legacy blocking preset walk.
+- `src/dlcp_fw/asm/dlcp_main_v34.asm:4282` in `run_wake_rail_gate_and_dsp_cold_init` writes zero TAS
+  `0x30`, then calls `preset_replay_selected_table_blocking`, the legacy blocking preset walk.
 - `src/dlcp_fw/asm/dlcp_main_v34.asm:4306-4312` sets `event_flags.bit1`,
   bit3, and bit4 together, then calls `cmd_dispatch_gated`.
 - In `cmd_dispatch_gated`, bit1 route mutation runs early, bit3/volume is
   serviced before reconnect/bit6/bit4, and bit4 route sync calls
-  `main_i2c_service_2100` near the end.
-- `main_i2c_service_2100` emits overlapping TAS bursts; the isolated session-5
+  `i2c_apply_channel_route_sync_burst` near the end.
+- `i2c_apply_channel_route_sync_burst` emits overlapping TAS bursts; the isolated session-5
   delta includes `0x28..0x37`, which overwrites preset A's `0x37`.
 - The FIELD-5 validated async path exists at `preset_job_apply_i2c_entry` plus
   `preset_table_apply_entry_core_async`; it is physical-source, header-checked,
-  and NACK-aware. The legacy `main_core_service_4574` path is not.
+  and NACK-aware. The legacy `preset_replay_selected_table_blocking` path is not.
 
 Observed repro facts:
 
@@ -114,15 +114,15 @@ Missing:
   mismatch, and timeout.
 - A reconnect behavioral repro.
 - Selected-preset coverage for both A and B, not only preset A.
-- A V3.4-specific or parameterized `main_i2c_service_2100` table-shape guard.
+- A V3.4-specific or parameterized `i2c_apply_channel_route_sync_burst` table-shape guard.
 
 Original risks:
 
 - Calling full `cmd_dispatch_gated` to "run route sync" is unsafe because it can
   service bit3 volume and bit6 coefficient work before bit4.
-- Calling plain `main_core_service_4574` after route sync is not enough because
+- Calling plain `preset_replay_selected_table_blocking` after route sync is not enough because
   it lacks FIELD-5 validation and ACK/NACK retry.
-- Moving or factoring `main_i2c_service_2100` requires an explicit clobber
+- Moving or factoring `i2c_apply_channel_route_sync_burst` requires an explicit clobber
   contract: TBLPTR/TABLAT/FSR1/FSR2/W/STATUS are not preserved; reload BSR
   before later BANKED accesses.
 - A second preset walker will likely fail the 10-byte free-space floor and is
@@ -154,10 +154,10 @@ Code shape:
   tail when required.
 - The reconnect/lifecycle owner (`active_flags.bit7`) now performs: cancel async
   APPLY, write TAS volume zero, drain bit1, drain bit4, clear bit6, run
-  `main_core_service_4574`, and only after success allow normal volume dispatch.
-- `main_core_service_4574` now uses the FIELD-5 validated
+  `preset_replay_selected_table_blocking`, and only after success allow normal volume dispatch.
+- `preset_replay_selected_table_blocking` now uses the FIELD-5 validated
   physical-source/header/NACK-aware row writer (`preset_job_apply_i2c_entry`)
-  instead of the legacy `main_i2c_service_381c` coefficient writer.
+  instead of the legacy `preset_table_apply_entry_legacy_blocking` coefficient writer.
 - Wake does not duplicate the lifecycle writer.  It writes TAS volume zero,
   sets bit1/bit4, arms `active_flags.bit7`, and calls `cmd_dispatch_gated` to
   enter the lifecycle owner.  This is the deliberate, guarded lifecycle bypass:
@@ -290,13 +290,13 @@ Implement an explicit lifecycle order for wake and reconnect:
 
 1. Keep actual TAS volume zero and defer any nonzero volume restore.
 2. Drain the route mutation/sync work while muted in the existing semantic
-   order: bit1 route mutation first, bit4 `main_i2c_service_2100` second.
+   order: bit1 route mutation first, bit4 `i2c_apply_channel_route_sync_burst` second.
 3. Use one shared owner for bit1/bit4 route drain. Prefer factoring/jumping to
    existing dispatcher bodies/tails so normal dispatch and lifecycle
    wake/reconnect use the same code. Do not copy the route ladder or bit4 tail
    unless measured size evidence proves it is smaller and safer; if copied, list
    every copied side effect explicitly.
-4. Preserve bit4 tail side effects currently adjacent to `main_i2c_service_2100`
+4. Preserve bit4 tail side effects currently adjacent to `i2c_apply_channel_route_sync_burst`
    (`bcf event_flags.bit4`, filename dirty bit1, `stock_0C1=0x05`, and any
    required USB/timer side effects) or prove they are inapplicable at the new
    call site.
@@ -304,7 +304,7 @@ Implement an explicit lifecycle order for wake and reconnect:
    selected-preset writer. If bit3/bit6 are pending, save/defer/mask them under
    the transition table below.
 6. Reload BSR and any required scratch after moved/factored route-sync calls;
-   no live TBLPTR/FSR/STATUS assumptions may cross `main_i2c_service_2100`.
+   no live TBLPTR/FSR/STATUS assumptions may cross `i2c_apply_channel_route_sync_burst`.
 
 Do not implement this by calling full `cmd_dispatch_gated` and hoping mute
 state routes around volume; the dispatcher order is the current bug surface.
@@ -318,7 +318,7 @@ The final selected-preset writer must be validated, NACK-aware, and shared:
   shapes:
   - factor the existing `preset_job_apply_i2c_entry`/core into a callable row
     step used by both async APPLY and lifecycle reassert; or
-  - replace/factor `main_core_service_4574` into the validated physical-source
+  - replace/factor `preset_replay_selected_table_blocking` into the validated physical-source
     walker so there is only one full-table walk implementation.
 - Explicitly forbid adding another loop over the `0x60` preset rows.
 - Use existing bank2 preset-job cursor/index fields as scratch only when the
@@ -331,7 +331,7 @@ The final selected-preset writer must be validated, NACK-aware, and shared:
   exit with an explicit DSP fault/status and no volume-restore path until a
   later scheduled validated reassert succeeds. Do not allow "state idle, volume
   zero" as the whole recovery contract.
-- Plain `main_core_service_4574` may still exist for legacy contexts only if it
+- Plain `preset_replay_selected_table_blocking` may still exist for legacy contexts only if it
   cannot be reached as the final FIELD-6-DSP safety writer.
 
 If this shared validated path cannot fit the 10-byte floor, stop for size
@@ -351,7 +351,7 @@ Wake and reconnect must share this ownership model:
 
 Additional requirements:
 
-- `adc_boot_gate`: drain route work while muted, then validated selected-preset
+- `run_wake_rail_gate_and_dsp_cold_init`: drain route work while muted, then validated selected-preset
   reassert, then allow volume restore/status.
 - `active_flags.bit7` reconnect branch: use the same ownership order and the
   same final writer; do not leave bit4/bit6 work to run after the final writer.
@@ -367,16 +367,16 @@ Add/update structural tests:
 - At named lifecycle helper/label boundaries, prove the happens-before contract:
   route sync before validated final writer; no coefficient writer after final
   writer before nonzero volume restore; no duplicated preset-table full walk.
-- No wake/reconnect `main_i2c_service_2100` may run after the final validated
+- No wake/reconnect `i2c_apply_channel_route_sync_burst` may run after the final validated
   preset writer unless another validated writer runs before any nonzero TAS
   `0x30`.
 - Broaden this to all post-final-preset TAS coefficient writers: bit4
-  `main_i2c_service_2100`, bit6/legacy `main_i2c_service_381c`, and direct
+  `i2c_apply_channel_route_sync_burst`, bit6/legacy `preset_table_apply_entry_legacy_blocking`, and direct
   volume restore ordering.
 - Pin no TAS `0x37` special case and no duplicated preset-table logic.
 - Add a duplication guard for route-drain fragments: copied route ladder/table
   fragments require explicit measured size justification in the IMPL update.
-- Refactor the V3.2 `main_i2c_service_2100` table-shape test into a
+- Refactor the V3.2 `i2c_apply_channel_route_sync_burst` table-shape test into a
   parameterized V3.2/V3.4 guard with one expected-table definition, rather than
   cloning a sibling test with duplicate expectations.
 - Because Python lacks ordered cross-subaddress TAS transaction logs, runtime
@@ -610,7 +610,7 @@ Second review wave completed with 4 agents:
 
 High/Medium findings addressed:
 
-- Plain `main_core_service_4574` fallback is not validated or NACK-aware.
+- Plain `preset_replay_selected_table_blocking` fallback is not validated or NACK-aware.
   WU3 now requires a shared FIELD-5-style validated lifecycle reassert.
 - A second preset-table walker is too large and architecturally wrong. WU3 now
   forbids another `0x60`-row loop and requires factoring/reuse.

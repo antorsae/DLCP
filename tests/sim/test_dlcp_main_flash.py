@@ -655,17 +655,17 @@ def test_v32_cmd40_bootloader_entry_preserves_saved_settings_in_source() -> None
     """BUG-SETTINGS-01: HID cmd 0x40 must not factory-reset MAIN
     settings before entering the bootloader."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = text.index("flow_hid_command_dispatch_13d0:")
-    end = text.index("goto        flash_entry_quiet_shutdown", start)
+    start = text.index("hid_command_dispatch__enter_fw_update_boot_marker:")
+    end = text.index("goto        flash_entry_mute_and_reset", start)
     body = text[start:end]
 
-    assert "main_core_service_265c" not in body
+    assert "persist_dirty_runtime_state_to_eeprom" not in body
     assert "computed_volume" not in body
     assert "input_select" not in body
     assert "ram_0x0BD" not in body
     assert "event_flags" not in body
     assert "setf        ram_0x007" in body
-    assert "main_flash_service_46de" in body
+    assert "eeprom_write_byte_if_changed" in body
 
 
 def test_build_v32_release_rolls_back_source_and_hex_on_assemble_failure(

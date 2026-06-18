@@ -43,7 +43,7 @@ A single table-driven copier replaces 15 inline copy runs.  Call shape
 ```
 
 - header: physical high bytes; `srcPage == 0xEE` switches the pair source
-  to EEPROM via `eeprom_read_byte_W` (S2) — used by the boot settings
+  to EEPROM via `eeprom_read_byte_at_w` (S2) — used by the boot settings
   load (13 cells incl. the 0x0D/0x14 odd forms) and the per-route trim
   load (0x10..0x13 -> 0x09B..0x09E).
 - rows: `(srcL, dstL, count)` contiguous blocks (S4); scattered singles
@@ -56,8 +56,8 @@ A single table-driven copier replaces 15 inline copy runs.  Call shape
   upper, movff-only, ISR-untouched, no stock aliasing).
 
 S3: four duplicated 4-cell movff runs factored into plain subroutines
-(`s3_coeff_stage_049`, `s3_math_stage_025`, `s3_math_stage_029`,
-`s3_adc_stage_427a`).
+(`stage_tas3108_coeff_input_scratch`, `copy_transform_shadow_to_math_operand`, `copy_math_operand_to_secondary_shadow`,
+`adc_stage_division_operands_from_sample_window`).
 
 ## Margin ledger
 
@@ -71,7 +71,7 @@ S3: four duplicated 4-cell movff runs factored into plain subroutines
 | FIELD safety/counter work through rev 0xA4 | 10 B |
 | T1 SRC4382 secondary-write table walker, rev 0xA5 | 102 B |
 | FIELD-9/FIELD-10 safety work through rev 0xAC | **14 B** |
-| T2 `main_flash_service_2bb8` pointerized HID upload copy, rev 0xAF | **70 B** |
+| T2 `fw_update_commit_hid_payload_page` pointerized HID upload copy, rev 0xAF | **70 B** |
 | T3 boot-marker EEPROM compare peephole, rev 0xB0 | **80 B** |
 | T4 direct-zero and FSR post-decrement peepholes, rev 0xB1 | **86 B** |
 | T5 channel-config `cpfseq` dirty checks, rev 0xB2 | **122 B** |
@@ -134,7 +134,7 @@ S3: four duplicated 4-cell movff runs factored into plain subroutines
 | T64 USB descriptor TBLPTR staging helper, rev 0xF2 | **596 B** |
 | T65 USB service `stock_096` update helper, rev 0xF3 | **614 B** |
 | T66 USB `stock_116` bank-store helper, rev 0xF4 | **620 B** |
-| T67 main_i2c_service_2100 bank-0 clear wrapper, rev 0xF5 | **628 B** |
+| T67 i2c_apply_channel_route_sync_burst bank-0 clear wrapper, rev 0xF5 | **628 B** |
 | T68 cmd_dispatch reg1f route-3 tail reuse, rev 0xF6 | **634 B** |
 | T69 USB `stock_0C8`/offset prelude helper, rev 0xF7 | **636 B** |
 | T70 UART TX retry tail reuse, rev 0xF8 | **642 B** |
@@ -152,35 +152,35 @@ S3: four duplicated 4-cell movff runs factored into plain subroutines
 | T81 redundant bank-select cleanup, rev 0x0005 | **727 B** |
 | T82 math result FSR2 rewind tail share, rev 0x0006 | **731 B** |
 | T83 HID settings-upload route-bit FSR2 rebuild, rev 0x0007 | **783 B** |
-| T84 `main_i2c_service_39a6` four-byte chain-copy descriptors, rev 0x0008 | **795 B** |
-| T85 `main_i2c_service_39a6` middle four-byte chain-copy descriptor, rev 0x0009 | **801 B** |
+| T84 `i2c_emit_tas3108_coeff_from_staged_float` four-byte chain-copy descriptors, rev 0x0008 | **795 B** |
+| T85 `i2c_emit_tas3108_coeff_from_staged_float` middle four-byte chain-copy descriptor, rev 0x0009 | **801 B** |
 | T86 filename reply state-machine branch peepholes, rev 0x000A | **813 B** |
 | T87 math counted-call repeat helpers, rev 0x000B | **827 B** |
 | T88 volume-DSP four-byte chain-copy descriptors, rev 0x000C | **839 B** |
 | T89 core 38a2 + volume mirror chain-copy descriptors, rev 0x000D | **863 B** |
 | T90 math operand near chain-copy descriptors, rev 0x000E | **919 B** |
 | T91 coeff staging chain-copy descriptors, rev 0x000F | **931 B** |
-| T92 `main_core_service_297e` near chain-copy descriptors, rev 0x0010 | **955 B** |
+| T92 `float32_exp_limit1024_in_place` near chain-copy descriptors, rev 0x0010 | **955 B** |
 | T93 math result helper chain-copy descriptors, rev 0x0011 | **985 B** |
 | T94 S3 helper-body chain-copy descriptors, rev 0x0012 | **1005 B** |
 | T95 trim mirrors + core 3398 chain-copy descriptors, rev 0x0013 | **1035 B** |
 | T96 flash-write address snapshot chain-copy descriptor, rev 0x0014 | **1043 B** |
-| T97 `main_core_service_2abc` final-save chain-copy descriptor, rev 0x0015 | **1051 B** |
+| T97 `float32_multiply_primary_by_secondary_in_place` final-save chain-copy descriptor, rev 0x0015 | **1051 B** |
 | T98 core 3e0a + EEPROM writeback chain-copy descriptors, rev 0x0016 | **1059 B** |
 | T100 reachable call/goto conversions, final accepted rev 0x001E | **1081 B** |
 | T101 route-sync mailbox helper reuse, rev 0x001F | **1091 B** |
-| T102 `main_core_service_4080` duplicate `stock_119` store removal, rev 0x0020 | **1095 B** |
-| T103 `main_core_service_24c2` decrement/mask helper, rev 0x0021 | **1099 B** |
+| T102 `usb_ep0_arm_out_pingpong_bd` duplicate `stock_119` store removal, rev 0x0020 | **1095 B** |
+| T103 `float32_add_secondary_to_primary_in_place` decrement/mask helper, rev 0x0021 | **1099 B** |
 | T104 I2C `stock_006` STOP helper, rev 0x0022 | **1101 B** |
 | T105 cmd26 filename revision bit-test guards, rev 0x0023 | **1105 B** |
 | T106 USB endpoint completion-marker FSR0 helper, rev 0x0024 | **1121 B** |
 | T107 ADC division compare/subtract helper, rev 0x0025 | **1131 B** |
 | T108 USB descriptor dirty-return tail, rev 0x0026 | **1135 B** |
-| T109 `fsr2_from_stock072073` helper + standby `rcall`, rev 0x0027 | **1163 B** |
-| T110 `main_core_service_4080` FSR2 rewind peephole, rev 0x0028 | **1167 B** |
+| T109 `load_fsr2_from_target_ptr` helper + standby `rcall`, rev 0x0027 | **1163 B** |
+| T110 `usb_ep0_arm_out_pingpong_bd` FSR2 rewind peephole, rev 0x0028 | **1167 B** |
 | T111 firmware-update init clear prep reuse, rev 0x0029 | **1175 B** |
-| T112 USB filename compare + `setup_fsr2_page_1` compact forms, rev 0x002A | **1187 B** |
-| T113 `carry_propagate_004_006` helper, rev 0x002B | **1189 B** |
+| T112 USB filename compare + `setup_fsr2_page1_from_w` compact forms, rev 0x002A | **1187 B** |
+| T113 `propagate_carry_to_u32_scratch_high24` helper, rev 0x002B | **1189 B** |
 | T114 settings source clamp W-literal reuse, rev 0x002C | **1195 B** |
 | T115 trim clamp W-literal reuse, rev 0x002D | **1201 B** |
 | T116 cumulative XOR compares in UART route/SRC index, rev 0x002E | **1205 B** |
@@ -191,7 +191,7 @@ S3: four duplicated 4-cell movff runs factored into plain subroutines
 | T121 high-window `chain_copy` `rcall` trampoline, rev 0x0033 | **1275 B** |
 | T122 low-window `chain_copy` `rcall` trampoline, rev 0x0034 | **1289 B** |
 | T123 `cmd26` filename source/range peepholes, rev 0x0035 | **1297 B** |
-| T124 `main_core_service_30d8` zero-test simplification, rev 0x0036 | **1329 B** |
+| T124 `float32_pack_mantissa_exponent_sign` zero-test simplification, rev 0x0036 | **1329 B** |
 | T125 USB endpoint pointer/clear common tails, rev 0x0037 | **1341 B** |
 | T126 immediate fall-through branch removals, rev 0x0038 | **1351 B** |
 | T127 low-page USB descriptor dirty helper, rev 0x0039 | **1357 B** |
@@ -218,7 +218,7 @@ S3: four duplicated 4-cell movff runs factored into plain subroutines
 | T148-T180 final reclaim wave, rebuilt rev 0x0083 | **2002 B** |
 
 Rev `0x0083` keeps the T124 scratch zero-fanout removal but restores the live
-`main_core_service_30d8` final exponent merge (`stock_007 -> stock_006`).  The
+`float32_pack_mantissa_exponent_sign` final exponent merge (`stock_007 -> stock_006`).  The
 bad rev computed zero TAS3108 volume coefficients after unmute/retry paths; the
 fixed temp probe restores the expected `0x30` payload `0014408f`.
 
@@ -231,9 +231,9 @@ work consumed most of that reserve and the pre-T2 rev `0xAC` line sat at
 
 Scope:
 
-- `main_i2c_service_32f8`: the ordered SRC4382/cfg71 cold-init write stream
+- `i2c_secondary_apply_wake_init_table`: the ordered SRC4382/cfg71 cold-init write stream
   was converted from 16 inline `(value -> stock_006, register -> write)`
-  blocks to `main_i2c_service_32f8_table` plus `i2c_secondary_write_rows`.
+  blocks to `i2c_secondary_wake_init_table` plus `i2c_secondary_write_table_rows`.
 - `hw_standby_shutdown`: the three rail-drop writes
   `(0x00,0x1B)`, `(0x00,0x1C)`, `(0x00,0x1D)` reuse the same row walker via
   `hw_standby_shutdown_i2c_table`.
@@ -251,12 +251,12 @@ Measured result:
 
 Scope:
 
-- `main_flash_service_2bb8` used to recompute both source and destination FSR
+- `fw_update_commit_hid_payload_page` used to recompute both source and destination FSR
   pointers for every byte in the 20-byte HID/programming payload copy.
 - T2 stages the two initial pointers once, keeps the legacy `stock_11B` source
   skew (`0x011E` when zero, `0x011C` when nonzero), then copies with
   `movff POSTINC2, POSTINC1` and a 20-byte counter in `stock_01F`.
-- A final exact-size cleanup uses the existing generated `stock_11E_b1_phys`
+- A final exact-size cleanup uses the existing generated `usb_hid_out_arg3_phys`
   alias to stage the default source pointer with `lfsr` instead of literal
   `FSR2L`/`FSR2H` writes.
 - No new descriptor stream or table was introduced by this batch; existing
@@ -335,7 +335,7 @@ threshold, so no new exploratory run was required for T2.
 
 Scope:
 
-- `main_i2c_service_355c` accepted either EEPROM boot marker `0x77` or `0x88`
+- `boot_init_peripherals_and_enter_adc_gate` accepted either EEPROM boot marker `0x77` or `0x88`
   at `EEADR=0xFF`, but stock code reread the same EEPROM byte for the second
   comparison.
 - T3 keeps the single EEPROM read and first `xorlw 0x77`; on miss it applies
@@ -383,11 +383,11 @@ the 100-byte threshold, so no new exploratory run was required for T3.
 
 Scope:
 
-- `flow_cmd_dispatch_gated_volume_unmuted`: replace zero-copy
+- `cmd_dispatch_gated__apply_unmuted_volume_dirty`: replace zero-copy
   `movff stock_0A4 -> stock_0B0` with a direct `clrf stock_0B0`.
 - `adaptive_baud_select`: replace zero-copy `movff stock_093 -> stock_0AB`
   with a direct `clrf stock_0AB`.
-- `main_flash_service_3ce8`: replace `movlw 0x00; iorwf POSTDEC2,F`, used
+- `fw_update_signature_status_word_helper`: replace `movlw 0x00; iorwf POSTDEC2,F`, used
   only to read and post-decrement the high byte without changing it, with
   `movf POSTDEC2,F`.
 
@@ -532,7 +532,7 @@ Scope:
 - Eighteen `movff WREG, <scratch>_phys` stores whose destinations are in the
   PIC18 access-bank low window (`0x003..0x057`) were replaced with single-word
   `movwf <scratch>_acc, ACCESS`.
-- The lone remaining `movff WREG` store, `stock_0FD_b0_phys`, was intentionally
+- The lone remaining `movff WREG` store, `cmd_dispatch_hid_mailbox_enable_phys`, was intentionally
   left alone because `0x0FD` is outside the access-bank low window and would
   need a proven BSR=0 contract to become a one-word `movwf`.
 - This peephole preserves W, STATUS, BSR, and all downstream RAM values; it
@@ -581,7 +581,7 @@ PYTHONPATH=src .venv_ep0/bin/python -m pytest -q \
 
 The xfail in both focused runs is the known `chain_copy` interrupt-safety
 proof.  The T6 source contract pins the compact `movwf ..., ACCESS` shape and
-the deliberate `stock_0FD_b0_phys` exception.
+the deliberate `cmd_dispatch_hid_mailbox_enable_phys` exception.
 
 Exploratory gate status: the current continuation campaign requires one
 30-minute exploratory chain hunt every 200+ accepted bytes.  T6 adds 36 accepted
@@ -595,8 +595,8 @@ Scope:
   when W was still the live original value.
 - Replaced a few adjacent access-bank/SFR copies with `movwf` while W was still
   live: `saved_w -> SSPBUF`, `stock_017 -> stock_016`, the first
-  `stock_006 -> stock_004` copy in `main_uart_service_43a2`, and
-  `stock_011 -> stock_003` in `main_core_service_45ce`.
+  `stock_006 -> stock_004` copy in `uart_tx_ascii_hex_byte`, and
+  `stock_011 -> stock_003` in `uint8_to_float32_and_save`.
 - The later copies in those routines were left intact when intervening calls or
   arithmetic clobbered W.
 
@@ -650,8 +650,8 @@ Scope:
 
 - Removed three local `movlb 0` assertions whose only incoming paths already
   held BSR=0 and whose intervening instructions do not modify BSR:
-  `flow_main_usb_service_2f4e_2f9c`, the final `INDF2` set in
-  `main_core_service_4080`, and the second assertion in
+  `usb_sie_endpoint_pump__select_ep0_out_bd`, the final `INDF2` set in
+  `usb_ep0_arm_out_pingpong_bd`, and the second assertion in
   `i2c_timeout_skip_bus_probe`.
 - Other duplicate-looking bank assertions were kept where a join can be reached
   from a call, an EEPROM-read branch, or a bank-4 path.
@@ -710,7 +710,7 @@ Scope:
 - The `0x0C` check was kept explicitly by reloading the original opcode and
   restoring the same `cmd ^ 0x0C` W shape before the later `0x40/0x42/0x43/0x44`
   checks.
-- A direct `bc flow_hid_command_dispatch_13a2` form was rejected because PIC18
+- A direct `bc hid_command_dispatch__stage_upload_payload` form was rejected because PIC18
   conditional branches are short-range; `gpasm` failed with
   `Argument out of range (-169 not between -128 and 127)`.  The accepted shape
   uses local `bnc` over a `bra`.
@@ -814,9 +814,9 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 Scope:
 
 - Collapsed the final HID unknown-command trampoline by branching directly to
-  `flow_hid_command_dispatch_154c`.
-- Collapsed two local `main_core_service_3188` return trampolines by branching
-  directly to `flow_main_core_service_3188_324a`.
+  `hid_command_dispatch__unsupported_opcode`.
+- Collapsed two local `shift_003_006_right_clear_c` return trampolines by branching
+  directly to `usb_ep0_dispatch_hid_setup_request__return`.
 - Callable trampolines and preset-job labels were left alone; the UART parser
   join did not save code once the fall-through path was preserved.
 
@@ -866,11 +866,11 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- In `flow_main_i2c_service_27f0_2924`, the SRC4382 non-PCM random-read success
+- In `poll_src4382_route_monitor__check_scan_index3`, the SRC4382 non-PCM random-read success
   path already returns W with STATUS.Z reflecting the received byte; the helper
   clears only C before returning.
-- T12 stores W to `stock_0BF_b0` and lets the existing `bnz` consume the live Z
-  flag, removing the redundant `movf stock_0BF_b0, W`.
+- T12 stores W to `src4382_audio_format_latch_b0` and lets the existing `bnz` consume the live Z
+  flag, removing the redundant `movf src4382_audio_format_latch_b0, W`.
 - The timeout branch still exits before this path via C, so timeout behavior is
   unchanged.
 
@@ -973,11 +973,11 @@ Scope:
 - Converted four unconditional `call/rcall helper; return` tails into direct
   `goto`/`bra` tail branches:
   `wake_input_failed -> send_dsp_fault_status`,
-  `flow_cmd_dispatch_gated_1990 -> main_timer_service_48a6`,
-  `cmd_dispatch_route_sync_if_dirty -> main_timer_service_48a6`, and
+  `cmd_dispatch_gated__input_route_write_complete -> timer0_rearm_50ms_heartbeat`,
+  `cmd_dispatch_route_sync_if_dirty -> timer0_rearm_50ms_heartbeat`, and
   `filename_read_source_eep -> eeprom_read_byte`.
-- Rejected two nearby conditional-call tails (`usb_mailbox_service_05` and
-  `main_core_service_48fe`) because the skip path still needs the local
+- Rejected two nearby conditional-call tails (`usb_hid_mailbox_stage_selector5_if_enabled` and
+  `usb_ep1_configure_if_enabled`) because the skip path still needs the local
   `return`; replacing the call with a branch would be break-even.
 
 Measured result:
@@ -1076,7 +1076,7 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Removed `bra flow_cmd_dispatch_gated_19d6` where the target label was the
+- Removed `bra cmd_dispatch_gated__select_applied_route_trim` where the target label was the
   immediately following line after the volume-unmuted zero peepholes.
 - Nearby branch-to-return hits were rejected because they are loop or
   conditional-exit idioms and do not reduce code size.
@@ -1129,7 +1129,7 @@ Scope:
   cmd 0x03 mute-on/off refresh staging, SRC4382 mute-status refresh staging,
   and the two bank-4 core-service flag staging blocks.
 - Replaced `movlw 0; movwf POSTINC2; movwf POSTDEC2` in
-  `main_flash_service_3ce8` with direct `clrf POSTINC2; clrf POSTDEC2`.
+  `fw_update_signature_status_word_helper` with direct `clrf POSTINC2; clrf POSTDEC2`.
 - The source contract bounds each changed routine to its real local label range
   so unrelated later uses of the scratch registers do not mask a regression.
 
@@ -1177,14 +1177,14 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- `flow_main_core_service_2328_2380` materializes the HID/status payload byte
+- `stage_hid_ep1_in_report_from_selector__stage_selector5_status_snapshot` materializes the HID/status payload byte
   fanout from `active_flags.bit4` and bits 0..5 of `stock_0A4`.
 - T18 keeps `stock_163` as a direct `clrf`/conditional-`incf` boolean store.
 - The six `stock_0A4` bit outputs (`stock_164`, `stock_165`, `stock_166`,
   `stock_168`, `stock_169`, `stock_16A`) now copy `stock_0A4` once into
   access scratch `stock_006`, then use `rrcf` to move each source bit into C
   and `clrf`/`rlcf` to write the destination byte as 0 or 1.
-- BSR remains bank 1 across the fanout; `stock_006_acc` is access-bank scratch
+- BSR remains bank 1 across the fanout; `status_addr_high_or_i2c_payload_scratch_byte` is access-bank scratch
   and the following `chain_copy` call does not consume incoming STATUS.
 
 Measured result:
@@ -1237,7 +1237,7 @@ Scope:
   clearing GIE for the PIC18 EEPROM unlock/write window.
 - T19 replaced the literal `movlw 0; btfsc INTCON.GIE; movlw 1; movwf
   stock_006` shape with `clrf stock_006; btfsc INTCON.GIE; incf stock_006`.
-- The following unlock helper (`main_flash_service_4406`) writes only EECON2
+- The following unlock helper (`nvm_unlock_and_set_wr`) writes only EECON2
   and EECON1.WR before returning; it does not consume incoming STATUS.
 
 Measured result:
@@ -1285,11 +1285,11 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 Scope:
 
 - `cmd03_mute_on_handler` already owned the common user-mute vs forced-mute
-  xor/Z-test sequence at `flow_main_uart_service_1be6_1cc4`.
+  xor/Z-test sequence at `uart_link_parser__mute_dirty_if_user_shadow_differs`.
 - `cmd03_mute_off_apply` open-coded the same true-branch tail as
   `xorwf stock_005; bnz dirty; bra clean`.
-- T20 keeps the false branch shared through `flow_main_uart_service_1be6_1cc2`
-  and changes the true branch to `movlw 1; bra flow_main_uart_service_1be6_1cc4`.
+- T20 keeps the false branch shared through `uart_link_parser__stage_zero_mute_compare_value`
+  and changes the true branch to `movlw 1; bra uart_link_parser__mute_dirty_if_user_shadow_differs`.
 
 Measured result:
 
@@ -1337,7 +1337,7 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 Attempted scope:
 
 - Factored the duplicated seven-word preset-table cursor initialization in
-  `main_core_service_4574` and `preset_job_holding` into
+  `preset_replay_selected_table_blocking` and `preset_job_holding` into
   `preset_job_stage_active_table_bsr2`.
 - The helper was in `rcall` reach from both users and built cleanly at rev
   `0xC2`, with margin temporarily increasing to 314 bytes.
@@ -1359,13 +1359,13 @@ Rejection:
 
 Scope:
 
-- Added `flash_addr_setup_page_c0_0300`, which wraps the existing
-  `flash_addr_setup_from_82_83` helper plus the repeated
+- Added `fw_update_stage_flash_page_window`, which wraps the existing
+  `fw_update_stage_flash_addr_from_cursor` helper plus the repeated
   `stock_007:008=0x00C0`, `stock_009=0`, `stock_00A=0x03` page-count setup.
-  `main_flash_service_2bb8` now uses it before the initial `flash_read` and
+  `fw_update_commit_hid_payload_page` now uses it before the initial `flash_read` and
   before the final `flash_write`.
 - Added `usb_clear_uep1_7`, shared by USB reset/reinit paths
-  `main_usb_service_40d6` and `main_usb_service_41fe`.
+  `usb_bus_reset_reinitialize` and `usb_apply_set_configuration`.
 - The alias block was refreshed with `scripts/check_ram_access_safety.py
   --target main-v34 --fix-aliases`; RAM-bank safety then passed cleanly.
 
@@ -1457,7 +1457,7 @@ this gate.
 
 Scope:
 
-- Added local `fw_update_tx_status_buffer_019a` in `fw_update_relay`.
+- Added local `fw_update_tx_status_text_transmit` in `fw_update_relay`.
 - Replaced the two identical `stock_019:stock_018 = 0x019A` staging blocks
   plus `uart_tx_block_from_buffer` calls with `rcall`s to the helper.
 - The helper ends with `goto uart_tx_block_from_buffer`, so the UART helper
@@ -1507,10 +1507,10 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added local `flash_config_write_tablat_w` inside
+- Added local `config_flash_write_tablat_byte` inside
   `flash_write_with_gie_off`.
 - Kept the two CONFIG TBLPTR setup sequences inline, but shared the duplicated
-  `TABLAT` stage, `EECON1=0xC4`, `main_flash_service_4406`, and WR-bit wait.
+  `TABLAT` stage, `EECON1=0xC4`, `nvm_unlock_and_set_wr`, and WR-bit wait.
 - GIE behavior remains the stock/known BUG-M7 contract: the routine still
   clears GIE at entry and relies on the caller-side restore after return.
 
@@ -1605,10 +1605,10 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added midpoint helper `timer3_reload_f830` near `main_usb_service_41fe`.
+- Added midpoint helper `timer3_reload_high_speed_tick_preload` near `usb_apply_set_configuration`.
 - Replaced the three exact Timer3 `0xF830` preload sites:
   the Timer3 ISR holding tick, the low-speed branch of
-  `timer3_blocking_delay`, and `main_timer_service_477a`.
+  `timer3_blocking_delay`, and `timer3_arm_interrupt_countdown`.
 - Kept the oscillator-specific `0xFC18` preload inline.  The shared helper
   leaves `W=0x30`; the blocking-delay low-speed path branches around its
   existing common `TMR3L` store so it does not perform a duplicate low-byte
@@ -1708,12 +1708,12 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `usb_stage_5a40_and_service_3fd0` immediately before
-  `main_core_service_3fd0`.
-- Replaced two USB call sites that staged `prep_bank1_ram004`,
+- Added `usb_ep1_in_send_hid_reply_buffer` immediately before
+  `usb_ep1_in_copy_scratch_buffer_to_bdt`.
+- Replaced two USB call sites that staged `ram_clear_prepare_page1_address_high`,
   `stock_003=0x5A`, `stock_005=0x40`, then called
-  `main_core_service_3fd0`.
-- The helper tail-branches into `main_core_service_3fd0`; its `return`
+  `usb_ep1_in_copy_scratch_buffer_to_bdt`.
+- The helper tail-branches into `usb_ep1_in_copy_scratch_buffer_to_bdt`; its `return`
   continues at the original caller's post-`rcall` instruction.
 
 Measured result:
@@ -1761,7 +1761,7 @@ Scope:
 
 - Added `signed_hi_bias80_compare_prelude` between the two call sites.
 - Replaced the duplicated signed-high-byte compare prelude in
-  `main_core_service_3398` and `main_core_service_41b6`.
+  `truncate_float32_to_integral_float_in_place` and `format_int16_decimal_ascii_to_w_pointer`.
 - The helper takes W as the high byte, returns with W=`0x00`, and preserves
   STATUS from `subwf PRODL,W` for the caller's existing `btfsc STATUS,Z`
   low-byte compare.
@@ -1806,8 +1806,8 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `tblrd_fsr1_from_tblptrh_w` immediately before
-  `main_i2c_service_2100`.
+- Added `tblrd_load_fsr1_pair_from_table_page_w` immediately before
+  `i2c_apply_channel_route_sync_burst`.
 - Replaced the duplicated `TBLPTRH/TBLPTRU` setup plus two `tblrd*+` reads
   that load an `(FSR1L, FSR1H)` pair from the dispatch/source tables.
 - The helper takes W as the table high byte, preserves W and BSR, and leaves
@@ -1855,7 +1855,7 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 Scope:
 
 - Replaced the inline 32-bit right-shift block in `flash_write` with the
-  existing `main_core_service_3188` helper.
+  existing `shift_003_006_right_clear_c` helper.
 - No new helper code was added; the existing helper already performs the same
   `bcf STATUS,C` plus four `rrcf` operations and returns with W unchanged.
 
@@ -1901,9 +1901,9 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `shift_003_006_left_clear_c` after `main_core_service_30d8`.
+- Added `shift_scratch32_left_clear_carry` after `float32_pack_mantissa_exponent_sign`.
 - Replaced the inline 32-bit left-shift block in `flash_write` and
-  `main_core_service_30d8`.
+  `float32_pack_mantissa_exponent_sign`.
 - The helper preserves W and performs the same carry-clear plus four `rlcf`
   operations as both inline sites.
 
@@ -1951,9 +1951,9 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `fsr1_page1_copy_from_indf2_w` near the existing bank-1 helper block.
+- Added `copy_indf2_to_page1_w` near the existing bank-1 helper block.
 - Replaced two page-1 FSR1 setup plus `movff INDF2,INDF1` sequences in
-  `fw_update_relay` and `main_core_service_24ac`.
+  `fw_update_relay` and `copy_indexed_fsr2_byte_to_hid_ep1_in`.
 - The helper preserves the carry from the caller's low-byte address add through
   to `addwfc FSR1H,F`, matching the inline page-crossing behavior.
 
@@ -2005,7 +2005,7 @@ Scope:
   helper before advancing to state 2.
 - `filename_reply_send_end` now passes literal `0x4E` in W to the helper before
   clearing the filename job state.
-- The helper keeps the original `stock_00D_acc`/`stock_00E_acc` staging,
+- The helper keeps the original `i2c_flag_or_flash_math_uart_cmd_scratch_byte`/`flash_upper_or_uart_count_scratch_byte` staging,
   calls `filename_emit_frame`, and restores `BSR=2` before returning to the
   state update, matching the original inline tails.
 
@@ -2050,11 +2050,11 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `fsr2_from_stock003_004_plus_w`, a shared helper for building
+- Added `fsr2_from_scratch_base_plus_w`, a shared helper for building
   `FSR2 = stock_003:stock_004 + W`.
-- `main_core_service_3fd0` now calls the helper with its `stock_007_acc` copy
+- `usb_ep1_in_copy_scratch_buffer_to_bdt` now calls the helper with its `count_flash_page_or_i2c_payload_scratch_byte` copy
   offset before copying the USB/core payload byte.
-- `ram_block_clear` now calls the helper with its `stock_006_acc` clear-loop
+- `clear_ram_span_from_staged_addr_count` now calls the helper with its `status_addr_high_or_i2c_payload_scratch_byte` clear-loop
   offset before clearing `INDF2`.
 - The helper leaves BSR unchanged and preserves the original final `addwfc`
   STATUS side effects across `return`.
@@ -2101,9 +2101,9 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `usb_setup_fsr2_saved_from_07a7b` for the USB endpoint loop's repeated
-  saved-FSR2 pointer reconstruction from `stock_07A_b0:stock_07B_b0`.
-- Replaced the two copies in `flow_main_usb_service_2f4e_2fb6`: one before
+- Added `usb_setup_fsr2_from_selected_bdt_entry_ptr` for the USB endpoint loop's repeated
+  saved-FSR2 pointer reconstruction from `usb_selected_bdt_entry_ptr_lo_b0:usb_selected_bdt_entry_ptr_hi_b0`.
+- Replaced the two copies in `usb_sie_endpoint_pump__copy_setup_packet_byte`: one before
   reading the saved FSR2 pair and one before incrementing that saved pointer.
 - The helper keeps W and STATUS aligned with the original final
   `addwfc FSR2H,F` result; the next instructions either do `movff` or overwrite
@@ -2151,12 +2151,12 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Reused the existing `eeprom_read_byte_W` wrapper for the two remaining
-  boot-time EEPROM copy loops in `main_core_service_1e88`.
+- Reused the existing `eeprom_read_byte_at_w` wrapper for the two remaining
+  boot-time EEPROM copy loops in `restore_eeprom_settings_on_boot`.
 - The first loop still sets FSR2 to the page-1 destination via
-  `setup_fsr2_page_1`, then reloads `stock_00A_acc` into W for the EEPROM read.
+  `setup_fsr2_page1_from_w`, then reloads `eeprom_mask_or_flash_src_high_scratch_byte` into W for the EEPROM read.
 - The second loop still sets FSR2 to the page-2 destination via
-  `fsr2_page2_from_W`, then reloads `stock_00A_acc` into W for the EEPROM read.
+  `setup_fsr2_page2_from_w`, then reloads `eeprom_mask_or_flash_src_high_scratch_byte` into W for the EEPROM read.
 - The wrapper handles `stock_003/stock_004` EEPROM address staging and leaves
   the loaded byte in W for the existing `movwf INDF2`.
 
@@ -2201,11 +2201,11 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `runtime_eeprom_write_03_w` for the two fixed runtime metadata writes
+- Added `eeprom_write_runtime_version_03_at_w` for the two fixed runtime metadata writes
   that store `0x03` at EEPROM bytes `0x80` and `0x81`.
-- The helper stages `stock_007_acc` from W, clears `stock_008_acc` before the
-  write, stages `stock_009_acc=0x03`, calls `main_flash_service_46de`, and
-  clears `stock_008_acc` again for the following write.
+- The helper stages `count_flash_page_or_i2c_payload_scratch_byte` from W, clears `flash_end_high_or_loop_mask_scratch_byte` before the
+  write, stages `flash_src_low_or_rx_length_scratch_byte=0x03`, calls `eeprom_write_byte_if_changed`, and
+  clears `flash_end_high_or_loop_mask_scratch_byte` again for the following write.
 - The builder-owned `V3.4_RUNTIME_EEPROM_REV_LO` literal for EEPROM byte `0x82`
   remains inline as the low-byte compatibility mirror; the full 16-bit release
   revision is owned by the cmd `0x25` identity literals and updated normally by
@@ -2253,12 +2253,12 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `eeprom_read_00a_to_indf2_inc` for the two boot copy loops that read
-  EEPROM byte `stock_00A_acc`, store it through the already-staged FSR2
-  destination, and increment `stock_00A_acc`.
-- The destination setup remains caller-specific (`setup_fsr2_page_1` for the
-  first loop, `fsr2_page2_from_W` for the second loop).
-- The helper preserves the final STATUS side effect from `incf stock_00A_acc`,
+- Added `eeprom_read_indexed_byte_to_postinc2` for the two boot copy loops that read
+  EEPROM byte `eeprom_mask_or_flash_src_high_scratch_byte`, store it through the already-staged FSR2
+  destination, and increment `eeprom_mask_or_flash_src_high_scratch_byte`.
+- The destination setup remains caller-specific (`setup_fsr2_page1_from_w` for the
+  first loop, `setup_fsr2_page2_from_w` for the second loop).
+- The helper preserves the final STATUS side effect from `incf eeprom_mask_or_flash_src_high_scratch_byte`,
   matching the original inline loop body.
 
 Measured result:
@@ -2355,7 +2355,7 @@ Scope:
   `LATA.3`, `LATA.4`, and `LATA.5`.
 - Replaced the copies in `adaptive_baud_select` and `hw_standby_shutdown` with
   near `rcall`s.
-- Replaced the copy in `flash_entry_quiet_shutdown` with a long `call`, keeping
+- Replaced the copy in `flash_entry_mute_and_reset` with a long `call`, keeping
   the preceding `LATB.4` amp-enable clear inline and preserving the no-OSCCON /
   no-USB-shutdown flash-entry contract.
 - The helper does not touch W, BSR, or STATUS; it only adds call/return latency
@@ -2404,8 +2404,8 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `fsr2_bank0_from_stock007` for the repeated
-  `FSR2L=stock_007`, `FSR2H=0` setup in `main_flash_service_3ce8`.
+- Added `fw_update_signature_load_fsr2_from_status_ptr` for the repeated
+  `FSR2L=stock_007`, `FSR2H=0` setup in `fw_update_signature_status_word_helper`.
 - Replaced the four inline setup triples that clear/write via `POSTINC2` /
   `POSTDEC2` during the flash/signature helper path.
 - The helper ends with the original `clrf FSR2H`, so W remains
@@ -2464,7 +2464,7 @@ Scope:
   mark before doing other work.
 - Replaced the BF header in `report_cmd29_status`,
   `cmd23_health_query_handler`, `cmd25_identity_query_handler`, and
-  `diag_send_burst_xx` with `rcall bf_frame_header_tx`.
+  `diag_low_nibble_reply_burst` with `rcall bf_frame_header_tx`.
 - Updated `send_dsp_fault_status` to keep the original mark-then-snapshot order
   for `dsp_fault_flags`, then call `bf_byte_tx` before emitting BF/08/data.
 - Updated the chain-TX source contract to pin `bf_frame_header_tx` as a valid
@@ -2518,12 +2518,12 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 Scope:
 
 - Reused `bf_byte_tx` for the remaining direct `0xBF` byte emitters:
-  `send_status_burst_preamble`, `factory_reset_status_emit`, and
+  `send_status_burst_preamble`, `fw_update_emit_bf18_status`, and
   `filename_emit_frame`.
 - `send_status_burst_preamble` uses a long `call bf_byte_tx` because it is
   outside `rcall` reach; this still saves one object word versus
   `movlw 0xBF` plus long `call uart_tx_byte_blocking`.
-- `factory_reset_status_emit` and `filename_emit_frame` use near `rcall`s.
+- `fw_update_emit_bf18_status` and `filename_emit_frame` use near `rcall`s.
 - No caller gained or lost chain-TX marking: status burst and factory reset keep
   their existing unmarked behavior, while `filename_emit_frame` still sets
   `chain_tx_emitted_b2.0` before calling the byte helper.
@@ -2570,11 +2570,11 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `clear_fw_update_status_accumulators` for the two firmware-update status
+- Added `fw_update_clear_relay_status_accumulators` for the two firmware-update status
   cleanup sites that clear the same eight bank-0 cells:
   `stock_07C/07D/080/081/084/085/086/087`.
-- Replaced both inline eight-clear blocks in `fw_update_init_sequence` and
-  `flow_hid_command_dispatch_1532` with near `rcall`s.
+- Replaced both inline eight-clear blocks in `fw_update_start_relay_handshake` and
+  `hid_command_dispatch__reject_fw_update_signature` with near `rcall`s.
 - Both callers already assert `movlb 0x0`; the helper uses only BANKED bank-0
   clears, does not touch W, leaves BSR at 0, and leaves STATUS.Z set from the
   final `clrf`, matching the old no-branch-through block behavior.
@@ -2629,14 +2629,14 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `forward_stock00a_marked` for the two parser forwarding sites that
+- Added `uart_link_forward_parser_byte_and_mark_tx` for the two parser forwarding sites that
   mark chain TX, reload the current RX byte from `stock_00A`, and send it with
   `uart_tx_byte_blocking`.
 - Replaced the route-byte and data-byte forward paths in
-  `parser_route_phase_handler` / `flow_main_uart_service_1be6_1c42` with near
+  `parser_route_phase_handler` / `uart_link_parser__payload_forward_gate` with near
   `rcall`s.
 - The helper keeps the existing order: `mark_chain_tx_emitted_bsr0` first, then
-  `movf stock_00A_acc,W`, then a tail `goto uart_tx_byte_blocking`, so the UART
+  `movf eeprom_mask_or_flash_src_high_scratch_byte,W`, then a tail `goto uart_tx_byte_blocking`, so the UART
   routine returns to the original parser continuation.
 - Updated the parser-forwarding source contract to pin the helper sequence.
 
@@ -2682,10 +2682,10 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `hid_stage_0c1_04_0c2_01` for the two HID cmd04 setup paths that
+- Added `hid_stage_opcode04_status_one` for the two HID cmd04 setup paths that
   stage `stock_0C1=0x04` and `stock_0C2=0x01`.
-- Replaced the clean `flow_hid_command_dispatch_1140` literal stores and the
-  fault-latching `flow_hid_command_dispatch_114a` literal stores with near
+- Replaced the clean `hid_command_dispatch__opcode04_ack_action_one` literal stores and the
+  fault-latching `hid_command_dispatch__opcode04_stage_fault_action` literal stores with near
   `rcall`s.
 - Preserved side-effect order: the `0x0B8` setup-profile copy remains before
   the shared staging call, while `dsp_fault_flags.bit0` and `stock_094.bit4`
@@ -2809,7 +2809,7 @@ The xfail is the known `chain_copy` interrupt-safety proof.
 Rejected follow-up:
 
 - T49 attempted a shared `mssp_hard_reset_master_smp` tail helper for
-  `adc_boot_gate_exit`, `dsp_ping_nack_reset`, and
+  `adc_boot_gate__start_dsp_cold_init`, `dsp_ping_nack_reset`, and
   `i2c_timeout_recover_common` (estimated/measured +10 bytes, trial rev
   `0xE0`).  It was rejected and reverted because
   `test_v34_v173_compatibility.py::test_v173_v34_user_volume_and_preset_survive_por_power_cycle`
@@ -2826,7 +2826,7 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `fw_update_cmp_addr_77_w`, a local firmware-update relay helper that
+- Added `fw_update_compare_relay_addr_limit_w`, a local firmware-update relay helper that
   takes the low threshold byte in W, asserts `BSR=0`, compares
   `stock_084/085` against `0x77xx`, and returns with the original carry
   compare result.
@@ -2888,7 +2888,7 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Converted the data-block `flash_read_fsr2_0017` call inside
+- Converted the data-block `flash_read_to_scratch_buffer` call inside
   `preset_table_apply_entry_core` from far `call` to near `rcall`.
 - Left the earlier header read as far `call` because the listing reach scan
   showed only the later callsite was in relative-call range.
@@ -2935,7 +2935,7 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `fw_update_add_w_to_08081`, a local helper that adds W into the
+- Added `fw_update_add_byte_to_relay_checksum`, a local helper that adds W into the
   firmware-update `stock_080/081` accumulator with the same carry propagation.
 - Replaced the two adjacent checksum/status additions and the later single
   byte-add path in `fw_update_relay`.
@@ -2985,10 +2985,10 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `fw_update_stage_005_w_008_1`, which stores the caller's W into
+- Added `fw_update_stage_uart_rx_window`, which stores the caller's W into
   `stock_005`, sets `BSR=1`, stages `stock_008=0x01`, and returns with W=1.
 - Replaced the two matching firmware-update setup sequences in
-  `fw_update_init_sequence` and `flow_fw_update_relay_16fa`.
+  `fw_update_start_relay_handshake` and `fw_update_relay__poll_status_response`.
 - Added a source contract pinning the helper and both call sites.
 
 Measured result:
@@ -3034,12 +3034,12 @@ Exploratory gate status: accepted bytes since the last exploratory run are
 
 Scope:
 
-- Added `rail_adc_cmp_hi02_w`, a carry-preserving helper for comparing
+- Added `compare_adc_rail_sample_to_threshold_w`, a carry-preserving helper for comparing
   `stock_088:089` against `0x02WW`.
 - Replaced the boot-gate `0x0236` threshold compare, the standby rail
   `0x0228` threshold compare, and both periodic AN0 monitor compares
   (`0x0229` latch set and `0x0228` trip).
-- Used a far `call` from `flow_adc_boot_gate_2dbc` because the helper is out
+- Used a far `call` from `adc_boot_gate__check_rail_threshold` because the helper is out
   of relative range there; used `rcall` from the local standby and ADC monitor
   sites.
 - Added a source contract pinning the helper body and all four call sites.
@@ -3202,7 +3202,7 @@ Scope:
   calls `preset_job_apply_i2c_entry`, and returns with C preserved from the
   existing entry writer.
 - Replaced four inline staging sequences: two in blocking
-  `main_core_service_4574` replay and two in async `preset_job_apply` regular
+  `preset_replay_selected_table_blocking` replay and two in async `preset_job_apply` regular
   and final rows.
 - Added source contracts pinning the helper body, both async retry branches,
   and both blocking replay call sites.
@@ -3252,7 +3252,7 @@ Scope:
 - Added `preset_job_init_cursor_from_active`, which initializes the job-owned
   preset table cursor from `active_flags.bit2` and exits with `BSR=2`.
 - Replaced the matching cursor initialization sequence in blocking
-  `main_core_service_4574` and async `preset_job_holding`.
+  `preset_replay_selected_table_blocking` and async `preset_job_holding`.
 - Added source contracts pinning the helper body and both call sites.
 
 Measured result:
@@ -3297,10 +3297,10 @@ gate are 28/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `preset_job_advance_cursor_0x18`, which advances the job-owned physical
+- Added `preset_job_advance_cursor_to_next_table_row`, which advances the job-owned physical
   preset table cursor by one 0x18-byte row and increments
   `preset_job_index_b2`.
-- Replaced the matching advance sequence in blocking `main_core_service_4574`
+- Replaced the matching advance sequence in blocking `preset_replay_selected_table_blocking`
   and async `preset_job_apply`.
 - Added source contracts pinning the helper body and both call sites.
 
@@ -3346,7 +3346,7 @@ gate are 34/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Removed one duplicate `andwf stock_01B_acc, F` after staging `movlw 0x0F`
+- Removed one duplicate `andwf fw_update_hex_or_float32_quotient_or_uart_block_scratch, F` after staging `movlw 0x0F`
   in `fw_update_relay` status/hex formatting.
 - Added a source contract asserting the duplicate nibble mask stays removed.
 
@@ -3444,11 +3444,11 @@ gate are 52/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `flash_stage_tblptr_from_014_016` for the repeated
+- Added `flash_write_stage_block_cursor_shadow` for the repeated
   `stock_014..016 -> stock_011..013` TBLPTR staging sequence in
   `flash_write`.
-- Replaced both inline staging copies (`flow_flash_write_2eb6` block restart
-  and `flow_flash_write_2efc` block commit) with `rcall` sites.
+- Replaced both inline staging copies (`flash_write__start_next_block` block restart
+  and `flash_write__prepare_block_commit` block commit) with `rcall` sites.
 - Added a source contract pinning the helper and blocking the old inline
   triple-`movff` sequence from returning.
 
@@ -3545,12 +3545,12 @@ gate are 62/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `math_stage_025_027_to_029_02b` between the arithmetic callers so both
+- Added `copy_math_operand_low24_to_secondary` between the arithmetic callers so both
   users can reach it with `rcall`.
-- Replaced the `main_core_service_24c2` middle operand copy
+- Replaced the `float32_add_secondary_to_primary_in_place` middle operand copy
   (`stock_025..027 -> stock_029..02B`) with the helper while preserving the
   preceding `stock_024 -> stock_028` edge.
-- Split `s3_math_stage_029` so it reuses the same middle-copy helper and still
+- Split `copy_math_operand_to_secondary_shadow` so it reuses the same middle-copy helper and still
   performs the trailing `stock_028 -> stock_02C` copy.
 
 Measured result:
@@ -3594,10 +3594,10 @@ gate are 68/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `usb_stage_tblptr_from_075_076` for the repeated USB descriptor
+- Added `usb_stage_tblptr_from_flash_ptr_cache` for the repeated USB descriptor
   `stock_075/076 -> TBLPTR` staging sequence.
-- Replaced both the `main_flash_service_365c` setup path and the string
-  descriptor pointer path in `main_flash_service_3796` with `rcall` sites.
+- Replaced both the `usb_ep0_prepare_in_data_copy_pointers` setup path and the string
+  descriptor pointer path in `usb_ep0_select_get_descriptor_payload` with `rcall` sites.
 - Added a source contract pinning the shared staging helper and its two call
   sites.
 
@@ -3644,11 +3644,11 @@ gate are 72/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `usb_service_4080_update_stock096` for the duplicated
+- Added `usb_ep0_arm_next_out_pingpong_bd` for the duplicated
   `stock_096` countdown branch that sends either `0x01` or `0x00` through
-  `main_core_service_4080` and updates `stock_096`.
-- Replaced both call-site copies in `flow_main_core_service_3188_324c` /
-  `flow_main_core_service_3188_32cc` with local `rcall`s while preserving their
+  `usb_ep0_arm_out_pingpong_bd` and updates `stock_096`.
+- Replaced both call-site copies in `usb_ep0_arm_control_transfer_response` /
+  `usb_ep0_arm_control_transfer_response__arm_next_out_stage` with local `rcall`s while preserving their
   different post-helper branch/fall-through targets.
 - Added a source contract pinning the helper and removal of the old local
   branch labels.
@@ -3696,13 +3696,13 @@ gate are 90/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `usb_store_stock116_w_bsr0` at a central `rcall`-reachable boundary
+- Added `usb_stage_bdt_template_status_w` at a central `rcall`-reachable boundary
   between `main_core_service_38a2` and `adaptive_baud_select`.
 - Replaced all five USB `stock_116` W stores with local `rcall`s:
-  four in `main_core_service_3188` and one in `main_usb_service_40d6`.
+  four in `shift_003_006_right_clear_c` and one in `usb_bus_reset_reinitialize`.
 - The helper restores BSR to bank 0.  For the two original sites that entered
-  `main_core_service_4080` with BSR=1, this is safe because
-  `main_core_service_4080` stages W in access RAM and selects bank 1 before any
+  `usb_ep0_arm_out_pingpong_bd` with BSR=1, this is safe because
+  `usb_ep0_arm_out_pingpong_bd` stages W in access RAM and selects bank 1 before any
   BANKED access.
 
 Measured result:
@@ -3744,17 +3744,17 @@ PyUSB/libusb0 deprecations in `test_dlcp_main_flash.py`.
 Exploratory gate status: accepted bytes since the last completed exploratory
 gate are 96/200, so no new 30-minute exploratory gate is due yet.
 
-## T67 main_i2c_service_2100 bank-0 clear wrapper — landed 2026-06-16
+## T67 i2c_apply_channel_route_sync_burst bank-0 clear wrapper — landed 2026-06-16
 
 Scope:
 
-- Added `ram_block_clear_4_bank0_w`, which accepts the low address in W, clears
+- Added `ram_block_clear_four_bytes_bank0_from_w`, which accepts the low address in W, clears
   `stock_004`, restores BSR 0, and tail-branches into the existing
-  `ram_block_clear_4` helper.
-- Replaced the four bank-0 clear setup blocks in `main_i2c_service_2100` with
+  `ram_block_clear_four_bytes_from_w` helper.
+- Replaced the four bank-0 clear setup blocks in `i2c_apply_channel_route_sync_burst` with
   local `rcall`s to the wrapper.
-- Preserved the three bank-1 clears through `prep_bank1_ram004` plus
-  `ram_block_clear_4`.
+- Preserved the three bank-1 clears through `ram_clear_prepare_page1_address_high` plus
+  `ram_block_clear_four_bytes_from_w`.
 
 Measured result:
 
@@ -3799,9 +3799,9 @@ gate are 104/200, so no new 30-minute exploratory gate is due yet.
 Scope:
 
 - Removed the duplicate `0x08/0x30` route-pair staging after
-  `i2c_tas3108_reg1f_write` in `flow_cmd_dispatch_gated_1966`.
+  `i2c_tas3108_reg1f_write` in `cmd_dispatch_gated__default_route_reg1f_write`.
 - Replaced it with a direct branch to the existing
-  `flow_cmd_dispatch_gated_1932` route-3 setup owner.
+  `cmd_dispatch_gated__route_code_3_i2c_pair` route-3 setup owner.
 - Added a source contract proving the reg1f path tails to that owner and no
   longer carries its own `stock_006` staging block.
 
@@ -3846,10 +3846,10 @@ gate are 110/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `usb_stage_0c8_0d3_offset_ec`, which sets `stock_0C8=1` and returns
+- Added `usb_ep0_stage_interface_alt_setting_offset`, which sets `stock_0C8=1` and returns
   W as `stock_0D3 + 0xEC`.
-- Replaced the two identical preludes in `flow_main_core_service_3682_36c0`
-  and `flow_main_core_service_3682_36d2`; each caller still consumes W in its
+- Replaced the two identical preludes in `usb_ep0_dispatch_standard_setup_request__get_interface`
+  and `usb_ep0_dispatch_standard_setup_request__set_interface`; each caller still consumes W in its
   original destination (`stock_005` vs `FSR2L`).
 - Added a source contract pinning the helper and both call sites.
 
@@ -3944,12 +3944,12 @@ gate are 118/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Reused the existing `main_timer_service_494c` Timer3 stop/flag helper in the
+- Reused the existing `timer3_stop_interrupt_countdown` Timer3 stop/flag helper in the
   reconnect full-apply cancellation path.
 - Reused the same helper from `preset_job_cancel_unmute` and
   `preset_job_cancel`, replacing duplicate inline Timer3 stop/mask/clear blocks.
 - The helper is ACCESS-SFR-only and BSR-neutral; the preset paths still clear
-  `preset_job_state_b2` only through the existing `preset_job_cancel_done` tail.
+  `preset_job_state_b2` only through the existing `preset_job_service__clear_state_and_return` tail.
 
 Measured result:
 
@@ -3994,7 +3994,7 @@ Scope:
 
 - Added `mssp_hard_reset_smp_master`, which stages `stock_003=0x80` and W=`0x08`
   before tail-branching into `mssp_hard_reset`.
-- Replaced the three identical SMP/master preludes in `adc_boot_gate`,
+- Replaced the three identical SMP/master preludes in `run_wake_rail_gate_and_dsp_cold_init`,
   `dsp_ping_nack_reset`, and `i2c_timeout_recover_common`.
 - The helper is ACCESS-only and preserves the original `mssp_hard_reset` return
   convention, including W left as the staged SSPSTAT byte.
@@ -4039,10 +4039,10 @@ gate are 138/200, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Split a `clear_lata_345` tail label out of `clear_lata_audio_pins`, preserving
+- Split a `clear_lata_source_select_pins` tail label out of `clear_lata_audio_pins`, preserving
   the existing LATA6/3/4/5 helper entry.
-- Replaced the duplicate `main_i2c_service_48e2` LATA3/4/5 clear/return tail
-  with `goto clear_lata_345`.
+- Replaced the duplicate `i2c_tas3108_reg1f_02_clear_source_pins` LATA3/4/5 clear/return tail
+  with `goto clear_lata_source_select_pins`.
 - An initial `bra` attempt was rejected by gpasm as out of range; the accepted
   far `goto` keeps the tail share and saves 4 bytes.
 
@@ -4059,7 +4059,7 @@ Verification:
 
 ```bash
 PYTHONPATH=src .venv_ep0/bin/python scripts/build_v34_release.py
-# first build rejected `bra clear_lata_345` as out of range; accepted build:
+# first build rejected `bra clear_lata_source_select_pins` as out of range; accepted build:
 # built canonical V3.4 release ... (EEPROM rev 0xFA -> 0xFB)
 
 PYTHONPATH=src .venv_ep0/bin/python - <<'PY'
@@ -4178,7 +4178,7 @@ Scope:
   `rcall preset_job_apply_i2c_entry` / `return` pair with
   `bra preset_job_apply_i2c_entry`.
 - Replaced the normal APPLY-step cursor-advance `rcall` / `return` pair with
-  `bra preset_job_advance_cursor_0x18`.
+  `bra preset_job_advance_cursor_to_next_table_row`.
 - Updated the structural contract test to pin the tail-branch form while
   preserving the same retry and cursor ordering assertions.
 
@@ -4276,11 +4276,11 @@ Scope:
   mirrors `stock_0A5..0AA` used to inline the same current-data store,
   `cpfseq` dirty check, event bit set, mirror update, and parser-tail branch.
 - T78 keeps the six legacy dispatch labels but reduces each body to
-  `movlw offset; bra uart_update_channel_config_cache_w`.
+  `movlw offset; bra uart_update_channel_config_cache_from_w_index`.
 - The helper computes `FSR0 = stock_060 + offset` and `FSR1 = FSR0 + 0x45`,
   writes `current_cmd_data`, compares the mirror with `cpfseq INDF1`, sets
   `event_flags.bit4` only on a changed mirror, updates the mirror, and returns
-  through the existing `flow_main_uart_service_1be6_1e6c` parser tail.
+  through the existing `uart_link_parser__handler_return_tail` parser tail.
 
 Measured result:
 
@@ -4312,7 +4312,7 @@ Scope:
 - T79 keeps the same write order and helper boundary, but uses the arithmetic
   identity `high = low - 0x14`: `movlw low; btfsc stock_0A4.bitN; addlw 0xEC`.
 - At T79 time, the first five writes still used `i2c_381c_with_w_bank0` and
-  the sixth remained the direct `movwf stock_013; call main_i2c_service_381c`
+  the sixth remained the direct `movwf stock_013; call preset_table_apply_entry_legacy_blocking`
   tail.  T140 later superseded that local shape with a compact six-iteration
   loop while preserving T79's `+0xEC` selector rule.
 
@@ -4331,15 +4331,15 @@ Liveness/safety assumptions:
 - `btfsc` preserves W when the bit is clear; when set, `addlw 0xEC` produces
   the exact old high literal modulo 8 bits.
 - The existing helper reasserts `BSR=0` after each of the first five writes,
-  so every following `btfsc stock_0A4_b0` still addresses bank 0.
+  so every following `btfsc channel_enable_mask_b0` still addresses bank 0.
 - The final direct write had no post-call BSR dependency before
-  `usb_mailbox_service_05`, which already sets BSR itself.
+  `usb_hid_mailbox_stage_selector5_if_enabled`, which already sets BSR itself.
 
 ## T80 I2C random-read timeout tail cross-jump — landed 2026-06-16
 
 Scope:
 
-- `main_i2c_service_464c_timeout` had the same timeout-advertise, clear-W,
+- `i2c_receive_sspbuf_bounded__timeout` had the same timeout-advertise, clear-W,
   return sequence as `i2c_secondary_dev_random_timeout`.
 - T80 replaces the duplicate local tail with `bra i2c_secondary_dev_random_timeout`.
 
@@ -4366,11 +4366,11 @@ Scope:
 
 - Removed `movlb 0` before an ACCESS-only `bcf active_flags_acc,4` in
   `cmd03_mute_off_apply`; the path immediately selects bank 2 afterward.
-- Removed the second `movlb 2` in `preset_job_service` dispatch; entry already
+- Removed the second `movlb 2` in `advance_preset_job_state_machine` dispatch; entry already
   selected bank 2 and the intervening active/reconnect tests use ACCESS
   addressing only.
 - Removed two local `movlb 0` assertions in the SRC Auto Detect path where
-  both paths immediately branch to `flow_main_i2c_service_27f0_295c`, whose
+  both paths immediately branch to `poll_src4382_route_monitor__finalize_pending_route`, whose
   first instruction reasserts bank 0.
 
 Measured result:
@@ -4470,9 +4470,9 @@ Resolution:
 
 Scope:
 
-- `main_core_service_3ec4` and `main_core_service_3f1e` both wrote four bytes
+- `float32_multiply_ram_window_by_staged_operand_in_place` and `float32_add_staged_operand_to_ram_window_in_place` both wrote four bytes
   through FSR2 and then ended with the same `decf FSR2L` twice plus `return`.
-- T82 labels the first tail as `math_result_fsr2_rewind2` and has the second
+- T82 labels the first tail as `rewind_fsr2_after_four_byte_math_result_store` and has the second
   helper branch to it after its final `POSTDEC2` write.
 
 Measured result:
@@ -4680,11 +4680,11 @@ next batch.
 
 Scope:
 
-- `main_usb_service_2f4e` now stages the endpoint pointer high byte once,
+- `usb_sie_endpoint_pump` now stages the endpoint pointer high byte once,
   leaves W as `0x04` for the USTAT bit-1 case, and conditionally changes W to
   `0x00` only for the other endpoint before storing `stock_07A`.
 - The nonzero-endpoint USTAT `0x04` path now clears `UIR.3` once before the
-  branch that decides whether `main_usb_service_4412` is needed, instead of
+  branch that decides whether `usb_ep0_service_in_transaction` is needed, instead of
   carrying duplicate clear tails.
 
 Measured result:
@@ -4723,10 +4723,10 @@ Scope:
 
 - Removed five unconditional `bra` instructions whose targets were the
   immediately following label:
-  `flow_main_uart_service_1be6_1df0 -> uart_update_channel_config_cache_w`,
-  `flow_main_usb_service_2f4e_2ffe -> flow_main_usb_service_2f4e_300e`,
-  `usb_stage_5a40_and_service_3fd0 -> main_core_service_3fd0`,
-  `main_core_service_3fd0 -> usb_endpoint_mark_done_fsr0`, and
+  `flow_main_uart_service_1be6_1df0 -> uart_update_channel_config_cache_from_w_index`,
+  `usb_sie_endpoint_pump__service_ep0_in_token_if_selected -> usb_sie_endpoint_pump__advance_transaction_scan`,
+  `usb_ep1_in_send_hid_reply_buffer -> usb_ep1_in_copy_scratch_buffer_to_bdt`,
+  `usb_ep1_in_copy_scratch_buffer_to_bdt -> usb_endpoint_mark_state_done`, and
   `mssp_hard_reset_smp_master -> mssp_hard_reset`.
 - The edit changes only fall-through spelling; no helper latency, RAM write
   order, or preset/diagnostic behavior changes.
@@ -4779,14 +4779,14 @@ gate are **22/200**, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `usb_stage_lowpage_descriptor_dirty_w` as a fall-through entry into
-  the existing `usb_stage_descriptor_dirty_return` tail.
+- Added `usb_ep0_stage_one_byte_lowpage_in_data_pointer` as a fall-through entry into
+  the existing `usb_ep0_mark_one_byte_lowpage_in_data_ready` tail.
 - Three low-page descriptor staging paths now set `stock_0C8`, load the low
   descriptor byte in W, and branch into the helper.  The helper preserves the
   RAM update order for descriptor address bytes (`stock_076` high clear, then
   `stock_075` low store) before falling into the dirty-return tail.
-- The saved-W descriptor path in `main_core_service_3682` now branches directly
-  to `usb_stage_descriptor_dirty_return`; it already performs its high/low
+- The saved-W descriptor path in `usb_ep0_dispatch_standard_setup_request` now branches directly
+  to `usb_ep0_mark_one_byte_lowpage_in_data_ready`; it already performs its high/low
   stores inline and does not use the W-input helper.
 
 Measured result:
@@ -4840,8 +4840,8 @@ Scope:
 - Only candidates whose inverse target was in PIC18 conditional-branch range
   were touched.  The out-of-range candidates stay in the two-branch spelling.
 - Affected paths are the HID firmware-update handoff, firmware-update relay,
-  UART volume/report/command dispatch, `main_core_service_2328` reply routing,
-  and one `main_core_service_3398` math bound check.
+  UART volume/report/command dispatch, `stage_hid_ep1_in_report_from_selector` reply routing,
+  and one `truncate_float32_to_integral_float_in_place` math bound check.
 
 Measured result:
 
@@ -4893,8 +4893,8 @@ gate are **48/200**, so no new 30-minute exploratory gate is due yet.
 Scope:
 
 - Collapsed the remaining in-range `cmd_dispatch_xor_chain` branch pair:
-  `bnz flow_main_uart_service_1be6_1e36; bra cmd03_subdispatch` is now
-  `bz cmd03_subdispatch` with `flow_main_uart_service_1be6_1e36` as the
+  `bnz uart_link_parser__dispatch_check_cmd04_status_poll; bra cmd03_subdispatch` is now
+  `bz cmd03_subdispatch` with `uart_link_parser__dispatch_check_cmd04_status_poll` as the
   fall-through path.
 - The inverse branch target sits on the PIC18 conditional-branch range
   boundary; the canonical gpasm build is the range proof.
@@ -4937,13 +4937,13 @@ gate are **50/200**, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added the local `fw_update_relay_to_18d0` trampoline in the branch-protected
-  gap before `flow_fw_update_relay_165a`.
+- Added the local `fw_update_relay__advance_cursor_trampoline` trampoline in the branch-protected
+  gap before `fw_update_relay__check_saved_status_addr`.
 - Two nearby firmware-update range guards now use inverse conditional branches
-  to that local trampoline instead of `cond next; bra flow_fw_update_relay_18d0`.
-- The trampoline is not on any fall-through path; `flow_fw_update_relay_164c`
-  either branches to `flow_fw_update_relay_165a`, branches to
-  `flow_fw_update_relay_182e`, or uses the new explicit trampoline branch.
+  to that local trampoline instead of `cond next; bra fw_update_relay__advance_payload_cursor`.
+- The trampoline is not on any fall-through path; `fw_update_relay__check_address_alignment`
+  either branches to `fw_update_relay__check_saved_status_addr`, branches to
+  `fw_update_relay__forward_payload_byte`, or uses the new explicit trampoline branch.
 
 Measured result:
 
@@ -4989,7 +4989,7 @@ Scope:
 - Both the initial requested-slot mismatch path and the 16-byte prefix compare
   path now call the helper instead of carrying the same four-instruction
   active-preset selector inline.
-- The helper is placed after `cmd26_filename_query_done`; normal query flow
+- The helper is placed after `cmd26_filename_query_handler__suppress_ack_and_return`; normal query flow
   exits by `goto`, so the helper is only reached by `rcall`.
 
 Measured result:
@@ -5271,7 +5271,7 @@ gate are **168/200**, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Generalized the T137 helper as `ram_pair_diff_z`.
+- Generalized the T137 helper as `compare_fsr0_fsr1_bytes_z`.
 - Replaced four repeated filename-cache byte compares between
   `stock_0AC..0AF` and `stock_09B..09E` with a four-byte FSR0/FSR1 compare.
 - Kept the existing filename dirty behavior: on any difference, set
@@ -5311,16 +5311,16 @@ gate are **188/200**, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Replaced `movlw 0x7F; andwf stock_005_acc,F` with
-  `bcf stock_005_acc,7` in `main_core_service_30d8`.
-- Removed dead `movlw 0xFF` before `setf stock_003_acc` in
-  `main_i2c_service_355c`.
+- Replaced `movlw 0x7F; andwf length_mask_or_divisor_low_scratch_byte,F` with
+  `bcf length_mask_or_divisor_low_scratch_byte,7` in `float32_pack_mantissa_exponent_sign`.
+- Removed dead `movlw 0xFF` before `setf addr_low_counter_or_payload_scratch_byte` in
+  `boot_init_peripherals_and_enter_adc_gate`.
 - Replaced `movlw 0; bsf PLUSW2,7` with `bsf INDF2,7` in
-  `main_core_service_3432`.
-- Replaced the boolean OR/postdecrement staging in `main_flash_service_3ce8`
+  `usb_ep0_apply_clear_set_feature_request`.
+- Replaced the boolean OR/postdecrement staging in `fw_update_signature_status_word_helper`
   with a direct conditional `bsf INDF2,0`.
-- Removed dead `movlw 0xFF` before `setf stock_004_acc` in
-  `main_usb_service_4828`.
+- Removed dead `movlw 0xFF` before `setf addr_high_table_row_or_checksum_scratch_byte` in
+  `usb_disconnect_wait_clear_state`.
 
 Measured result:
 
@@ -5411,15 +5411,15 @@ rev `0x0047`, `listing_app_end=0x4604`,
 Scope:
 
 - Replaced the six unrolled `event_flags.bit6` route-refresh writes in
-  `flow_cmd_dispatch_gated_1aca` with a compact loop.
+  `cmd_dispatch_gated__check_channel_enable_dirty` with a compact loop.
 - The loop copies `stock_0A4` into `stock_04C`, rotates out bits 0..5 in
   order, walks the register-byte base in `stock_04B` by `0x28`, and preserves
   the old per-bit selector rule: add `0xEC` before each
-  `main_i2c_service_381c` call when the corresponding route bit is set.
+  `preset_table_apply_entry_legacy_blocking` call when the corresponding route bit is set.
 - Removed the now-unused `i2c_381c_with_w_bank0` helper.  The loop state lives
   in access-bank `stock_04B/04C`, which are not touched by
-  `main_i2c_service_381c`, its flash-read path, or the I2C timeout recovery
-  path.  The next `usb_mailbox_service_05` call reasserts BSR=0, so no
+  `preset_table_apply_entry_legacy_blocking`, its flash-read path, or the I2C timeout recovery
+  path.  The next `usb_hid_mailbox_stage_selector5_if_enabled` call reasserts BSR=0, so no
   per-iteration BSR restore is needed.
 
 Measured result:
@@ -5456,10 +5456,10 @@ gate are **34/200**, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `fw_update_tx_block0190_from_w`, which stages W into `stock_018`,
+- Added `fw_update_tx_text_block_from_w`, which stages W into `stock_018`,
   clears `stock_019`, then tail-calls `uart_tx_block_from_buffer`.
 - Replaced two literal firmware-update block sends (`0x1D` and `0x2F`) and
-  one dynamic `main_core_service_41b6` result send.
+  one dynamic `format_int16_decimal_ascii_to_w_pointer` result send.
 - Removed the dynamic site's temporary `stock_01B` staging; W is passed
   directly into the new helper before the UART block sender is entered.
 
@@ -5503,11 +5503,11 @@ gate are **48/200**, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Added `fw_update_ram_clear_len_w`, which stores W into `stock_005` and
-  tail-calls `ram_block_clear`.
+- Added `fw_update_clear_buffer_from_003_len_w`, which stores W into `stock_005` and
+  tail-calls `clear_ram_span_from_staged_addr_count`.
 - Replaced three firmware-update init clear sites that already staged
   `stock_003` and then loaded the block length literal immediately before
-  calling `ram_block_clear`.
+  calling `clear_ram_span_from_staged_addr_count`.
 - Kept the cleared address/length pairs unchanged:
   `0xC7/0x0A`, `0x9A/0x2D`, and `0xD1/0x08`.
 
@@ -5633,7 +5633,7 @@ gate are **76/200**, so no new 30-minute exploratory gate is due yet.
 
 Scope:
 
-- Removed the duplicate `movlw 0x03` in the `flow_main_core_service_2328_240c`
+- Removed the duplicate `movlw 0x03` in the `stage_hid_ep1_in_report_from_selector__stage_selector6_version_setup`
   V3.4 status/version response. The label entry still sets W to `0x03`
   before storing `stock_15B`, so `stock_15C` can reuse that W value.
 - Converted several terminal `call`/`rcall` spellings to direct
@@ -5683,7 +5683,7 @@ gate are **78/200**, so no new 30-minute exploratory gate is due yet.
 Scope:
 
 - Replaced two unconditional `movlw K` / `return` value tails with `retlw K`:
-  `main_flash_service_365c` returns `0x07`, and
+  `usb_ep0_prepare_in_data_copy_pointers` returns `0x07`, and
   `signed_hi_bias80_compare_prelude` returns `0x00`.
 - Rejected the similar-looking `cmd03_stage_mute_refresh_w` site because it is
   behind a skip instruction; replacing only the skipped `movlw 0x01` would
@@ -5723,12 +5723,12 @@ gate are **82/200**, so no new 30-minute exploratory gate is due yet.
 Scope:
 
 - Renamed the HID cmd `0x44` counted copier to
-  `copy_postinc0_to_postinc2_count_w`, keeping the existing
-  `POSTINC0 -> POSTINC2` count-in-W contract and `stock_04C_acc` loop counter.
-- Reused that helper in `main_core_service_4080` for the fixed
+  `hid_diag_snapshot_copy_block_count_w`, keeping the existing
+  `POSTINC0 -> POSTINC2` count-in-W contract and `diff_count_update_compare_or_route_mask_scratch_byte` loop counter.
+- Reused that helper in `usb_ep0_arm_out_pingpong_bd` for the fixed
   `stock_116..stock_119 -> FSR2` staging run.  The destination pointer setup,
   trailing `FSR2L -= 4`, and endpoint flag-bit set are unchanged.
-- An initial `rcall` from `main_core_service_4080` was rejected by gpasm as out
+- An initial `rcall` from `usb_ep0_arm_out_pingpong_bd` was rejected by gpasm as out
   of range (`1764` words, outside `-1024..1023`); the accepted form uses a far
   `call`, still reclaiming three instruction words versus the four inline
   `movff` copies.
@@ -5795,7 +5795,7 @@ Behavior-preservation proof:
 - The executable walker label deliberately does **not** end in `_table`; the
   RAM-safety CFG treats `_table` labels as data anchors.
 - The walker avoids TOS/return-address tricks and uses `TBLPTR` plus
-  `stock_008_acc` as a local access-bank loop counter.  `stock_008_acc` is
+  `flash_end_high_or_loop_mask_scratch_byte` as a local access-bank loop counter.  `flash_end_high_or_loop_mask_scratch_byte` is
   scratch at both call sites and is not clobbered by `i2c_secondary_dev_write`
   or its timeout/NACK recovery paths.  An FSR0-backed counter was rejected
   during implementation because the diagnostic timeout path uses FSR0.
@@ -5861,12 +5861,12 @@ Parked/rejected follow-up levers for this wave:
 - The additional `movlw/movwf` init runs around source lines 5334/6043/9845
   were not touched by T1/T2/T3/T4/T5/T6/T7/T8/T9/T10/T11/T12/T13/T14/T15/T16/T17/T18/T19/T20/T22/T23/T24/T25 because they need a different RAM/SFR table writer.
   A 2026-06-15 arithmetic pass rejected the 5334 POR SFR-init table rewrite:
-  the current init block is 29 words before `stock_0FE_b0`, while a simple
+  the current init block is 29 words before `boot_config_marker_valid_b0`, while a simple
   TBLPTR/FSR0 indirect writer is about 36 words whether the zero writes stay
   inline or join the table.
 - The 6043-adjacent sequential RAM fill is also rejected for this wave: the
   current `movlw`/`movwf` plus `movlb`/`retlw` shape is 16 words, while an
-  `lfsr FSR0, stock_10F_b1_phys` plus `addlw`/`POSTINC0` version is 17 words.
+  `lfsr FSR0, tas3108_sync_stage0_reg_addr_phys` plus `addlw`/`POSTINC0` version is 17 words.
 - XOR dispatch ladders remain rejected: likely break-even on PIC18 and higher
   behavioral risk.
 - New descriptor rewrites remain rejected for this wave because the existing
@@ -5940,6 +5940,6 @@ Parked/rejected follow-up levers for this wave:
 | POR SFR-init walker around source line 5334 | reject for now | Arithmetic pass says a simple table writer grows from 29 to ~36 words. Only revisit if it can absorb additional adjacent setup without extra scratch or return tricks. |
 | Sequential RAM fill around source line 6043 | reject for now | Arithmetic pass says the FSR0/`POSTINC0` form is 17 words versus the current 16. |
 | cmd25 identity staging around source line 9845 | reject for now | Builder/release ceremony patches identity literals by matching inline bytes; tabling them risks breaking revision stamping unless the builder is redesigned. |
-| Per-route trim-ladder table rewrite (`flow_cmd_dispatch_gated_19d6`) | ~+20 B | touches the rev-0x87 SAFETY selector + an empirically load-bearing clrf; do not attempt casually |
+| Per-route trim-ladder table rewrite (`cmd_dispatch_gated__select_applied_route_trim`) | ~+20 B | touches the rev-0x87 SAFETY selector + an empirically load-bearing clrf; do not attempt casually |
 | Feature demotion: RA1 edge counter (`diag_p`, sim-only) | ~+20-30 B | needs a ledger entry + test retirement + user sign-off |
-| Hand passes over the top functions (32f8/adc_boot_gate_exit/2bb8/2328/38a2/19e6/39a6) | 10-20 % each | the proven road if more is ever needed |
+| Hand passes over the top functions (32f8/adc_boot_gate__start_dsp_cold_init/2bb8/2328/38a2/19e6/39a6) | 10-20 % each | the proven road if more is ever needed |

@@ -7,7 +7,7 @@ Scope: MAIN V3.2+ SRC4382 Auto Detect cadence, source-detection behavior, I2C ro
 ## Decision
 
 The first SRC4382 Auto Detect cadence implementation replaced the legacy
-`main_i2c_service_27f0` body.  It passed the simulator suite available at the
+`poll_src4382_route_monitor` body.  It passed the simulator suite available at the
 time, but the first audit found that it broke the route/TAS refresh contract.
 A later write-shadow throttle also passed simulator checks, and an initial
 hardware run appeared to produce bad audio on 2026-05-20.  That bad-audio
@@ -17,7 +17,7 @@ found a real firmware issue: fixed digital inputs (`S/PDIF`, `USB Audio`, `AES`,
 external mux route (`0/5/6/7`) without also re-priming the SRC4382 receiver
 route.
 
-The current candidate keeps the legacy `main_i2c_service_27f0` route/DSP
+The current candidate keeps the legacy `poll_src4382_route_monitor` route/DSP
 contract, modifies only the Auto Detect cadence inside that service, does not
 reuse `ram_0x0BF` as a receiver-select shadow, forces route reconciliation on
 explicit input commands, and writes the default SRC4382 receiver/transmitter pair
@@ -42,7 +42,7 @@ audio routing and DSP refresh path.
 
 The required contract is:
 
-1. `main_i2c_service_27f0` polls SRC4382 status and computes the requested DLCP
+1. `poll_src4382_route_monitor` polls SRC4382 status and computes the requested DLCP
    input route in `ram_0x093`.
 2. `ram_0x0AB` is the last-applied route shadow.
 3. When `ram_0x093 != ram_0x0AB`, the service sets `event_flags.bit1`.
@@ -119,8 +119,8 @@ source discovery.
 
 Relevant V3.2 paths in the current cadence candidate:
 
-- `periodic_service_loop` calls `main_i2c_service_27f0`.
-- `main_i2c_service_27f0` gates on `active_flags.bit3`, increments `ram_0x0BB`,
+- `run_main_service_pass` calls `poll_src4382_route_monitor`.
+- `poll_src4382_route_monitor` gates on `active_flags.bit3`, increments `ram_0x0BB`,
   and runs the slower secondary-device path when `ram_0x0BB > 0x64`.
 - In Auto Detect (`input_select == 0`), it computes
   `ram_0x0BE = ram_0x0B6 + 0x08`, preserving `0x0D.RXCLK=1` while changing
@@ -207,7 +207,7 @@ bad replaced-service shape from the first attempt.
 
 Required coverage:
 
-- Static guard: `main_i2c_service_27f0` still contains the legacy route
+- Static guard: `poll_src4382_route_monitor` still contains the legacy route
   reconciliation behavior or an explicitly approved replacement.
 - Runtime guard: setting `ram_0x093` and `event_flags.bit1` causes the expected
   SRC4382 route pair and TAS3108 coefficient `0x30` refresh.

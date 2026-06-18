@@ -57,14 +57,14 @@ fix added a guard so a *volume-dirty* drain re-mutes instead of leaking, **but
 only while `active_flags.bit4` is still set** (`dlcp_main_v34.asm:1491-1500`):
 
 ```asm
-flow_cmd_dispatch_gated_19a8:
+cmd_dispatch_gated__check_reconnect_and_volume_dirty:
     movlb       0x0
     btfss       event_flags_b0, 3, BANKED          ; volume dirty?
-    bra         flow_cmd_dispatch_gated_1a76
+    bra         cmd_dispatch_gated__check_reconnect_reapply
     btfss       active_flags_acc, 4, ACCESS        ; <-- guard reads bit4
-    bra         flow_cmd_dispatch_gated_volume_unmuted
+    bra         cmd_dispatch_gated__apply_unmuted_volume_dirty
     bsf         event_flags_b0, 5, BANKED          ; muted -> re-mute (zero write)
-    bra         flow_cmd_dispatch_gated_1a76
+    bra         cmd_dispatch_gated__check_reconnect_reapply
 ```
 
 The defeat is upstream: `volume_cmd_handler` treats **any changed `cmd 0x07`**
@@ -72,10 +72,10 @@ as an implicit unmute and clears the latch *and* `bit4`/`bit5` **before** the
 guard runs (`dlcp_main_v34.asm:2167-2176`):
 
 ```asm
-flow_main_uart_service_1be6_1d6c:
+uart_link_parser__volume_mark_dirty:
     bsf         event_flags_b0, 3, BANKED          ; volume dirty
     ; Real user volume movement is a V1.73 compatibility unmute. ...
-    bcf         stock_094_b0, 5, BANKED            ; <-- clears user-mute latch
+    bcf         main_runtime_latch_flags_b0, 5, BANKED            ; <-- clears user-mute latch
     bcf         active_flags_acc, 4, ACCESS        ; <-- clears effective mute
     bcf         active_flags_acc, 5, ACCESS        ; <-- clears shadow
 ```
@@ -122,7 +122,7 @@ Delete the three mute-clearing instructions from `volume_cmd_handler` and rewrit
 the comment to state the new contract. `dlcp_main_v34.asm:2167-2176` becomes:
 
 ```asm
-flow_main_uart_service_1be6_1d6c:
+uart_link_parser__volume_mark_dirty:
     bsf         event_flags_b0, 3, BANKED          ; volume dirty -> verified write
     ; V3.4 BUG-V34V173-1: a volume frame updates the latent volume only.
     ; Mute is owned EXCLUSIVELY by cmd 0x03. A real user volume key while
@@ -131,13 +131,13 @@ flow_main_uart_service_1be6_1d6c:
     ; must not clear mute. While active_flags.bit4 is set the volume-dirty
     ; drain (asm:1491-1500) routes through the verified mute-zero path.
     ; V3.1 Fix B': do NOT copy computed->logical here (deferred to volume_dsp_write)
-    bra         flow_main_uart_service_1be6_1e6c
+    bra         uart_link_parser__handler_return_tail
 ```
 
 That is the entire MAIN change: three `bcf` words removed (−3 words). A changed
 `cmd 0x07` while muted now follows the **identical** path as a muted route
 refresh (`cmd 0x06`): set `event_flags.bit3`, hit the guard with `bit4` still
-set, route to the verified zero write (`clrf_i2c_coeff_0123_and_write` ->
+set, route to the verified zero write (`tas3108_write_zero_volume_coeff` ->
 `volume_dsp_write`), which clears `bit3` on ACK (`:9895`) or exhausted NACK
 (`:9932`) and copies `computed_volume` (the new latent value) to
 `logical_volume` on ACK — so the next identical full-sync re-broadcast compares
@@ -542,7 +542,7 @@ asserts the filename converges on the retry without leaving Preset.
 preset_select_handler:
     movlb       0x0
     btfsc       filename_dirty_flags_b0, 6, BANKED  ; USB filename write in flight?
-    bra         preset_select_handler_done          ; <-- drops; target NOT stored
+    bra         preset_select_handler__return_to_parser          ; <-- drops; target NOT stored
     movf        current_cmd_data_b0, W, BANKED
     andlw       0x01
     movlb       0x2
@@ -550,7 +550,7 @@ preset_select_handler:
 ```
 
 The handler's own header (`:9961-9972`) says the target *should* be recorded
-during the gate and applied once `main_core_service_265c` clears bit6 after
+during the gate and applied once `persist_dirty_runtime_state_to_eeprom` clears bit6 after
 persist; the inline comment (`:9976-9979`) admits "Target NOT stored".
 
 The decisive fact (missed by the first draft of this plan): **the job state
@@ -568,7 +568,7 @@ entry-only gate could not cover a USB write *starting mid-job*):
     return      0
 ```
 
-And `main_core_service_265c` is already written to tolerate the job's persist
+And `persist_dirty_runtime_state_to_eeprom` is already written to tolerate the job's persist
 running during a USB transaction (`:3316-3329` explicitly handles
 `preset_job_pending` persisting bit5 first, then clears bit6 unconditionally).
 
@@ -596,7 +596,7 @@ top of `preset_job_pending` (`:10094-10098`), right after its `movlb 0x0`:
 
 Resulting sequence for a broadcast that lands mid-write: handler records target
 and starts the job (PENDING); the job parks un-muted while bit6 is set; the
-host's `force_persist` drives `main_core_service_265c`, which persists and
+host's `force_persist` drives `persist_dirty_runtime_state_to_eeprom`, which persists and
 clears bit6 (`:3329`); the next main-loop pass un-parks PENDING (persist /
 force-mute / 150 ms hold), and the existing HOLDING gate (`:10143`) — now the
 backstop for writes that *start* mid-job — passes; the switch applies.
@@ -624,7 +624,7 @@ update the ledger's regression-test line) to pin the real contract:
 ```python
 def test_bug_v34v173_5_preset_select_must_record_target_independent_of_usb_gate():
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    handler = _label_body(text, "preset_select_handler", ["preset_select_handler_done"])
+    handler = _label_body(text, "preset_select_handler", ["preset_select_handler__return_to_parser"])
     assert re.search(r"movwf\s+preset_job_target_b2", handler)
     assert not re.search(r"btfsc\s+filename_dirty_flags_b0,\s*6", handler), (
         "parser-entry gate reintroduced: broadcasts would be dropped again"
@@ -814,7 +814,7 @@ edits), rebuild it (`cargo build --release -p dlcp-sim-py && bash crates/dlcp-si
   (`dlcp_control_ram.inc:40`); tune `FNAME_RETRY_MAX` / the reused
   `FNAME_QUERY_DELAY_*` spacing against a contended-chain sim before freezing.
 - BUG-5: confirm `preset_job_pending`'s park sits before the bit5
-  filename-persist call (deferring that persist to `main_core_service_265c`,
+  filename-persist call (deferring that persist to `persist_dirty_runtime_state_to_eeprom`,
   its canonical owner) and that `preset_job_cancel` still reaches parked jobs
   (it does — the cancel checks at `:10072-10075` run before the state
   dispatch).

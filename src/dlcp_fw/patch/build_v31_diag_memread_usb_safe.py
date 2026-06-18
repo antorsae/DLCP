@@ -41,21 +41,21 @@ DIAG_HEX = V31_DIAG_MEMREAD_USB_SAFE_HEX
 DIAG_LST = DIAG_HEX.with_suffix(".lst")
 
 _DISPATCH_OLD = """    xorlw       0x03
-    bnz         flow_hid_command_dispatch_15a8
-    bra         fw_update_init_sequence
-flow_hid_command_dispatch_15a8:
-    bra         flow_hid_command_dispatch_154c
+    bnz         hid_cmd_diag_snapshot_probe
+    bra         fw_update_start_relay_handshake
+hid_cmd_diag_snapshot_probe:
+    bra         hid_command_dispatch__unsupported_opcode
 """
 
 _DISPATCH_NEW = """    xorlw       0x03
-    bnz         hid_cmd_diag_memread_probe
-    bra         fw_update_init_sequence
-hid_cmd_diag_memread_probe:
+    bnz         hid_command_dispatch__probe_diag_memread_opcode
+    bra         fw_update_start_relay_handshake
+hid_command_dispatch__probe_diag_memread_opcode:
     xorlw       0x01
-    bnz         flow_hid_command_dispatch_15a8
-    goto        hid_cmd_diag_memread
-flow_hid_command_dispatch_15a8:
-    bra         flow_hid_command_dispatch_154c
+    bnz         hid_cmd_diag_snapshot_probe
+    goto        hid_diag_memread_dispatch
+hid_cmd_diag_snapshot_probe:
+    bra         hid_command_dispatch__unsupported_opcode
 """
 
 _MEMREAD_INSERT = """
@@ -64,7 +64,7 @@ _MEMREAD_INSERT = """
 ; Request : ram_0x11B=region (0=flash,1=eeprom), 0x11C/0x11D=addr, 0x11E=len
 ; Response: 0x15A=cmd, 0x15B=status, 0x15C=len, 0x15D..=data (max 61 bytes)
 ; ---------------------------------------------------------------------------
-hid_cmd_diag_memread:
+hid_diag_memread_dispatch:
     movlb       0x1
     lfsr        FSR2, 0x015A
     movlw       0x43
@@ -73,21 +73,21 @@ hid_cmd_diag_memread:
     movf        ram_0x11E, W, BANKED
     movwf       POSTINC2, ACCESS
     iorlw       0x00
-    bz          hid_cmd_diag_memread_bad_len
+    bz          hid_diag_memread__reject_invalid_length
     movlw       0x3D
     cpfsgt      ram_0x11E, BANKED
-    bra         hid_cmd_diag_memread_len_ok
-hid_cmd_diag_memread_bad_len:
+    bra         hid_diag_memread__dispatch_region
+hid_diag_memread__reject_invalid_length:
     movlw       0x02
-    bra         hid_cmd_diag_memread_fail
-hid_cmd_diag_memread_len_ok:
+    bra         hid_diag_memread__stage_error_status
+hid_diag_memread__dispatch_region:
     movf        ram_0x11B, W, BANKED
-    bz          hid_cmd_diag_memread_flash
+    bz          hid_diag_memread__read_flash_region
     xorlw       0x01
-    bz          hid_cmd_diag_memread_eeprom
+    bz          hid_diag_memread__read_eeprom_region
     movlw       0x01
-    bra         hid_cmd_diag_memread_fail
-hid_cmd_diag_memread_flash:
+    bra         hid_diag_memread__stage_error_status
+hid_diag_memread__read_flash_region:
     movff       ram_0x11C, ram_0x003
     movff       ram_0x11D, ram_0x004
     clrf        ram_0x005, ACCESS
@@ -99,24 +99,24 @@ hid_cmd_diag_memread_flash:
     movlw       0x01
     movwf       ram_0x00A, ACCESS
     call        flash_read, 0x0
-    goto        flow_hid_command_dispatch_15aa
-hid_cmd_diag_memread_eeprom:
+    goto        hid_command_dispatch__clear_opcode_and_return
+hid_diag_memread__read_eeprom_region:
     movf        ram_0x11C, W, BANKED
     movwf       ram_0x003, ACCESS
     clrf        ram_0x004, ACCESS
     movf        ram_0x11E, W, BANKED
     movwf       ram_0x00A, ACCESS
     lfsr        FSR2, 0x015D
-hid_cmd_diag_memread_eeprom_lp:
+hid_diag_memread__copy_eeprom_byte_loop:
     call        eeprom_read_byte, 0x0
     movwf       POSTINC2, ACCESS
     incf        ram_0x003, F, ACCESS
     decfsz      ram_0x00A, F, ACCESS
-    bra         hid_cmd_diag_memread_eeprom_lp
-    goto        flow_hid_command_dispatch_15aa
-hid_cmd_diag_memread_fail:
+    bra         hid_diag_memread__copy_eeprom_byte_loop
+    goto        hid_command_dispatch__clear_opcode_and_return
+hid_diag_memread__stage_error_status:
     movwf       ram_0x05B, BANKED
-    goto        flow_hid_command_dispatch_15aa
+    goto        hid_command_dispatch__clear_opcode_and_return
 
 """
 
@@ -127,7 +127,7 @@ _PRESET_TABLE_ANCHOR = """; ----------------------------------------------------
 
 
 def _rewrite_source(text: str) -> str:
-    if "hid_cmd_diag_memread:" in text:
+    if "hid_diag_memread_dispatch:" in text:
         return text
     if _DISPATCH_OLD not in text:
         raise RuntimeError("failed to locate HID dispatch tail")

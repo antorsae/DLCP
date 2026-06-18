@@ -12,7 +12,7 @@ Field symptom pattern:
 - Audio may continue as if commands were never received.
 - Power-cycling PB1 can produce a large pop, consistent with a non-graceful shutdown state.
 
-In the V3.2-era architecture, PB1 software performs forwarding to PB2 in `main_uart_service_1be6`.
+In the V3.2-era architecture, PB1 software performs forwarding to PB2 in `uart_link_parser_drain_rx_and_forward`.
 If PB1 parser/service gets wedged, downstream control traffic can stall.
 
 ## Objectives
@@ -26,7 +26,7 @@ If PB1 parser/service gets wedged, downstream control traffic can stall.
 
 ## 1) Eliminate Remaining Unbounded Waits
 
-V3.2-era gap: only async preset APPLY path has bounded I2C waits in V3.2; legacy `main_i2c_service_381c` call sites still exist.
+V3.2-era gap: only async preset APPLY path has bounded I2C waits in V3.2; legacy `preset_table_apply_entry_legacy_blocking` call sites still exist.
 
 Implementation:
 
@@ -36,7 +36,7 @@ Implementation:
 
 Primary code areas:
 
-- `main_i2c_service_381c` and call sites in `dlcp_main_v32.asm`
+- `preset_table_apply_entry_legacy_blocking` and call sites in `dlcp_main_v32.asm`
 - `wait_sen_bounded`, `wait_pen_bounded`
 
 Tests:
@@ -63,7 +63,7 @@ Implementation:
 
 Primary code area:
 
-- `main_uart_service_1be6`
+- `uart_link_parser_drain_rx_and_forward`
 
 Tests:
 
@@ -108,7 +108,7 @@ explanation for the current revision.  See
 
 Current root cause is CONTROL-side reconnect fragility:
 
-- MAIN wake now does re-advertise state during `adc_boot_gate`
+- MAIN wake now does re-advertise state during `run_wake_rail_gate_and_dsp_cold_init`
   (`cmd_dispatch_gated` + `send_status_burst`), so the downstream side
   is no longer the primary blocker.
 - CONTROL still performs RC5 IR decode in the ISR hot path.  That
@@ -157,7 +157,7 @@ Implementation status (last refreshed 2026-05-03):
   the WAKE broadcast's first two bytes (`B0 03`) before
   `uart_quiesce_for_wake` at gate entry kills TX, so MAIN1 sees an
   incomplete frame and stays standby.  Mitigation: re-emit `B0/03/01`
-  inside `adc_boot_gate_exit` after `main_uart_tx_only_service`
+  inside `adc_boot_gate__start_dsp_cold_init` after `uart_wake_reconfigure_tx_only_and_resync_parser`
   re-arms TX and before `cmd_dispatch_gated` runs.  Verified in the
   rust sim: `tests/sim/test_v171_v32_standby_reconnect.py
   ::test_v171_v32_v32_panel_wake_brings_up_main1_via_h2_re_emit`
@@ -204,7 +204,7 @@ Primary code areas:
   - `standby_wake_broadcast`
   - `v171_send_wake_cmd_frame`
 - MAIN:
-  - `adc_boot_gate`
+  - `run_wake_rail_gate_and_dsp_cold_init`
   - `send_status_burst`
   - `cmd04_status_response`
 

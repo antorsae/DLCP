@@ -25,6 +25,16 @@ from dlcp_fw.paths import (
 from .hexio import parse_intel_hex
 
 
+_RELEASE_SYMBOL_OVERRIDES = {
+    # The checked-in V3.3 release HEX predates the current source-side V3.3
+    # listing. Keep firmware-runtime helpers pinned to the published binary's
+    # HID service entry while still allowing renamed source labels in tests.
+    V33_MAIN_HEX.resolve(): {
+        "usb_hid_dispatch_out_report_if_ready": 0x358E,
+    },
+}
+
+
 def parse_gpasm_symbols(lst_path: Path) -> Dict[str, int]:
     """Extract label→address mapping from a gpasm listing file.
 
@@ -86,6 +96,7 @@ def load_gpasm_symbols_for_hex(main_hex: Path) -> Dict[str, int] | None:
         except ValueError:
             continue
         if symbols:
+            symbols.update(_RELEASE_SYMBOL_OVERRIDES.get(release_hex, {}))
             return symbols
     return None
 
@@ -191,7 +202,7 @@ def build_shifted_asm(source_asm: Path, output_asm: Path) -> Path:
         stripped = line.strip()
 
         # Insert NOP padding after the ISR dispatch call
-        if not padding_inserted and stripped.startswith("call") and "main_isr_dispatch" in stripped:
+        if not padding_inserted and stripped.startswith("call") and "isr_high_priority_dispatch" in stripped:
             out.append(line)
             out.append("")
             out.append("; --- Relocation safety padding (shift test) ---")

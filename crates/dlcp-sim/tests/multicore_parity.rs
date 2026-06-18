@@ -309,16 +309,16 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // does on real silicon when not in update mode.
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
-    // FSR2 + CALL FAST main_isr_dispatch); the bootloader
+    // FSR2 + CALL FAST isr_high_priority_dispatch); the bootloader
     // would normally trampoline 0x0008 → 0x1008 but isn't
     // loaded, so we bake the trampoline here.  Task #30 fix.
     let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000), Some(0x1008));
-    // V3.x MAIN early-boot reads AN0 in `adc_boot_gate` to
+    // V3.x MAIN early-boot reads AN0 in `run_wake_rail_gate_and_dsp_cold_init` to
     // decide "is the unit plugged in?".  Without an injected
     // sample the ADC peripheral returns 0x0000 and MAIN parks
     // in a standby-poll loop forever.  Inject a value
     // comfortably above the V3.1/V3.2 boot-gate threshold
-    // (0x0236 per `src/dlcp_fw/asm/dlcp_main_v31.asm::adc_boot_gate`;
+    // (0x0236 per `src/dlcp_fw/asm/dlcp_main_v31.asm::run_wake_rail_gate_and_dsp_cold_init`;
     // 0x0228 is the runtime low-trip standby threshold, NOT
     // the boot gate) so MAIN clears the gate and continues
     // into chain protocol convergence.
@@ -340,7 +340,7 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // Tbl 6-1).  Without this slave, MAIN's `dsp_ping` and
     // `volume_dsp_write` paths in `dlcp_main_v31.asm` get NACK
     // on every master TX byte and the firmware spin-retries in
-    // `wait_bf_clear_loop`.
+    // `wait_bf_clear_bounded__poll_until_bf_clear`.
     let i_tas3108 = chain.push_tas3108(Tas3108::default());
     chain.couple_tas3108(i_main, i_tas3108);
 
@@ -386,7 +386,7 @@ fn chain_with_v171_and_v31_steps_without_panic() {
     // and into V3.1 application code.  By the time
     // `run_until` exits with `bytes_acked >= 1000`, MAIN's
     // PC has typically been observed at 0x428E
-    // (mid-`flow_timer3_blocking_delay_449e` BRA, a normal
+    // (mid-`timer3_blocking_delay__wait_overflow_flag` BRA, a normal
     // Timer3 overflow poll between DSP init bursts -- see
     // the longer comment above the `run_until` call for
     // context on why this is the chain-progress milestone).
@@ -2865,7 +2865,7 @@ fn three_core_synthetic_pb2_injection_decrement_and_forward() {
 /// **Faithfulness caveat**: this test reads cells via direct BANK 2
 /// RAM probe at `diag_i..diag_p` (0x2E5..0x2EB), not via the cmd 0x44
 /// HID path (which would require a USB stack).  The HID emit-side at
-/// `hid_cmd_diag_snapshot:` (`dlcp_main_v32.asm:9760+`) is a direct
+/// `hid_diag_snapshot_emit:` (`dlcp_main_v32.asm:9760+`) is a direct
 /// `POSTINC0 -> POSTINC2` byte-copy with no transformation, so RAM is
 /// bit-equivalent to cmd 0x44 reply payload `[3..9]`.  Note however
 /// that the UART BF/2N reply burst at `:9261` masks each cell with
@@ -3021,7 +3021,7 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
     //   1. See event_flags.bit2 set → not skip
     //   2. See active_flags.bit3 SET → take the bring-up branch
     //   3. `diag_inc_sat diag_b` (0x2E8 → 1)
-    //   4. Call `adc_boot_gate` for rail-rise wait
+    //   4. Call `run_wake_rail_gate_and_dsp_cold_init` for rail-rise wait
     //   5. Clear event_flags.bit2
     {
         let af = chain.cores[i_main0]
@@ -3068,8 +3068,8 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
         post_wake[3],
     );
     // Note: we do NOT assert event_flags.bit2 cleared here.  The
-    // bring-up branch calls `adc_boot_gate` *before* reaching the
-    // 47aa "consume event" merge point.  `adc_boot_gate` is the
+    // bring-up branch calls `run_wake_rail_gate_and_dsp_cold_init` *before* reaching the
+    // 47aa "consume event" merge point.  `run_wake_rail_gate_and_dsp_cold_init` is the
     // rail-rise blocking wait (`asm:5081+`) which can hold the CPU
     // for tens of millions of ticks before returning -- in this
     // single-MAIN harness without a coupled CONTROL feeding boot
@@ -3096,13 +3096,13 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
 /// Filed as task #51 follow-up.
 ///
 /// Investigation (2026-05-02): the parser-driven path works fine; the
-/// gap was settle time after `adc_boot_gate` (`asm:5081+`).  Both cold
-/// boot AND `wake_request_handler` route through `adc_boot_gate` for
+/// gap was settle time after `run_wake_rail_gate_and_dsp_cold_init` (`asm:5081+`).  Both cold
+/// boot AND `wake_request_handler` route through `run_wake_rail_gate_and_dsp_cold_init` for
 /// the rail-rise blocking wait, which holds the CPU in that loop for
 /// ~10 M Tcy before returning to the main service loop.  Any frame
 /// injected during that window sits in the rx_ring (rd stays at the
 /// pre-injection value, wr advances) because the parser service
-/// routine isn't running.  Once `adc_boot_gate` returns, the parser
+/// routine isn't running.  Once `run_wake_rail_gate_and_dsp_cold_init` returns, the parser
 /// drains the ring and dispatches normally.
 ///
 /// Bisected boundary (STDBY frame after wake): processed within
@@ -3113,12 +3113,12 @@ fn v32_main_runtime_counters_baseline_and_post_stdby_cycle() {
 /// Test sequence:
 ///
 ///   1. Boot to DSP ACK threshold (cold boot opens the gate by setting
-///      active_flags.bit3 BEFORE entering adc_boot_gate at asm:5124).
-///   2. Settle 15 M Tcy past boot to clear adc_boot_gate.
+///      active_flags.bit3 BEFORE entering run_wake_rail_gate_and_dsp_cold_init at asm:5124).
+///   2. Settle 15 M Tcy past boot to clear run_wake_rail_gate_and_dsp_cold_init.
 ///   3. PARSER-DRIVEN STDBY: inject B0/03/00, wait for gate close +
 ///      diag_s=1 + event consumed.
 ///   4. PARSER-DRIVEN WAKE: inject B0/03/01, wait for gate open +
-///      diag_b=1.  The wake handler then re-enters adc_boot_gate.
+///      diag_b=1.  The wake handler then re-enters run_wake_rail_gate_and_dsp_cold_init.
 ///   5. Settle 15 M Tcy past wake.
 ///   6. PARSER-DRIVEN STDBY (second): inject B0/03/00, wait for gate
 ///      close + diag_s=2.  Proves the cycle repeats.
@@ -3179,9 +3179,9 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     );
 
     // After cold boot, V3.2 sets active_flags.bit3 BEFORE entering
-    // adc_boot_gate (`asm:5124`), so the gate is OPEN when the boot
+    // run_wake_rail_gate_and_dsp_cold_init (`asm:5124`), so the gate is OPEN when the boot
     // gate's rail-rise wait completes.  Sanity-check that.
-    chain.step_ticks(15_000_000 * 12); // 15 M Tcy boot-settle (past adc_boot_gate)
+    chain.step_ticks(15_000_000 * 12); // 15 M Tcy boot-settle (past run_wake_rail_gate_and_dsp_cold_init)
     let af_after_boot = read_u8(&chain, 0x05E);
     let diag_s_after_boot = read_u8(&chain, 0x2E7);
     let diag_b_after_boot = read_u8(&chain, 0x2E8);
@@ -3227,10 +3227,10 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
 
     // ----- Phase 3: parser-driven WAKE (gate-closed -> open) -----
     // wake_request_handler sets event_flags.bit2 + sets
-    // active_flags.bit3 (BEFORE adc_boot_gate); then
+    // active_flags.bit3 (BEFORE run_wake_rail_gate_and_dsp_cold_init); then
     // standby_event_dispatch takes the bring-up branch where
     // `diag_inc_sat diag_b` runs immediately BEFORE
-    // `call adc_boot_gate` and BEFORE the `bcf event_flags, 2`
+    // `call run_wake_rail_gate_and_dsp_cold_init` and BEFORE the `bcf event_flags, 2`
     // consume -- so diag_b>=1 implies "dispatch reached bring-up
     // branch", not yet "event consumed".  Indirect proof that
     // consumption occurred is the subsequent STDBY2 progress
@@ -3249,7 +3249,7 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
     );
     assert_eq!(diag_b2, 1, "WAKE: diag_b must be 1; got 0x{diag_b2:02X}");
 
-    // ----- Phase 4: wake-settle (re-enters adc_boot_gate) -----
+    // ----- Phase 4: wake-settle (re-enters run_wake_rail_gate_and_dsp_cold_init) -----
     chain.step_ticks(15_000_000 * 12); // 15 M Tcy wake-settle
 
     // ----- Phase 5: parser-driven STDBY (second time, proves repeatable) -----
@@ -3303,13 +3303,13 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
 ///   1. **Regression gate (firmware-orthogonal contract)**: this
 ///      test models the MCLR-HELD failure mode specifically -- the
 ///      CPU is not running while held, so a *firmware* timeout
-///      (e.g. `adc_boot_gate` timeout per
+///      (e.g. `run_wake_rail_gate_and_dsp_cold_init` timeout per
 ///      `docs/V32_MAIN_HANG_HARDENING_PLAN.md`) cannot fire because
 ///      no firmware is executing.  The contract this test pins is
 ///      the chain-protocol response to "MAIN1's CPU is unavailable":
 ///      MAIN0 wakes alone, MAIN1 stays gate-closed.  A separate
 ///      future test using `set_an0_sample(MAIN1, 0x0000)` (CPU
-///      running but stuck in adc_boot_gate's polling loop) would
+///      running but stuck in run_wake_rail_gate_and_dsp_cold_init's polling loop) would
 ///      exercise the firmware-timeout path and become the
 ///      regression gate for the timeout fix.
 ///   2. **Hypothesis check**: if HW operator captures during the
@@ -3338,7 +3338,7 @@ fn v32_main_parser_driven_stdby_wake_stdby_cycle_after_settle() {
 ///         MCLR-held-LOW hardware condition specifically.  An
 ///         AN0-stuck variant (`set_an0_sample(MAIN1, 0x0000)`) is
 ///         a related but distinct failure mode where the CPU runs
-///         but stays in adc_boot_gate's polling loop indefinitely;
+///         but stays in run_wake_rail_gate_and_dsp_cold_init's polling loop indefinitely;
 ///         that variant is left for a future test.  After this
 ///         point MAIN1's CPU does not advance instructions; any
 ///         wake byte arriving at its UART pin gets recorded in
@@ -3867,18 +3867,18 @@ fn v171_v32_v32_wake_baseline_main1_progresses_without_fault() {
     );
 }
 
-/// Bug #45 §C regression gate (task #82) — adc_boot_gate timeout
+/// Bug #45 §C regression gate (task #82) — run_wake_rail_gate_and_dsp_cold_init timeout
 /// firmware fix.  With the timeout in place, a MAIN whose AN0 stays
 /// depressed below the 0x0236 boot-gate threshold for the full
 /// timeout window (~50 iters * 10 ms ≈ 500 ms; see
-/// `dlcp_main_v32.asm:adc_boot_gate`) MUST exit the polling loop
+/// `dlcp_main_v32.asm:run_wake_rail_gate_and_dsp_cold_init`) MUST exit the polling loop
 /// and continue the wake bring-up sequence rather than wedging
-/// inside `adc_boot_gate` indefinitely.
+/// inside `run_wake_rail_gate_and_dsp_cold_init` indefinitely.
 ///
 /// Pre-fix snapshot (frozen for documentation): the same test body
 /// previously asserted that MAIN1's amp-enable latches stayed LOW
 /// AND post-droop TX stayed at 0, pinning MAIN1 to
-/// `[adc_boot_gate (asm:4042), first amp-enable bsf (asm:4098))`
+/// `[run_wake_rail_gate_and_dsp_cold_init (asm:4042), first amp-enable bsf (asm:4098))`
 /// for the entire 1.25 s post-droop wait window — i.e. wedged in
 /// the unbounded polling loop.  That state was the H1
 /// firmware-OBSERVABLE form of the field bug.  After the timeout
@@ -3905,10 +3905,10 @@ fn v171_v32_v32_wake_baseline_main1_progresses_without_fault() {
 ///    (asm:8392 incremented diag_b).
 /// 3. After the post-droop wait window, MAIN1's `LATB.bit4`
 ///    (asm:4098 — first post-gate amp-enable) IS raised, proving
-///    `adc_boot_gate` exited via the new timeout path despite AN0
+///    `run_wake_rail_gate_and_dsp_cold_init` exited via the new timeout path despite AN0
 ///    held below threshold.  Without the firmware fix this latch
 ///    would never come up (the pre-fix observable, frozen above).
-/// 4. MAIN1's PC is past `adc_boot_gate_exit` (asm:4086) at
+/// 4. MAIN1's PC is past `adc_boot_gate__start_dsp_cold_init` (asm:4086) at
 ///    sample time — direct corroboration that the polling loop
 ///    was bounded.
 ///
@@ -4073,30 +4073,30 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
     // chunk_ticks = 1000 universal ticks ≈ 83 MAIN-Tcy: small relative
     // to (a) the chain-forwarding delay for the wake triplet (~46k
     // ticks at 31250 baud) and (b) the 10 ms inter-poll delay inside
-    // adc_boot_gate (asm:4059 ≈ 30k MAIN-Tcy ≈ 360 chunks).
+    // run_wake_rail_gate_and_dsp_cold_init (asm:4059 ≈ 30k MAIN-Tcy ≈ 360 chunks).
     //
     // **Trigger choice (race-window)**: the trigger MUST be earlier than
-    // adc_boot_gate's first ADC conversion start at asm:4048, otherwise
+    // run_wake_rail_gate_and_dsp_cold_init's first ADC conversion start at asm:4048, otherwise
     // the conversion latches MAIN1's AN0 sample at a value the test
     // intended to override and MAIN1 promptly exits the gate.
     //
     // - `diag_b1` increments at asm:8392 INSIDE standby_event_dispatch,
-    //   immediately followed by `call adc_boot_gate` at asm:8393. The
-    //   adc_boot_gate prologue (asm:4042-4047) is only ~10 Tcy before
+    //   immediately followed by `call run_wake_rail_gate_and_dsp_cold_init` at asm:8393. The
+    //   run_wake_rail_gate_and_dsp_cold_init prologue (asm:4042-4047) is only ~10 Tcy before
     //   `bsf ADCON0, 1` at asm:4048 starts the conversion. Within ONE
     //   chunk of `chunk_ticks=1000` (83 MAIN-Tcy) the conversion can
     //   start AND complete (12 Tcy latency in the rust ADC model), so
     //   reading db1 == 1 at end-of-chunk and dropping AN0 then is too
     //   late: the latched ADRESH:ADRESL already holds the OLD high
     //   sample, the threshold compare passes, MAIN1 jumps to
-    //   `adc_boot_gate_exit` at asm:4086, and the latch-low postcondition
+    //   `adc_boot_gate__start_dsp_cold_init` at asm:4086, and the latch-low postcondition
     //   becomes ambiguous (could be the post-exit 70 ms / 100 ms timer
     //   settles before the bsf at asm:4098).
     //
     // - `active_flags.bit3` is set MUCH earlier: at asm:1894 inside
     //   `wake_request_handler`. The chain from there to the first
     //   `bsf ADCON0, 1` traverses the parser exit, several main-loop
-    //   service routines, standby_event_dispatch, and the adc_boot_gate
+    //   service routines, standby_event_dispatch, and the run_wake_rail_gate_and_dsp_cold_init
     //   prologue — easily 100+ MAIN-Tcy. Detecting af1.bit3 == 1 and
     //   dropping AN0 in the same chunk gives ample slack for the next
     //   chunk's conversion to latch the dropped value.
@@ -4111,7 +4111,7 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
     const MAIN0_AN0_HELD: u16 = 0x0300; // MAIN0's local sense node stays high
     const MAIN1_AN0_INITIAL: u16 = 0x0300; // MAIN1 sees full rail until it enters gate
     const MAIN1_DROOP_HELD: u16 = 0x0100; // sustained droop once MAIN1 in gate
-    // Wait window post-droop: the firmware timeout in `adc_boot_gate`
+    // Wait window post-droop: the firmware timeout in `run_wake_rail_gate_and_dsp_cold_init`
     // is ~50 iters × 10 ms ≈ 500 ms.  After the timeout fires the
     // post-gate path (asm:4086+) does ~70 ms (asm:4088) + ~100 ms
     // (asm:4097) ≈ 170 ms of timer3 settles before the first
@@ -4123,7 +4123,7 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
     // gives ~3× slack over the 700 ms expected and easily catches
     // any unrelated long delays at the front of the bring-up.
     const POST_DROOP_WAIT_CHUNKS: usize = 100_000;
-    // adc_boot_gate body (entry asm:4041 / byte 0x293C → exit label
+    // run_wake_rail_gate_and_dsp_cold_init body (entry asm:4041 / byte 0x293C → exit label
     // asm:4086 / byte 0x2980 in current V3.2 listing).  Used as a
     // diagnostic + as a regression-gate predicate: MAIN1's PC must
     // land OUTSIDE this window after the timeout-wait expires.
@@ -4358,7 +4358,7 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
         diag_b1 >= 1,
         "§C timeout-exit: MAIN1 diag_b must be >= 1 \
          -- standby_event_dispatch (asm:8392) ran, so MAIN1 entered \
-         the bring-up branch and called adc_boot_gate. \
+         the bring-up branch and called run_wake_rail_gate_and_dsp_cold_init. \
          got 0x{:02X}",
         diag_b1,
     );
@@ -4369,7 +4369,7 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
          raises LATB.bit4 at asm:4098 -- the first post-gate \
          amp-enable, immediately after the gate's exit label at \
          asm:4086. Without the §C timeout fix MAIN1 would loop in \
-         adc_boot_gate forever and this latch would never come up. \
+         run_wake_rail_gate_and_dsp_cold_init forever and this latch would never come up. \
          droop_engaged={}, m1_latb4_first_chunk={:?}, droop_first_chunk={:?}",
         droop_engaged, main1_latb4_first_chunk, droop_first_chunk,
     );
@@ -4382,7 +4382,7 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
     );
     assert!(
         !(pc1 >= ADC_BOOT_GATE_BEGIN && pc1 < ADC_BOOT_GATE_END),
-        "§C timeout-exit: MAIN1 PC must be OUTSIDE the adc_boot_gate \
+        "§C timeout-exit: MAIN1 PC must be OUTSIDE the run_wake_rail_gate_and_dsp_cold_init \
          body [0x{:06X}, 0x{:06X}) at sample time -- the timeout \
          must have moved the CPU past the polling loop. got pc=0x{:06X}",
         ADC_BOOT_GATE_BEGIN,
@@ -4391,10 +4391,10 @@ fn v171_v32_v32_asymmetric_wake_railcoupler_spontaneous_no_fault() {
     );
 
     eprintln!(
-        "task#82 OK (Bug #45 §C adc_boot_gate timeout regression gate): \
+        "task#82 OK (Bug #45 §C run_wake_rail_gate_and_dsp_cold_init timeout regression gate): \
          healthy boot -> STDBY broadcast -> WAKE -> both MAINs dispatch \
          wake_request_handler (af.bit3 = 1) and standby_event_dispatch \
-         (db >= 1). MAIN0 completes wake. MAIN1 enters adc_boot_gate \
+         (db >= 1). MAIN0 completes wake. MAIN1 enters run_wake_rail_gate_and_dsp_cold_init \
          with AN0 held at 0x0100 (below the 0x0236 threshold), polls \
          for the bounded ~500 ms window, then EXITS via the §C \
          decfsz counter and raises LATB.bit4 at asm:4098 on the \
@@ -5693,7 +5693,7 @@ fn chain_v171_v31_reaches_first_uart_tx() {
 
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
-    // FSR2 + CALL FAST main_isr_dispatch); the bootloader
+    // FSR2 + CALL FAST isr_high_priority_dispatch); the bootloader
     // would normally trampoline 0x0008 → 0x1008 but isn't
     // loaded, so we bake the trampoline here.  Task #30 fix.
     let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000), Some(0x1008));
@@ -5761,7 +5761,7 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         HexImage::from_hex_path(v23_main_combined_hex_path()).expect("V2.3 combined hex parses");
     let control = build_core_from_hex(Variant::Pic18F25K20, &v171, None, None);
     // V3.1 MAIN's user IRQ handler lives at 0x1008 (saves
-    // FSR2 + CALL FAST main_isr_dispatch); the bootloader
+    // FSR2 + CALL FAST isr_high_priority_dispatch); the bootloader
     // would normally trampoline 0x0008 → 0x1008 but isn't
     // loaded, so we bake the trampoline here.  Task #30 fix.
     let mut main = build_core_from_hex(Variant::Pic18F2455, &v31, Some(0x1000), Some(0x1008));
@@ -5983,7 +5983,7 @@ fn chain_v171_v31_emits_full_handshake_burst() {
         rcon,
         (rcon >> 7) & 1,
     );
-    // Task #30: PC=0x428C is V3.1's flow_timer3_blocking_delay_449e
+    // Task #30: PC=0x428C is V3.1's timer3_blocking_delay__wait_overflow_flag
     // (`btfss PIR2, 1` polling TMR3IF).  Dump Timer3 state.
     let t3con = main
         .memory
@@ -6402,7 +6402,7 @@ fn chain_v171_v31_control_lcd_matches_gpsim_ground_truth_bit_exact() {
 ///     MAIN.TX → CONTROL.RX.
 ///   * TAS3108 DSP slave on MAIN's MSSP I²C bus (V2.3 also
 ///     drives DSP init at boot; without this the firmware
-///     spins in `wait_bf_clear_loop`).
+///     spins in `wait_bf_clear_bounded__poll_until_bf_clear`).
 ///   * HD44780 LCD slave on CONTROL's GPIO bus (4-bit mode,
 ///     RS=LATA[5], E=LATB[4], D4..D7=PORTB[3:0] per
 ///     `dlcp_control_v17.asm::lcd_char_write`).
@@ -6442,7 +6442,7 @@ fn chain_v16b_v23_stock_reaches_volume_screen() {
     let mut main = build_core_from_hex(Variant::Pic18F2455, &v23_combined, None, None);
     // V2.3 boot also gates on AN0 (mains-detect ADC).  Same
     // 0x0300 mid-rail value used for V3.x; V3.x's
-    // `adc_boot_gate` is a behavioural reimplementation of
+    // `run_wake_rail_gate_and_dsp_cold_init` is a behavioural reimplementation of
     // V2.3's, so the threshold inheritance is direct.
     main.peripherals.adc.set_an0_sample(0x0300);
 

@@ -59,7 +59,7 @@ def _v3x_hid_symbols(main_hex) -> tuple[int, int]:  # type: ignore[no-untyped-de
     if not symbols:
         pytest.skip(f"missing gpasm listing for HID entry symbols: {main_hex}")
     try:
-        return int(symbols["main_usb_service_3a26"]), int(symbols["hid_command_dispatch"])
+        return int(symbols["usb_hid_dispatch_out_report_if_ready"]), int(symbols["hid_command_dispatch"])
     except KeyError as exc:
         pytest.fail(f"missing V3.x HID symbol in gpasm listing: {exc}")  # pragma: no cover
 
@@ -97,16 +97,16 @@ def _first_flush_table() -> bytes:
 
 def test_v33_flash_remap_start_address_uses_shared_helper() -> None:
     text = V33_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    assert "preset_b_remap_start_addr:" in text
-    assert "preset_b_remap_start_addr_if_b:" in text
+    assert "flash_remap_preset_b_start_address_if_active:" in text
+    assert "flash_remap_preset_b_start_address:" in text
 
-    flash_write_body = text[text.index("flash_write:") : text.index("flash_write_stock:")]
-    flash_erase_body = text[text.index("flash_erase:") : text.index("flash_erase_stock:")]
-    flash_read_body = text[text.index("flash_read:") : text.index("flash_read_stock:")]
+    flash_write_body = text[text.index("flash_write:") : text.index("flash_write_without_preset_remap:")]
+    flash_erase_body = text[text.index("flash_erase:") : text.index("flash_erase_without_preset_remap:")]
+    flash_read_body = text[text.index("flash_read:") : text.index("flash_read_without_preset_remap:")]
 
-    assert "call        preset_b_remap_start_addr, 0x0" in flash_write_body
-    assert "call        preset_b_remap_start_addr_if_b, 0x0" in flash_erase_body
-    assert "call        preset_b_remap_start_addr, 0x0" in flash_read_body
+    assert "call        flash_remap_preset_b_start_address_if_active, 0x0" in flash_write_body
+    assert "call        flash_remap_preset_b_start_address, 0x0" in flash_erase_body
+    assert "call        flash_remap_preset_b_start_address_if_active, 0x0" in flash_read_body
     assert "subwf       ram_0x004" not in flash_write_body
     assert "subwf       ram_0x004" not in flash_erase_body
     assert "subwf       ram_0x004" not in flash_read_body
@@ -214,19 +214,19 @@ def test_v34_hid_flash_upload_copy_loop_preserves_active_preset_b_remap() -> Non
 
 def test_v34_flash_upload_copy_loop_keeps_legacy_nonzero_source_skew() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    start = text.index("flow_main_flash_service_2bb8_2bdc:")
-    end = text.index("flow_main_flash_service_2bb8_2ca6:", start)
+    start = text.index("fw_update_commit_hid_payload_page__copy_staged_payload:")
+    end = text.index("fw_update_commit_hid_payload_page__return:", start)
     body = text[start:end]
 
-    assert "lfsr        FSR2, stock_11E_b1_phys" in body
-    assert "movf        stock_11B_b1, W, BANKED" in body
-    assert "bz          flow_main_flash_service_2bb8_src_ready" in body
+    assert "lfsr        FSR2, usb_hid_out_arg3_phys" in body
+    assert "movf        usb_hid_out_arg0_b1, W, BANKED" in body
+    assert "bz          fw_update_commit_hid_payload_page__payload_source_ready" in body
     assert "movlw       0x02" in body
     assert "subwf       FSR2L, F, ACCESS" in body
     assert "movlw       0x14" in body
-    assert "call        copy_postinc2_to_postinc1_count_w, 0x0" in body
+    assert "call        copy_w_bytes_fsr2_to_fsr1, 0x0" in body
 
-    helper_start = text.index("copy_postinc2_to_postinc1_count_w:")
-    helper_end = text.index("copy4_postinc0_to_postinc2_rewind2:", helper_start)
+    helper_start = text.index("copy_w_bytes_fsr2_to_fsr1:")
+    helper_end = text.index("copy_four_bytes_fsr0_to_fsr2_rewind2:", helper_start)
     helper_body = text[helper_start:helper_end]
     assert "movff       POSTINC2, POSTINC1" in helper_body

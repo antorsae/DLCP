@@ -212,7 +212,7 @@ Implementation steps:
      `BF/52/rev_hi`, `BF/53/rev_lo`.
    - MAIN space is tight: emit only the `BF/4F/id` START frame explicitly,
      stage major/minor/rev nibbles in scratch RAM, and reuse the existing
-     `diag_send_burst_xx` loop for `BF/50..BF/53`.
+     `diag_low_nibble_reply_burst` loop for `BF/50..BF/53`.
    - Suppress the legacy unknown-command ACK echo before the parser tail:
      `bcf active_flags, 6, ACCESS`.
    - A blocking five-frame transaction is acceptable only because CONTROL

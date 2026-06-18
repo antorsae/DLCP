@@ -32,7 +32,7 @@ OUT_LST = OUT_HEX.with_suffix(".lst")
 
 _RESEED_OLD = """    movf        i2c_coeff_2, W, ACCESS
     xorlw       0x07
-    bnz         flow_hid_command_dispatch_13ba
+    bnz         hid_command_dispatch__commit_upload_payload
     ; Robustness: cmd 0x07 always reseeds the flash upload cursor/page base.
     movlb       0x1
     movlb       0x0
@@ -45,10 +45,10 @@ _RESEED_OLD = """    movf        i2c_coeff_2, W, ACCESS
 
 _RESEED_NEW = """    movf        i2c_coeff_2, W, ACCESS
     xorlw       0x07
-    bnz         flow_hid_command_dispatch_13ba
+    bnz         hid_command_dispatch__commit_upload_payload
     movlb       0x1
     tstfsz      ram_0x01B, BANKED
-    bra         flow_hid_command_dispatch_13ba
+    bra         hid_command_dispatch__commit_upload_payload
     movlb       0x0
     clrf        ram_0x0C5, BANKED
     movlw       0x56

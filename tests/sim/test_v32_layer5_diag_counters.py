@@ -10,7 +10,7 @@ at 0x12A) per ``docs/V163B_DIAGNOSTICS_MENU_SPEC.md``:
   one counter per frame in the data byte's low nibble — the original
   4-frame packed scheme was retired 2026-04-19 because data bytes
   >= 0x80 were re-interpreted as routes by the chain forwarder)
-* ``ra1_edge_monitor`` invocation from ``periodic_service_loop``
+* ``ra1_edge_monitor`` invocation from ``run_main_service_pass``
 * RCON-gated POR/BOR clear logic in cold init
 
 Three tiers as in Layer 1/2:
@@ -384,15 +384,15 @@ def test_v32_source_diag_a_hook_in_an0_hysteresis_monitor() -> None:
 
 @pytest.mark.dual_supported
 def test_v32_source_ra1_edge_monitor_called_from_periodic_loop() -> None:
-    """ra1_edge_monitor must run every periodic_service_loop pass."""
+    """ra1_edge_monitor must run every run_main_service_pass pass."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = _label_offset(text, "periodic_service_loop")
+    start = _label_offset(text, "run_main_service_pass")
     end_marker = text.find("\n; ====", start)
     if end_marker < 0:
         end_marker = start + 800
     body = text[start:end_marker]
     assert re.search(r"(rcall|call)\s+ra1_edge_monitor\b", body), (
-        "ra1_edge_monitor not invoked from periodic_service_loop"
+        "ra1_edge_monitor not invoked from run_main_service_pass"
     )
 
 
@@ -403,7 +403,7 @@ def test_v32_source_cmd21_dispatch_in_main_uart_service_1be6() -> None:
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     # Search the cmd dispatch chain for the cmd 0x21 add.
     chain_start = _label_offset(text, "cmd_dispatch_xor_chain")
-    chain_end = _label_offset(text, "flow_main_uart_service_1be6_1e6c")
+    chain_end = _label_offset(text, "uart_link_parser__handler_return_tail")
     chain = text[chain_start:chain_end]
     assert "preset_select_handler" in chain
     # After preset_select_handler dispatch, the next xorlw 0x01 / btfsc /
@@ -423,14 +423,14 @@ def test_v32_source_cmd21_handler_seeds_burst_loop_with_seven_frames() -> None:
 
     Rev 0x37 (Tier-1) refactored the handler from 7 fully-unrolled
     frame blocks into a 3-line setup that seeds a shared
-    ``diag_send_burst_xx`` helper:
+    ``diag_low_nibble_reply_burst`` helper:
 
         movlw 0x28        ; sentinel = first sub-cmd + 7 (cmd 0x21..0x27 inclusive)
         movwf ram_0x004
         movlw 0x21        ; first sub-cmd byte
         movwf i2c_coeff_3
         lfsr  FSR0, diag_i
-        bra   diag_send_burst_xx
+        bra   diag_low_nibble_reply_burst
 
     The earlier 4-frame packed-nibble scheme was retired 2026-04-19
     because data >= 0x80 was re-interpreted as a route by the chain
@@ -447,8 +447,8 @@ def test_v32_source_cmd21_handler_seeds_burst_loop_with_seven_frames() -> None:
     start = _label_offset(text, "cmd21_diag_query_handler")
     # End at the bra to the shared helper.  The helper name also
     # appears in the doc comments, so match the bra-statement form.
-    bra_match = re.search(r"\n\s*bra\s+diag_send_burst_xx\b", text[start:])
-    assert bra_match, "cmd21 handler missing bra to diag_send_burst_xx"
+    bra_match = re.search(r"\n\s*bra\s+diag_low_nibble_reply_burst\b", text[start:])
+    assert bra_match, "cmd21 handler missing bra to diag_low_nibble_reply_burst"
     body = text[start:start + bra_match.end()]
     assert re.search(r"movlw\s+0x28\b", body), (
         "cmd21 setup missing sentinel = 0x28 — the burst would not "
@@ -462,8 +462,8 @@ def test_v32_source_cmd21_handler_seeds_burst_loop_with_seven_frames() -> None:
         "cmd21 setup missing lfsr FSR0, diag_i — burst would walk "
         "the wrong RAM block."
     )
-    assert re.search(r"bra\s+diag_send_burst_xx\b", body), (
-        "cmd21 setup missing fall-through bra to diag_send_burst_xx."
+    assert re.search(r"bra\s+diag_low_nibble_reply_burst\b", body), (
+        "cmd21 setup missing fall-through bra to diag_low_nibble_reply_burst."
     )
 
 
@@ -475,7 +475,7 @@ def test_v32_source_cold_init_does_not_save_diag_block_before_wipe() -> None:
     suggest someone moved the diag block back into a wiped region.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = _label_offset(text, "flow_main_flash_service_3ce8_3d4e")
+    start = _label_offset(text, "boot_cold_init__clear_ram_and_runtime_state")
     first_lfsr = text.find("lfsr        FSR0, 0x0300", start)
     pre_wipe = text[start:first_lfsr]
     # Pre-wipe block should be empty (no diag-touching movff at all).
@@ -584,7 +584,7 @@ def test_v32_layer5_symbols_resolve(v32_hex: Path) -> None:
         "standby_event_dispatch",
         "an0_hysteresis_monitor",
         "volume_dsp_write",
-        "periodic_service_loop",
+        "run_main_service_pass",
     ):
         addr = syms.get(name)
         assert isinstance(addr, int), f"symbol {name} did not resolve"
@@ -698,7 +698,7 @@ def test_v32_layer5_diag_block_clears_on_cold_start(v32_hex: Path) -> None:
 @pytest.mark.dual_supported
 def test_v32_diag_send_burst_helper_uses_postinc0_indirect() -> None:
     """Rev 0x37 (Tier-1) refactored cmd 0x21 + cmd 0x22 to share a
-    common ``diag_send_burst_xx`` helper that walks the diag block via
+    common ``diag_low_nibble_reply_burst`` helper that walks the diag block via
     ``movf POSTINC0, W, ACCESS``.  The earlier (rev 0x35/0x36) per-frame
     ``movlb 0x02`` re-assertion is no longer needed because POSTINC0
     indirect addressing is bank-agnostic — even if a TRMT timeout in
@@ -713,13 +713,13 @@ def test_v32_diag_send_burst_helper_uses_postinc0_indirect() -> None:
     AND this test, with a justification.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = _label_offset(text, "diag_send_burst_xx")
-    assert start >= 0, "diag_send_burst_xx helper missing"
-    end = text.find("flow_main_uart_service_1be6_1e6c", start)
+    start = _label_offset(text, "diag_low_nibble_reply_burst")
+    assert start >= 0, "diag_low_nibble_reply_burst helper missing"
+    end = text.find("uart_link_parser__handler_return_tail", start)
     body = text[start:end]
     # Helper must read each cell via POSTINC0 indirect (bank-agnostic).
     assert re.search(r"movf\s+POSTINC0,\s*W,\s*ACCESS", body), (
-        "diag_send_burst_xx must read cells via POSTINC0 indirect — "
+        "diag_low_nibble_reply_burst must read cells via POSTINC0 indirect — "
         "BANKED reads would require per-iteration movlb to defend "
         "against the uart_tx_byte_blocking timeout fallback that "
         "clobbers BSR."
@@ -727,7 +727,7 @@ def test_v32_diag_send_burst_helper_uses_postinc0_indirect() -> None:
     # And must NOT use any BANKED diag read inside the helper body
     # (the indirect path is the only sanctioned path).
     assert not re.search(r"movf\s+diag_\w+,\s*W,\s*BANKED", body), (
-        "diag_send_burst_xx must not have BANKED diag reads — those "
+        "diag_low_nibble_reply_burst must not have BANKED diag reads — those "
         "would defeat the bank-agnostic property the helper relies on."
     )
 
@@ -790,20 +790,20 @@ def test_v32_cmd21_masks_high_nibble_before_tx() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     # Rev 0x37 (Tier-1) refactored cmd 0x21 + cmd 0x22 to share a
-    # diag_send_burst_xx helper that has the andlw mask in its loop
+    # diag_low_nibble_reply_burst helper that has the andlw mask in its loop
     # body.  Each iteration of the helper applies the mask, so the
     # behavioral guarantee (every wire data byte is 0..0x0F) is
     # preserved with a single source-level andlw instead of 7 copies.
-    start = _label_offset(text, "diag_send_burst_xx")
-    assert start >= 0, "diag_send_burst_xx helper missing"
-    end = text.find("flow_main_uart_service_1be6_1e6c", start)
+    start = _label_offset(text, "diag_low_nibble_reply_burst")
+    assert start >= 0, "diag_low_nibble_reply_burst helper missing"
+    end = text.find("uart_link_parser__handler_return_tail", start)
     body = text[start:end]
     # The helper body must contain exactly one andlw 0x0F (the
     # per-iteration mask).  At runtime it executes once per frame =
     # 7 times for cmd 0x21, 4 times for cmd 0x22, identical bound.
     andlw_count = len(re.findall(r"\bandlw\s+0x0F\b", body))
     assert andlw_count >= 1, (
-        f"diag_send_burst_xx helper must `andlw 0x0F` before the "
+        f"diag_low_nibble_reply_burst helper must `andlw 0x0F` before the "
         f"`rcall uart_tx_byte_blocking` that emits the data byte "
         f"(only {andlw_count} masks found in helper body).  "
         f"Without the mask, a corrupted diag cell with bit 7 set "
@@ -924,7 +924,7 @@ def test_v32_diag_counters_stay_zero_during_extended_idle(v32_hex: Path) -> None
     still 0.
 
     What this catches:
-      * adc_boot_gate firing repeatedly (bringing diag_b > 1)
+      * run_wake_rail_gate_and_dsp_cold_init firing repeatedly (bringing diag_b > 1)
       * an0_hysteresis_monitor false-tripping at boot (diag_a > 0)
       * any internal code path that increments a counter without
         being driven by a real external event
@@ -1025,7 +1025,7 @@ def test_v32_cold_init_does_not_skip_clear_on_software_reset() -> None:
     longer GATE the clrf.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = _label_offset(text, "flow_main_flash_service_3ce8_3d4e")
+    start = _label_offset(text, "boot_cold_init__clear_ram_and_runtime_state")
     end = _label_offset(text, "flash_erase")
     body = text[start:end]
     # The "gate" is specifically a btf[sc] RCON test placed BEFORE the
@@ -1086,7 +1086,7 @@ def test_v32_diag_block_unchanged_by_preset_job(v32_hex: Path) -> None:
         post = tuple(h.read_reg(0x2E5 + i) for i in range(8))
         assert post == baseline, (
             f"diag block changed during preset switch!  "
-            f"baseline={baseline}, post={post}.  preset_job_service "
+            f"baseline={baseline}, post={post}.  advance_preset_job_state_machine "
             f"or one of its helpers (preset_job_apply, "
             f"preset_force_mute, etc.) wrote into 0x2E5..0x2EC.  "
             f"This is the memory-overlap hypothesis the operator's "
@@ -1191,7 +1191,7 @@ def test_ram_inc_defines_reset_cause_flag(name: str, addr: int) -> None:
 
 @pytest.mark.dual_supported
 def test_v32_source_cold_init_classifies_reset_cause() -> None:
-    """The cold-init body (between flow_main_flash_service_3ce8_3d4e
+    """The cold-init body (between boot_cold_init__clear_ram_and_runtime_state
     and flash_erase) must contain a reset-cause classification cascade
     that reads RCON and writes 1 to exactly one of the 4 reset-cause
     flag cells.  Pin both the cascade structure and the per-bit RCON
@@ -1199,7 +1199,7 @@ def test_v32_source_cold_init_classifies_reset_cause() -> None:
     datasheet 39632e §4.4).
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = _label_offset(text, "flow_main_flash_service_3ce8_3d4e")
+    start = _label_offset(text, "boot_cold_init__clear_ram_and_runtime_state")
     end = _label_offset(text, "flash_erase")
     body = text[start:end]
     # POR / BOR / TO each get an explicit btfss test in the cascade.
@@ -1247,7 +1247,7 @@ def test_v32_source_cold_init_rearms_all_four_rcon_bits() -> None:
     refactor that drops one bit on accident.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = _label_offset(text, "flow_main_flash_service_3ce8_3d4e")
+    start = _label_offset(text, "boot_cold_init__clear_ram_and_runtime_state")
     end = _label_offset(text, "flash_erase")
     body = text[start:end]
     for bit, name in ((0, "BOR"), (1, "POR"), (3, "TO/WDT"), (4, "RI/SW")):
@@ -1262,7 +1262,7 @@ def test_v32_source_cold_init_rearms_all_four_rcon_bits() -> None:
 
 @pytest.mark.dual_supported
 def test_v32_source_cmd22_dispatched_after_cmd21_in_chain() -> None:
-    """The chain dispatch (main_uart_service_1be6) tests cmd bytes via
+    """The chain dispatch (uart_link_parser_drain_rx_and_forward) tests cmd bytes via
     a cumulative-XOR cascade.  cmd 0x21 dispatches via ``xorlw 0x01``
     (cumulative 0x20 ^ 0x01 = 0x21); cmd 0x22 must dispatch via the
     NEXT ``xorlw`` whose cumulative XOR equals 0x22.
@@ -1298,7 +1298,7 @@ def test_v32_source_cmd22_dispatched_after_cmd21_in_chain() -> None:
 @pytest.mark.dual_supported
 def test_v32_source_cmd22_handler_seeds_burst_loop_with_four_frames() -> None:
     """Mirror of the cmd 0x21 seed test: cmd 0x22 must seed the shared
-    diag_send_burst_xx helper with sentinel = 0x2C (= first sub-cmd
+    diag_low_nibble_reply_burst helper with sentinel = 0x2C (= first sub-cmd
     + 4 frames), first sub-cmd = 0x28, FSR0 base = diag_reset_por.
 
     Pins the loop *bound* (4 frames), the sub-cmd range (0x28..0x2B),
@@ -1307,8 +1307,8 @@ def test_v32_source_cmd22_handler_seeds_burst_loop_with_four_frames() -> None:
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     start = _label_offset(text, "cmd22_reset_flags_query_handler")
     assert start >= 0, "cmd22 handler missing from V3.2 source"
-    bra_match = re.search(r"\n\s*bra\s+diag_send_burst_xx\b", text[start:])
-    assert bra_match, "cmd22 handler missing bra to diag_send_burst_xx"
+    bra_match = re.search(r"\n\s*bra\s+diag_low_nibble_reply_burst\b", text[start:])
+    assert bra_match, "cmd22 handler missing bra to diag_low_nibble_reply_burst"
     body = text[start:start + bra_match.end()]
     assert re.search(r"movlw\s+0x2C\b", body), (
         "cmd22 setup missing sentinel = 0x2C — burst would not stop "
@@ -1334,10 +1334,10 @@ def test_v32_source_diag_send_burst_xx_helper_present() -> None:
     test.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = _label_offset(text, "diag_send_burst_xx")
-    assert start >= 0, "diag_send_burst_xx helper missing"
-    end = text.find("flow_main_uart_service_1be6_1e6c", start)
-    body = text[start:end + len("flow_main_uart_service_1be6_1e6c")]
+    start = _label_offset(text, "diag_low_nibble_reply_burst")
+    assert start >= 0, "diag_low_nibble_reply_burst helper missing"
+    end = text.find("uart_link_parser__handler_return_tail", start)
+    body = text[start:end + len("uart_link_parser__handler_return_tail")]
     # Loop body essentials.
     assert re.search(r"movlw\s+0xBF", body), "helper missing route byte BF emit"
     assert re.search(r"andlw\s+0x0F", body), "helper missing andlw 0x0F mask"
@@ -1346,7 +1346,7 @@ def test_v32_source_diag_send_burst_xx_helper_present() -> None:
     )
     # ACK-echo suppression.
     assert re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", body), (
-        "diag_send_burst_xx must suppress the cmd-XOR ACK echo via "
+        "diag_low_nibble_reply_burst must suppress the cmd-XOR ACK echo via "
         "`bcf active_flags, 6, ACCESS` before joining the parser tail "
         "— without this, the trailing cumulative-XOR byte gets parsed "
         "by V1.71 CONTROL as data for the next frame, drifting parser "
@@ -1357,14 +1357,14 @@ def test_v32_source_diag_send_burst_xx_helper_present() -> None:
 
 @pytest.mark.dual_supported
 def test_v32_source_hid_cmd_44_dispatched() -> None:
-    """The HID dispatch chain (hid_cmd_xor_dispatch) must route cmd
-    0x44 to hid_cmd_diag_snapshot.  Pin the dispatch entry so a
+    """The HID dispatch chain (hid_command_dispatch__decode_opcode_xor_chain) must route cmd
+    0x44 to hid_diag_snapshot_emit.  Pin the dispatch entry so a
     refactor that drops the entry leaves an obvious test failure.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     # cmd 0x44 dispatch lives just after the cmd 0x43 (memread) entry.
-    assert re.search(r"goto\s+hid_cmd_diag_snapshot", text), (
-        "HID dispatch missing entry for cmd 0x44 (hid_cmd_diag_snapshot) "
+    assert re.search(r"goto\s+hid_diag_snapshot_emit", text), (
+        "HID dispatch missing entry for cmd 0x44 (hid_diag_snapshot_emit) "
         "— hosts calling cmd 0x44 would either get no response or fall "
         "through to a different handler."
     )
@@ -1372,7 +1372,7 @@ def test_v32_source_hid_cmd_44_dispatched() -> None:
 
 @pytest.mark.dual_supported
 def test_v32_source_hid_cmd_diag_snapshot_response_layout() -> None:
-    """The hid_cmd_diag_snapshot handler writes its 64-byte HID IN
+    """The hid_diag_snapshot_emit handler writes its 64-byte HID IN
     report at FSR2 = 0x015A.  Pin the response layout: cmd echo at
     [0], status 0x00 at [1], length byte 0x0B at [2], then 7 runtime
     counter cells via FSR0 walk over diag_i..diag_p, then 4 reset-
@@ -1385,46 +1385,46 @@ def test_v32_source_hid_cmd_diag_snapshot_response_layout() -> None:
     implementation tightening" for the full rationale.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    start = _label_offset(text, "hid_cmd_diag_snapshot")
-    assert start >= 0, "hid_cmd_diag_snapshot handler missing"
-    end = text.find("flow_hid_command_dispatch_15aa", start)
+    start = _label_offset(text, "hid_diag_snapshot_emit")
+    assert start >= 0, "hid_diag_snapshot_emit handler missing"
+    end = text.find("hid_command_dispatch__clear_opcode_and_return", start)
     body = text[start:end]
     # Response buffer base.
     assert re.search(r"lfsr\s+FSR2,\s*0x015A", body), (
-        "hid_cmd_diag_snapshot must write its response at the HID IN "
+        "hid_diag_snapshot_emit must write its response at the HID IN "
         "buffer base 0x015A.  Wrong buffer = host sees stale data or "
         "no response at all."
     )
     # cmd echo.  Tolerate a trailing inline comment between the movlw
     # and the next instruction.
     assert re.search(r"movlw\s+0x44\b[^\n]*\n\s*movwf\s+POSTINC2,\s*ACCESS", body), (
-        "hid_cmd_diag_snapshot must emit cmd echo 0x44 at byte [0]"
+        "hid_diag_snapshot_emit must emit cmd echo 0x44 at byte [0]"
     )
     # length byte 0x0B (11 cells: 7 counters + 4 reset flags).
     assert re.search(r"movlw\s+0x0B\b", body), (
-        "hid_cmd_diag_snapshot must emit length byte 0x0B at byte [2] "
+        "hid_diag_snapshot_emit must emit length byte 0x0B at byte [2] "
         "(11 cells = 7 runtime counters + 4 reset-cause flags).  Round-5 "
         "spec tightening dropped the trailer; hosts must query cmd 0x06 "
         "separately for firmware revision metadata."
     )
     # FSR0 walks over diag_i (start of counter block).
     assert re.search(r"lfsr\s+FSR0,\s*diag_i\b", body), (
-        "hid_cmd_diag_snapshot must seed FSR0 to diag_i (0x2E5) for "
+        "hid_diag_snapshot_emit must seed FSR0 to diag_i (0x2E5) for "
         "the 7-counter walk."
     )
     # 7-cell counter loop bound.
     assert re.search(r"movlw\s+0x07\b", body), (
-        "hid_cmd_diag_snapshot must use a 7-iteration loop for the "
+        "hid_diag_snapshot_emit must use a 7-iteration loop for the "
         "runtime counter cells (one per cell)."
     )
     # 4-cell flag loop bound.
     assert re.search(r"movlw\s+0x04\b", body), (
-        "hid_cmd_diag_snapshot must use a 4-iteration loop for the "
+        "hid_diag_snapshot_emit must use a 4-iteration loop for the "
         "reset-cause flag cells (one per cell)."
     )
     # FSR0 advances past diag_ra1_prev (0x2EC) into the reset-flag block.
     assert re.search(r"incf\s+FSR0L,\s*F,\s*ACCESS", body), (
-        "hid_cmd_diag_snapshot must advance FSR0 past diag_ra1_prev "
+        "hid_diag_snapshot_emit must advance FSR0 past diag_ra1_prev "
         "(0x2EC) before walking the reset-flag block (0x2ED..0x2F0).  "
         "Without this skip, the response would include the ra1_prev "
         "shadow (which is not a counter) instead of starting cleanly "

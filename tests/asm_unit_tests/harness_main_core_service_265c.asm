@@ -1,11 +1,11 @@
 ; ===========================================================================
-; V3.2 MAIN — unit-test harness for main_core_service_265c
+; V3.2 MAIN — unit-test harness for persist_dirty_runtime_state_to_eeprom
 ; ===========================================================================
 ; This file is APPENDED to a patched copy of src/dlcp_fw/asm/dlcp_main_v32.asm
-; where the 0x1000 user-reset `goto flow_app_entry_1014` has been replaced
+; where the 0x1000 user-reset `goto app_entry__jump_to_cold_init` has been replaced
 ; with `goto unit_test_entry`, so the chip boots directly into this driver
 ; instead of the production cold-init path.  The rest of the V3.2 image
-; remains intact so that main_core_service_265c, main_flash_service_46de,
+; remains intact so that persist_dirty_runtime_state_to_eeprom, eeprom_write_byte_if_changed,
 ; eeprom_read_byte, and eeprom_write_blocking are all reachable.
 ;
 ; Test vector
@@ -15,7 +15,7 @@
 ; bits 4 and 5 are left clear to skip the runtime 0x50..0x5E loop and the
 ; preset_persist_filename call — those are structurally minimal already and
 ; not part of the rewrite scope), arms event_flags.bit0, and calls
-; main_core_service_265c.  Then it reads EEPROM[0x00..0x14] into a known
+; persist_dirty_runtime_state_to_eeprom.  Then it reads EEPROM[0x00..0x14] into a known
 ; RAM buffer and signals completion via a fixed status byte.
 ;
 ; Observability contract (read by the Python test via gpsim `reg` cmds)
@@ -24,7 +24,7 @@
 ;                                 Any other value = test never completed.
 ; 0x01A0 .. 0x01B4 (21 bytes) :  EEPROM snapshot (offset 0x00..0x14).
 ;
-; Expected values after a correct main_core_service_265c run
+; Expected values after a correct persist_dirty_runtime_state_to_eeprom run
 ; ----------------------------------------------------------
 ;   0x1A0 (EEPROM 0x00) = 0xA3   (computed_volume_3)
 ;   0x1A1 (EEPROM 0x01) = 0xA2
@@ -114,11 +114,11 @@ unit_test_entry:
         movlw       0x0F
         movwf       ram_0x0BD,         BANKED
 
-        ; -- Gate: event_flags.bit0 = 1 -> main_core_service_265c will run --
+        ; -- Gate: event_flags.bit0 = 1 -> persist_dirty_runtime_state_to_eeprom will run --
         bsf         event_flags, 0,    BANKED
 
         ; -- Call function under test. --
-        call        main_core_service_265c, 0x0
+        call        persist_dirty_runtime_state_to_eeprom, 0x0
 
         ; -- Dump EEPROM[0x00..0x14] into RAM[0x1A0..0x1B4]. --
         lfsr        FSR2, 0x01A0

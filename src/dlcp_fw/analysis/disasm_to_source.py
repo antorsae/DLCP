@@ -148,7 +148,7 @@ _USB_DATA_LABELS: Dict[int, tuple[str, str]] = {
 
 # Inline data table within code range
 _INLINE_DATA_LABELS: Dict[int, tuple[str, str]] = {
-    0x47E6: ("inline_data_table_47E6", "UART status strings for FW update"),
+    0x47E6: ("fw_update_status_text_seed_table", "UART status strings for FW update"),
 }
 
 
@@ -166,7 +166,7 @@ _ADDLW_TBLPTR_SITES = {
 # Map of (TBLPTRH_value, TBLPTRL_value) -> label_name for direct loads
 _TBLPTR_DIRECT_TARGETS: Dict[tuple[int, int, int], str] = {
     # (TBLPTRU, TBLPTRH, TBLPTRL) -> label
-    (0x00, 0x47, 0xE6): "inline_data_table_47E6",
+    (0x00, 0x47, 0xE6): "fw_update_status_text_seed_table",
     (0x30, 0x00, 0x0B): "_CONFIG6H",
     (0x30, 0x00, 0x00): "_CONFIG1L",
 }

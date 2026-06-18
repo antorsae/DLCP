@@ -179,16 +179,16 @@ def test_v32_cmd03_write_handler_sets_bit6_alongside_bit5() -> None:
     bit6 (xact gate) so the gate is in effect from the moment RAM
     is updated until force_persist clears it."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    # The handler block at flow_hid_command_dispatch_111a:
+    # The handler block at hid_command_dispatch__stage_opcode03_status:
     m = re.search(
-        r"flow_hid_command_dispatch_111a:[^\n]*\n"
+        r"hid_command_dispatch__stage_opcode03_status:[^\n]*\n"
         r"(?:[^\n]*\n){0,15}?"
         r"\s*bsf\s+ram_0x0BD,\s*5,\s*BANKED[^\n]*\n"
         r"\s*bsf\s+ram_0x0BD,\s*6,\s*BANKED",
         text,
     )
     assert m is not None, (
-        "cmd 0x03 WRITE handler at flow_hid_command_dispatch_111a "
+        "cmd 0x03 WRITE handler at hid_command_dispatch__stage_opcode03_status "
         "must set both ram_0x0BD bit5 (filename dirty) and "
         "immediately bit6 (usb_filename_xact_pending).  Either "
         "bit is missing or they aren't adjacent."
@@ -205,9 +205,9 @@ def test_v32_cmd03_read_handler_does_not_set_filename_xact_gate() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     m = re.search(
-        r"flow_hid_command_dispatch_111a:[^\n]*\n"
+        r"hid_command_dispatch__stage_opcode03_status:[^\n]*\n"
         r"(?P<body>.*?)"
-        r"flow_hid_command_dispatch_1126:",
+        r"hid_command_dispatch__arm_timer0_after_update:",
         text,
         re.S,
     )
@@ -216,10 +216,10 @@ def test_v32_cmd03_read_handler_does_not_set_filename_xact_gate() -> None:
     assert re.search(
         r"movf\s+ram_0x097,\s*W,\s*BANKED[^\n]*\n"
         r"\s*xorlw\s+0x09[^\n]*\n"
-        r"\s*bz\s+flow_hid_command_dispatch_111a_dirty[^\n]*\n"
+        r"\s*bz\s+hid_command_dispatch__mark_filename_ram_dirty[^\n]*\n"
         r"\s*movf\s+ram_0x097,\s*W,\s*BANKED[^\n]*\n"
         r"\s*xorlw\s+0x0A[^\n]*\n"
-        r"\s*bnz\s+flow_hid_command_dispatch_1126",
+        r"\s*bnz\s+hid_command_dispatch__arm_timer0_after_update",
         body,
     ), (
         "cmd 0x03 response tail must branch around the bit5/bit6 dirty "
@@ -229,29 +229,29 @@ def test_v32_cmd03_read_handler_does_not_set_filename_xact_gate() -> None:
 
 
 def test_v32_force_persist_clears_bit6_after_preset_persist_filename() -> None:
-    """main_core_service_265c (the event_flags.0 dispatcher; the
+    """persist_dirty_runtime_state_to_eeprom (the event_flags.0 dispatcher; the
     force_persist USB trigger ultimately reaches it) must clear bit6
     on EVERY invocation regardless of whether bit5 was set when this
     dispatcher ran.  bit5 may have already been cleared by
-    preset_job_pending's persist branch before main_core_service_265c
+    preset_job_pending's persist branch before persist_dirty_runtime_state_to_eeprom
     is reached -- if bit6 clearing is gated on bit5, the gate stays
     set forever and the device locks out preset switches (codex
     MEDIUM vs f3b25d6).  The bit6 clear must therefore live AFTER
     the bit5 branch's join label so both paths converge on it."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     m = re.search(
-        r"flow_main_core_service_265c_27bc:[^\n]*\n"
+        r"persist_dirty_runtime_state_to_eeprom__check_filename_dirty:[^\n]*\n"
         r"\s*btfss\s+ram_0x0BD,\s*5,\s*BANKED[^\n]*\n"
-        r"\s*bra\s+flow_main_core_service_265c_27ec[^\n]*\n"
+        r"\s*bra\s+persist_dirty_runtime_state_to_eeprom__clear_filename_usb_transaction_gate[^\n]*\n"
         r"\s*call\s+preset_persist_filename[^\n]*\n"
-        r"flow_main_core_service_265c_27ec:[^\n]*\n"
+        r"persist_dirty_runtime_state_to_eeprom__clear_filename_usb_transaction_gate:[^\n]*\n"
         r"(?:[^\n]*\n){0,16}?"
         r"\s*bcf\s+ram_0x0BD,\s*6,\s*BANKED",
         text,
     )
     assert m is not None, (
-        "main_core_service_265c must clear bit6 AFTER the "
-        "flow_main_core_service_265c_27ec join label so both paths "
+        "persist_dirty_runtime_state_to_eeprom must clear bit6 AFTER the "
+        "persist_dirty_runtime_state_to_eeprom__clear_filename_usb_transaction_gate join label so both paths "
         "(bit5 set/persist-then-clear AND bit5 already cleared by "
         "preset_job_pending) reach the bit6 clear.  Without this, "
         "the gate never clears in the bit5-already-cleared path and "
@@ -263,7 +263,7 @@ def test_v32_force_persist_clears_bit6_after_preset_persist_filename() -> None:
 def test_v32_preset_select_handler_gates_state_machine_on_bit6() -> None:
     """preset_select_handler must check filename_dirty_flags.bit6
     EARLY (before storing target) and bra to
-    preset_select_handler_done if set, dropping the broadcast
+    preset_select_handler__return_to_parser if set, dropping the broadcast
     entirely.  CONTROL's ~6 sec full_sync_burst step 6 cadence
     will retry once the gate clears."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
@@ -272,14 +272,14 @@ def test_v32_preset_select_handler_gates_state_machine_on_bit6() -> None:
         r"\s*movlb\s+0x0[^\n]*\n"
         r"(?:[^\n]*\n){0,8}?"
         r"\s*btfsc\s+filename_dirty_flags,\s*6,\s*BANKED[^\n]*\n"
-        r"\s*bra\s+preset_select_handler_done",
+        r"\s*bra\s+preset_select_handler__return_to_parser",
         text,
     )
     assert m is not None, (
         "preset_select_handler must, after the entry "
         "``movlb 0x0`` and before storing target / advancing "
         "state, check filename_dirty_flags.bit6 and bra to "
-        "preset_select_handler_done if set.  Otherwise the state "
+        "preset_select_handler__return_to_parser if set.  Otherwise the state "
         "machine advances to PENDING during a USB filename xact "
         "and racy preset_load_filename clobbers the host's RAM."
     )
@@ -311,7 +311,7 @@ def _open_chain():
     operate on MAIN0 specifically; the second MAIN is along for the
     chain semantics so V3.2 reaches a fully-booted, fully-awake state
     where preset_select_handler actually parses and the preset_job
-    state machine can advance (preset_job_service gates on
+    state machine can advance (advance_preset_job_state_machine gates on
     active_flags.bit3 -- without a chain peer the MAIN stays in
     standby and broadcasts are silently cancelled).
     """
@@ -357,7 +357,7 @@ def _open_main_only_chain():
 def _set_filename_xact(chain) -> None:
     """Simulate a USB cmd 0x03 WRITE-sized side-effect on RAM:
     set the dirty flag AND the xact gate bit, mimicking what the
-    cmd 0x03 WRITE handler does at asm:flow_hid_command_dispatch_111a.
+    cmd 0x03 WRITE handler does at asm:hid_command_dispatch__stage_opcode03_status.
 
     Reading the flag back via read_main_reg verifies the bits are
     set as expected before the test proceeds."""
@@ -402,7 +402,7 @@ def test_v32_xact_gate_blocks_preset_broadcast_state_machine_entry() -> None:
     chain.inject_main_frames_fifo([[0xB0, 0x20, target]], fifo_limit=47)
 
     # Step a healthy budget.  preset_select_handler should run as
-    # MAIN parses the frame and bra to ``preset_select_handler_done``
+    # MAIN parses the frame and bra to ``preset_select_handler__return_to_parser``
     # without storing target or advancing state.
     chain.step_ticks(100_000_000)
 
@@ -444,11 +444,11 @@ def test_v32_force_persist_clears_xact_gate_robust_no_lockout() -> None:
 
     _set_filename_xact(chain)
 
-    # Trigger main_core_service_265c via event_flags.bit0.
+    # Trigger persist_dirty_runtime_state_to_eeprom via event_flags.bit0.
     ev = chain.read_main_reg(0, _EVENT_FLAGS)
     chain.write_main_reg(0, _EVENT_FLAGS, ev | _EVENT_DIRTY_SERVICE)
 
-    # Step enough for main_core_service_265c to dispatch.  The
+    # Step enough for persist_dirty_runtime_state_to_eeprom to dispatch.  The
     # block walker + filename persist takes a few main loop passes
     # plus the 30-byte EEPROM write loop (~30 ms in real time).
     chain.step_ticks(200_000_000)
@@ -599,7 +599,7 @@ def test_v32_preset_job_holding_gates_toggle_on_bit6() -> None:
 def test_v32_xact_gate_blocks_in_flight_holding_toggle() -> None:
     """Behavioural variant: simulate an in-flight HOLDING (state=2,
     timer expired) on MAIN0, set bit6 to mimic a USB cmd 0x03 that
-    fired AFTER the HOLDING was queued, run preset_job_service, and
+    fired AFTER the HOLDING was queued, run advance_preset_job_state_machine, and
     assert active_flags.bit2 was NOT toggled and the filename RAM
     was NOT clobbered."""
     _require_rust()
@@ -619,7 +619,7 @@ def test_v32_xact_gate_blocks_in_flight_holding_toggle() -> None:
 
     # Set up an in-flight HOLDING with target = opposite preset and
     # a zero-valued hold timer (timer already expired, so the next
-    # preset_job_service tick would normally toggle).  Set the gate
+    # advance_preset_job_state_machine tick would normally toggle).  Set the gate
     # bit6 to test whether the new HOLDING gate defers.
     chain.write_main_reg(0, _PRESET_JOB_TARGET, target)
     chain.write_main_reg(0, _PRESET_JOB_STATE, _PRESET_JOB_HOLDING)
@@ -627,7 +627,7 @@ def test_v32_xact_gate_blocks_in_flight_holding_toggle() -> None:
     chain.write_main_reg(0, _PRESET_HOLD_TIMER_HI, 0)
     _set_filename_xact(chain)
 
-    # Step the chain enough for preset_job_service to run multiple
+    # Step the chain enough for advance_preset_job_state_machine to run multiple
     # main-loop passes.
     chain.step_ticks(50_000_000)
 
@@ -672,7 +672,7 @@ def test_v32_force_persist_clears_gate_after_pending_already_cleared_dirty() -> 
       4. HOLDING gate (asm:9670+) sees bit6 set, returns early --
          state stays at HOLDING.
       5. Host issues force_persist (event_flags.0 = 1).
-         main_core_service_265c runs: sees bit5 already cleared
+         persist_dirty_runtime_state_to_eeprom runs: sees bit5 already cleared
          (step 3 cleared it), so the previous version of the bit6
          clear (gated on bit5) was SKIPPED.  Gate stays set.
       6. HOLDING never advances; subsequent broadcasts also gated;

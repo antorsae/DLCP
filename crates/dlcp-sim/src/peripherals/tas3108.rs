@@ -5,7 +5,7 @@
 //! parity test.  The TAS3108 is the audio DSP wired to MAIN's
 //! MSSP I²C bus; without a model, MAIN's master-mode TX bytes
 //! get NACKed (no slave on the bus) and MAIN spin-retries
-//! forever in `wait_bf_clear_loop`.
+//! forever in `wait_bf_clear_bounded__poll_until_bf_clear`.
 //!
 //! ## Reference
 //!
@@ -824,7 +824,7 @@ mod tests {
         assert!(dsp.consume_tx_byte(0x68));
     }
 
-    /// V3.1's biquad-table write path in `main_i2c_service_381c`:
+    /// V3.1's biquad-table write path in `preset_table_apply_entry_legacy_blocking`:
     /// write 20 data bytes to a
     /// biquad subaddress (5×32-bit coefficient words per
     /// entry, per datasheet §6.2.1).  The slave must ACK

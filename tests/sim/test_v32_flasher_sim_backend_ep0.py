@@ -210,7 +210,7 @@ def test_sim_ep0_force_persist_clears_filename_dirty() -> None:
         in_dir=False,
     )
 
-    # Step the chain so the firmware's main_core_service_265c
+    # Step the chain so the firmware's persist_dirty_runtime_state_to_eeprom
     # dispatcher runs and persists the filename + clears bit5/bit6.
     chain.step_ticks(200_000_000)
 

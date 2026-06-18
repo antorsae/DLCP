@@ -91,7 +91,7 @@ MAIN source evidence:
 - MAIN cold init clears broad RAM ranges and then hand-clears upper bank-2
   runtime state, but `preset_job_state_b2..preset_job_tbl_hi_b2` at
   `0x2DE..0x2E4` are not explicitly cleared by the hand block.
-- `preset_job_service` treats any non-zero `preset_job_state_b2` as active and
+- `advance_preset_job_state_machine` treats any non-zero `preset_job_state_b2` as active and
   falls into state dispatch/cancel logic.
 - Parser pass-through route/cmd/data forwarding calls `uart_tx_byte_blocking`
   directly, while filename replies rely on `chain_tx_emitted_b2` to avoid
@@ -105,7 +105,7 @@ MAIN source evidence:
   timer state in key paths; the remaining risky contract is reconciling
   `preset_job_flags_b2`/`active_flags` forced-mute state with user-muted intent
   across reconnect, standby, and retry.
-- `main_i2c_service_2100` routes a bounded START/SEN timeout into a
+- `i2c_apply_channel_route_sync_burst` routes a bounded START/SEN timeout into a
   PEN-specific recovery label.
 - `i2c_wait_bus_idle` advertises recovery on timeout, but several callers
   continue into the same transaction after a recovered timeout.
@@ -387,7 +387,7 @@ Size checkpoint:
 
 Fix or refactor:
 
-- route START/SEN timeout in `main_i2c_service_2100` to the generic timeout
+- route START/SEN timeout in `i2c_apply_channel_route_sync_burst` to the generic timeout
   path, not PEN-specific recovery;
 - make `i2c_wait_bus_idle` timeout return carry/error that callers must handle;
 - update callers so timeout recovery aborts/restarts rather than continuing an

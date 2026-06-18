@@ -62,7 +62,7 @@ MAIN preset APPLY:
   payload into the same scratch window.
 - `src/dlcp_fw/asm/dlcp_main_v34.asm:5755`: FIELD-4B skips TAS `0x30..0x36`.
 - `src/dlcp_fw/asm/dlcp_main_v34.asm:5781`: payload read reuses
-  `flash_read_fsr2_0017`, so a stale/wrong header can redirect a valid payload.
+  `flash_read_to_scratch_buffer`, so a stale/wrong header can redirect a valid payload.
 - `src/dlcp_fw/asm/dlcp_main_v34.asm:10071`: async
   `preset_job_apply_i2c_entry` retries only on carry or latched NACK.
 - `src/dlcp_fw/asm/dlcp_main_v34.asm:10331`: APPLY advances index/address on
@@ -71,7 +71,7 @@ MAIN preset APPLY:
 Source selection:
 
 - `src/dlcp_fw/asm/dlcp_main_v34.asm:4358`:
-  `preset_b_remap_start_addr` maps logical `0x56xx..0x5Fxx` to B physical
+  `flash_remap_preset_b_start_address_if_active` maps logical `0x56xx..0x5Fxx` to B physical
   `0x4Cxx..0x55xx` from live `active_flags.bit2`.
 - `src/dlcp_fw/asm/dlcp_main_v34.asm:10309`: async APPLY seeds logical
   `0x5600` and relies on that live remap. Because A and B table headers have
@@ -285,7 +285,7 @@ Edit `src/dlcp_fw/asm/dlcp_main_v34.asm`.
 - Prefer reusing `preset_job_tbl_hi/lo` as the physical cursor to avoid new RAM.
   Update comments so these fields are physical during async APPLY, not logical.
 - Async APPLY must read from that latched physical cursor and bypass
-  `preset_b_remap_start_addr`. Keep the existing remap for legacy callers.
+  `flash_remap_preset_b_start_address_if_active`. Keep the existing remap for legacy callers.
 - COMMIT may publish/unmute only after the final row for this latched physical
   source succeeds. If the target changes during APPLY, rearm a new transaction
   from row 0 while retaining forced mute.

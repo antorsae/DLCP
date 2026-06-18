@@ -147,7 +147,7 @@ def test_v30_source_has_semantic_labels():
     assert asm_path.exists(), f"Missing {asm_path}"
     text = asm_path.read_text()
     for label in [
-        "cmd_dispatch_gated", "adc_boot_gate", "i2c_byte_tx",
+        "cmd_dispatch_gated", "run_wake_rail_gate_and_dsp_cold_init", "i2c_byte_tx",
         "uart_tx_byte_blocking", "send_status_burst", "hw_standby_shutdown",
         "flash_write", "i2c_wait_bus_idle", "hard_reset",
     ]:
@@ -269,7 +269,7 @@ def test_v30_key_symbols_at_stock_addresses(v30_main_hex, stock_main_hex):
         0x447E,  # timer3_blocking_delay (sim overlay -> 0x4492 variant)
         0x4492,  # sim_function_113 (sim overlay, alt i2c_wait_bus_idle)
         0x2D9E,  # sim_function_111 (sim overlay, alt uart_tx_byte_blocking)
-        0x2D8C,  # adc_boot_gate entry (test breakpoint)
+        0x2D8C,  # run_wake_rail_gate_and_dsp_cold_init entry (test breakpoint)
         0x18EE,  # function_005 (cmd_dispatch_gated)
         0x10AC,  # function_000 (first code after USB data)
     ]

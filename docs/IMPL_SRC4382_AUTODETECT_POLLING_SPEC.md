@@ -26,7 +26,7 @@ hardware audio checks agree.
 
 ## Current Status
 
-The first implementation replaced the legacy `main_i2c_service_27f0` service
+The first implementation replaced the legacy `poll_src4382_route_monitor` service
 with a new Auto Detect state machine.  That remains rejected because it broke
 the route/TAS refresh contract.  A later audio complaint against the in-place
 countdown candidate was retested on 2026-05-20 and traced to misconnected
@@ -136,7 +136,7 @@ pulsing as repeated firmware writes to row 0 column 15.
 
 ## Non-Negotiable Rules
 
-1. Do not replace `main_i2c_service_27f0` with a polling-only service.
+1. Do not replace `poll_src4382_route_monitor` with a polling-only service.
 2. Preserve the route event contract: `ram_0x093` plus `event_flags.bit1` must
    drive `cmd_dispatch_gated` or a proven-equivalent replacement.
 3. Preserve TAS3108 refresh after SRC route changes, including coefficient
@@ -210,7 +210,7 @@ Phase 3 firmware work is allowed only while these stay green.
 
 Keep and extend `tests/sim/test_v32_src4382_audio_path_regression.py`:
 
-- Static check: `main_i2c_service_27f0` retains the legacy SRC4382 status-poll
+- Static check: `poll_src4382_route_monitor` retains the legacy SRC4382 status-poll
   and route reconciliation shape, or an approved equivalent.
 - Runtime check: forcing `ram_0x093` and `event_flags.bit1` writes the expected
   SRC4382 route pair and refreshes TAS3108 coefficient `0x30`.
@@ -401,7 +401,7 @@ candidate.  Earlier firmware/audit attempts now separate into two classes:
 
 - A broad service rewrite that broke the SRC route/TAS refresh contract in the
   simulator-visible audio path.
-- A smaller dwell throttle inside `main_i2c_service_27f0` whose initial
+- A smaller dwell throttle inside `poll_src4382_route_monitor` whose initial
   bad-audio report was retested and traced to speaker wiring, not firmware.
 - A fixed-input route gap in rev `0x6D`: selecting a displayed fixed digital
   source after Auto Detect did not reliably force route reconciliation, so the
@@ -412,7 +412,7 @@ candidate.  Earlier firmware/audit attempts now separate into two classes:
   that must restore the default SRC4382 pair.
 
 The current V3.2 candidate intentionally does not replace
-`main_i2c_service_27f0`.  It preserves the service, adds a small countdown gate
+`poll_src4382_route_monitor`.  It preserves the service, adds a small countdown gate
 inside the Auto Detect branch, and keeps all route/DSP side effects delegated to
 the existing `cmd_dispatch_gated` contract.  Rev `0x6E` also forces route
 reconciliation when `cmd 0x06` changes the input, preserves the displayed

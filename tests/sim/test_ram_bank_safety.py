@@ -284,7 +284,7 @@ def test_movff_and_lfsr_require_physical_aliases() -> None:
         "main-v33",
         """
 test:
-    movff   fn_job_idx_b2, stock_003_b0_phys
+    movff   fn_job_idx_b2, addr_low_counter_or_payload_scratch_phys
     lfsr    FSR2, fn_job_idx_b2
 """,
         path=Path("fixture.asm"),
@@ -297,7 +297,7 @@ test:
         "main-v33",
         """
 test:
-    movff   fn_job_idx_b2_phys, stock_003_b0_phys
+    movff   fn_job_idx_b2_phys, addr_low_counter_or_payload_scratch_phys
     lfsr    FSR2, fn_job_idx_b2_phys
 """,
         path=Path("fixture.asm"),

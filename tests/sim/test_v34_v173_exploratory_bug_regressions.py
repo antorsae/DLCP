@@ -160,7 +160,7 @@ def test_bug_v34v173_5_preset_select_must_record_target_independent_of_usb_gate(
     backstop before ``preset_load_filename`` (the actual hazard) must stay.
     """
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    handler = _label_body(text, "preset_select_handler", ["preset_select_handler_done"])
+    handler = _label_body(text, "preset_select_handler", ["preset_select_handler__return_to_parser"])
     assert re.search(r"movwf\s+preset_job_target_b2", handler), (
         "preset_job_target store not found in preset_select_handler"
     )

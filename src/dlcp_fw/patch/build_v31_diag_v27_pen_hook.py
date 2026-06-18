@@ -38,14 +38,14 @@ coeff_write_wait_sen_stock:
     movff       i2c_coeff_1, ram_0x04A
     movff       i2c_coeff_2, ram_0x04B
     movff       i2c_coeff_3, ram_0x04C
-    call        main_i2c_service_39a6, 0x0
+    call        i2c_emit_tas3108_coeff_from_staged_float, 0x0
     bsf         SSPCON2, 2, ACCESS          ; stock STOP wait
 coeff_write_pen_stock:
     btfss       SSPCON2, 2, ACCESS
-    bra         coeff_write_pen_done
+    bra         i2c_tas3108_coeff_write__return_success
     bra         coeff_write_pen_stock
 coeff_write_pen_timeout:
-coeff_write_pen_done:
+i2c_tas3108_coeff_write__return_success:
     return      0
 """
 
@@ -63,7 +63,7 @@ coeff_write_wait_sen_stock:
     movff       i2c_coeff_1, ram_0x04A
     movff       i2c_coeff_2, ram_0x04B
     movff       i2c_coeff_3, ram_0x04C
-    call        main_i2c_service_39a6, 0x0
+    call        i2c_emit_tas3108_coeff_from_staged_float, 0x0
     bsf         SSPCON2, 2, ACCESS          ; V2.7-style PEN hook
     btfss       event_flags, 7, BANKED      ; boot complete?
     bra         coeff_write_pen_stock       ; no: stock loop during boot

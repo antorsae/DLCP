@@ -102,7 +102,7 @@ are zero on a healthy idle rig.
 Confirms cmd 0x44 wire-payload is a direct RAM copy of diag_i..diag_p with
 no transformation:
 
-- `src/dlcp_fw/asm/dlcp_main_v32.asm:9760+` (`hid_cmd_diag_snapshot:`)
+- `src/dlcp_fw/asm/dlcp_main_v32.asm:9760+` (`hid_diag_snapshot_emit:`)
 
 ## 5. Side finding — Flipper IR not reaching CONTROL
 
@@ -197,7 +197,7 @@ Symptom-equivalent reproduction at the parser/state-machine level
 **Primitives**: none new — pure RAM probe + existing UART injection.
 **Risk**: low.
 
-**Why this is a faithful proxy for cmd 0x44**: the V3.2 `hid_cmd_diag_snapshot`
+**Why this is a faithful proxy for cmd 0x44**: the V3.2 `hid_diag_snapshot_emit`
 handler at `src/dlcp_fw/asm/dlcp_main_v32.asm:9760+` is a direct copy of
 diag_i..diag_p into the HID IN buffer with no transformation. Reading the
 RAM is bit-equivalent to reading the cmd 0x44 reply payload bytes [3..9].
@@ -212,7 +212,7 @@ asserts against cmd 0x44 semantics, not BF/2N. A future test could
 target the BF/2N nibble-mask fidelity separately.
 
 **Doc-fixup follow-up [LOW]**: the comment block above
-`hid_cmd_diag_snapshot:` near `dlcp_main_v32.asm:9742` describes a
+`hid_diag_snapshot_emit:` near `dlcp_main_v32.asm:9742` describes a
 14-byte payload (`0x0E`) with version trailers; the actual code at
 `:9765` emits an 11-byte payload (`0x0B`) per Round-5 spec note in
 `docs/V32_DIAG_TIER1_SPEC.md`. Tighten or delete the stale comment
@@ -401,7 +401,7 @@ A. **Test scoping**: are Tests A/B/C correctly scoped, or should any be
 
 B. **Test A faithfulness**: I claim that reading MAIN's BANK 2 RAM at
    0x2E5..0x2EB is bit-equivalent to reading the cmd 0x44 reply payload
-   [3..9], based on the inline copy in `hid_cmd_diag_snapshot:`. Is there
+   [3..9], based on the inline copy in `hid_diag_snapshot_emit:`. Is there
    a path I'm missing where the HID emit-side transforms or filters
    bytes differently than the asm shows?
 

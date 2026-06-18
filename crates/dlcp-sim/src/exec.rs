@@ -1540,7 +1540,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
                 // pushes W/STATUS/BSR onto the 1-deep fast
                 // shadow stack.  RETURN FAST / RETFIE FAST
                 // pops it.  V3.1's IRQ flow uses this idiom
-                // around `CALL main_isr_dispatch, FAST`.
+                // around `CALL isr_high_priority_dispatch, FAST`.
                 core.save_fast_regs();
             }
             core.set_pc(n.wrapping_mul(2));
@@ -1620,7 +1620,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             // `fast=true` flavour ALSO restores the
             // 1-deep shadow stack of W/STATUS/BSR.  V3.1's
             // ISR uses RETFIE 1 to undo the shadow push
-            // from `CALL FAST main_isr_dispatch`.  Task #15.
+            // from `CALL FAST isr_high_priority_dispatch`.  Task #15.
             let irq_context = core.pop_irq_context();
             crate::peripherals::irq::restore_gie_on_retfie(&mut core.memory, irq_context);
             if fast {

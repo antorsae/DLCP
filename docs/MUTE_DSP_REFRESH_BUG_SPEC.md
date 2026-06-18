@@ -47,7 +47,7 @@ Relevant code evidence:
   and schedules the mute-DSP refresh.
 - `src/dlcp_fw/asm/dlcp_main_v34.asm` `cmd06_input_select_handler` forces route
   re-evaluation.
-- `src/dlcp_fw/asm/dlcp_main_v34.asm` `main_i2c_service_27f0` can set
+- `src/dlcp_fw/asm/dlcp_main_v34.asm` `poll_src4382_route_monitor` can set
   `event_flags.bit1` for route refresh after input/SRC housekeeping.
 - `src/dlcp_fw/asm/dlcp_main_v34.asm` `cmd_dispatch_gated` handles
   `event_flags.bit3` by clearing `active_flags.bit4` unless `event_flags.bit5`

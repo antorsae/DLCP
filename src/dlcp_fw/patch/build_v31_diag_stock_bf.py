@@ -19,10 +19,10 @@ from dlcp_fw.sim.v30_symbols import assemble_v30
 SOURCE_ASM = V31_MAIN_ASM_CANONICAL
 SOURCE_HEX = V31_MAIN_HEX_CANONICAL
 
-_OLD_BF_BLOCK = """flow_i2c_byte_tx_bf:
+_OLD_BF_BLOCK = """i2c_byte_tx__wait_bf_clear_master:
     ; V3.1: bounded BF wait (stock was unbounded loop)
     call        wait_bf_clear_bounded, 0x0
-    bc          flow_i2c_byte_tx_exit
+    bc          i2c_byte_tx__return
     call        i2c_wait_bus_idle, 0x0
     ; V3.1 Fix A: ACKSTAT check after successful master TX
     ; Save/restore BSR — callers may have any bank selected and stock
@@ -35,7 +35,7 @@ _OLD_BF_BLOCK = """flow_i2c_byte_tx_bf:
     movf        SSPCON2, W, ACCESS
 """
 
-_NEW_BF_BLOCK = """flow_i2c_byte_tx_bf:
+_NEW_BF_BLOCK = """i2c_byte_tx__wait_bf_clear_master:
     ; DIAG: stock unbounded BF wait restored (isolating BF timeout vs other)
 flow_i2c_byte_tx_bf_spin:
     btfsc       SSPSTAT, 0, ACCESS          ; BF set?

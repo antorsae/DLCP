@@ -57,7 +57,7 @@ pub const RESET_VECTOR: u32 = 0x0000;
 /// IRQ entry does NOT push the shadow, but `CALL FAST` and
 /// `RETFIE FAST` still use it (the firmware can rely on the
 /// shadow to save W/STATUS/BSR around an explicit `CALL
-/// FAST main_isr_dispatch` even with IPEN=0 -- this is V3.1's
+/// FAST isr_high_priority_dispatch` even with IPEN=0 -- this is V3.1's
 /// idiom).
 #[derive(Serialize, Deserialize, Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub struct FastRegs {
@@ -129,7 +129,7 @@ pub struct Core {
     /// `CALL FAST` (s=1) and on hardware IRQ entry when
     /// IPEN=1; popped on `RETURN FAST` and `RETFIE FAST`.
     /// Without this, V3.1's ISR pattern (`CALL FAST
-    /// main_isr_dispatch` + `RETFIE 1`) corrupts main-line
+    /// isr_high_priority_dispatch` + `RETFIE 1`) corrupts main-line
     /// W/STATUS/BSR.  Task #15.
     pub fast_shadow: FastRegs,
     /// Parsed CONFIG-region bits.  Consumers: STVREN gating

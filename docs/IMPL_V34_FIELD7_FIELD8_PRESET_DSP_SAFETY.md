@@ -148,8 +148,8 @@ Missing:
 - FIELD-7 final-writer proof for every TAS `0x37..0x90` divergence across the
   whole live-audio transition.
 - Exhaustive writer inventory for `preset_job_apply_i2c_entry`, lifecycle
-  reassert, `main_core_service_4574`, `main_i2c_service_2100`, every
-  `main_i2c_service_381c` caller including normal `event_flags.bit6`, route/SRC
+  reassert, `preset_replay_selected_table_blocking`, `i2c_apply_channel_route_sync_burst`, every
+  `preset_table_apply_entry_legacy_blocking` caller including normal `event_flags.bit6`, route/SRC
   refresh, and volume restore ordering around TAS `0x30..0x33`.
 - FIELD-8 hop proof from CONTROL enqueue through PB1 RX/TX, PB2 RX, parser
   dispatch, and handler hit.

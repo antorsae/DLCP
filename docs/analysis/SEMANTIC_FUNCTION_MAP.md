@@ -27,14 +27,14 @@ added missing labels (label_201, label_216), fixed typos and cross-references.
 |-----------|--------------|---------|------------|----------|
 | function_005 | `cmd_dispatch_gated` | 0x18F2 | certain | Gates on 0x5E.bit3; label_144 returns 0 if gate closed. V162B_RECONNECT_WAKE_BUG. |
 | function_100 | `standby_event_dispatch` | 0x4796 | certain | Checks 0x7E.bit2 + 0x5E.bit3; calls function_024 or function_051. MAIN_AN0_STANDBY_TRACE. |
-| function_102 | `periodic_service_loop` | 0x47CE | certain | Calls function_100, runs label_529 AN0 monitor. |
+| function_102 | `run_main_service_pass` | 0x47CE | certain | Calls function_100, runs label_529 AN0 monitor. |
 | function_103 | `report_cmd29_status` | 0x47FC | certain | Sends BF/29/<bit1 of 0x5E>. NOT the standby status (that's in function_050). Codex-cli corrected. |
 
 ### Standby / wake / boot
 
 | Auto-name | Semantic name | Address | Confidence | Evidence |
 |-----------|--------------|---------|------------|----------|
-| function_024 | `adc_boot_gate` | 0x2D8C | certain | Waits AN0 >= 0x0236 (label_341). Bug M9: no timeout. MAIN_AN0_STANDBY_TRACE. |
+| function_024 | `run_wake_rail_gate_and_dsp_cold_init` | 0x2D8C | certain | Waits AN0 >= 0x0236 (label_341). Bug M9: no timeout. MAIN_AN0_STANDBY_TRACE. |
 | function_051 | `hw_standby_shutdown` | 0x3C0C | certain | I2C DSP shutdown, baud rate change, OSCCON switch, Timer0 disable, USB disable. V162B_RECONNECT_WAKE_BUG. |
 | function_116 | `usb_shutdown` | varies | likely | Clears UCON; final step of function_051. |
 
@@ -68,7 +68,7 @@ added missing labels (label_201, label_216), fixed typos and cross-references.
 | function_054 | `flash_erase` | 0x3DAC | certain | Erases 64-byte blocks. Patched for preset remap. |
 | function_061 | `flash_read` | 0x4028 | certain | TBLRD*+ loop, copies to RAM. Patched for preset remap. |
 | function_069 | `flash_write_with_gie_off` | 0x42B8 | likely | GIE=0 during write. Bug M7: GIE never restored before return. |
-| function_074 | `tblrd_lookup` | 0x43C8 | certain | Masks W, adds 0x19, TBLRD from 0x10xx table. Previously misidentified as flash_page_erase at 0x7A92. |
+| function_074 | `hex_scratch_nibble_to_ascii` | 0x43C8 | certain | Masks W, adds 0x19, TBLRD from 0x10xx table. Previously misidentified as flash_page_erase at 0x7A92. |
 | function_075 | `eeprom_write_blocking` | 0x43EA | certain | 4ms GIE=0 window. Bug M3: guarantees OERR during serial RX. |
 
 ### Timer / delay / misc
@@ -98,16 +98,16 @@ added missing labels (label_201, label_216), fixed typos and cross-references.
 | label_155 | `standby_request_handler` | 0x1C9A | certain | cmd=0x03 data=0x00: clears 0x5E.bit3, sets 0x7E.bit2. |
 | label_171 | `volume_cmd_handler` | 0x1D2A | certain | Computes 32-bit volume into 0x06E-0x071, compares with 0x066-0x069, sets dirty bit 0x7E.bit3 on change. State committed BEFORE I2C write. Codex-cli: address corrected, upgraded to certain. |
 | label_185 | `cmd_dispatch_xor_chain` | 0x1E2E | likely | XOR chain routing cmd 0x03-0x1E to handlers. |
-| label_341 | `adc_boot_gate_loop` | 0x2D8C | certain | Waits AN0 >= 0x0236. Inside function_024. |
+| label_341 | `adc_boot_gate__poll_an0_rail_ready` | 0x2D8C | certain | Waits AN0 >= 0x0236. Inside function_024. |
 | label_529 | `an0_hysteresis_monitor` | 0x416E | certain | Runtime ADC check. High arm 0x0229, low trip 0x0228. |
 | label_605 | `uart_tx_trmt_busywait` | 0x489A | certain | Bug M2: infinite TRMT poll. |
-| label_607 | `main_processing_loop` | 0x48CA | certain | Top of main loop: calls function_026 / function_102. |
+| label_607 | `run_main_foreground_loop` | 0x48CA | certain | Top of main loop: calls function_026 / function_102. |
 
 **ISR labels** (function_049 at 0x3B1E):
 
 | Auto-name | Semantic name | Address | Confidence | Evidence |
 |-----------|--------------|---------|------------|----------|
-| function_049 | `main_isr_dispatch` | 0x3B1E | certain | Handles USBIF, T0IF, TMR3IF, RCIF, OERR. Codex-cli added. |
+| function_049 | `isr_high_priority_dispatch` | 0x3B1E | certain | Handles USBIF, T0IF, TMR3IF, RCIF, OERR. Codex-cli added. |
 | label_479 | `timer0_irq_handler` | varies | certain | T0IF handler. |
 | label_480 | `timer3_irq_handler` | varies | certain | TMR3IF handler. |
 | label_482 | `uart_rx_irq_enqueue` | 0x3B5C | certain | Reads RCREG, stores to ring at 0x0200+wr. |

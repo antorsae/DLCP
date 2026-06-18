@@ -16,7 +16,7 @@ checked ``STATUS.C`` per byte.  If byte 1 committed but byte 2 or 3
 saturated on the TX ring (e.g. while ``ir_rc5_decode`` blocked the
 TX ISR for ~7-10 ms), the caller saw an abort but the partial route
 byte was already on the wire.  MAIN's parser either time-limited out
-via ``main_service_rx_frame_gap`` or — worst case — fused the next
+via ``periodic_service_loop__check_rx_frame_gap`` or — worst case — fused the next
 unrelated TX byte as the standby/wake data, flipping chain state the
 opposite of what the operator requested.
 

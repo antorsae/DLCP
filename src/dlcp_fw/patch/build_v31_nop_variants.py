@@ -29,21 +29,21 @@ _WITH_NOPS_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     (
         """    movlb       0x0
     bsf         ram_0x0BD, 0, BANKED
-    call        main_timer_service_48a6, 0x0
+    call        timer0_rearm_50ms_heartbeat, 0x0
 """,
         """    movlb       0x0
     nop
     bsf         ram_0x0BD, 0, BANKED
-    call        main_timer_service_48a6, 0x0
+    call        timer0_rearm_50ms_heartbeat, 0x0
 """,
     ),
     (
-        """flow_main_uart_service_1be6_1d6c:
+        """uart_link_parser__volume_mark_dirty:
     bsf         event_flags, 3, BANKED
     ; V3.1 Fix B': do NOT copy computed->logical here (deferred to volume_dsp_write)
-    bra         flow_main_uart_service_1be6_1e6c
+    bra         uart_link_parser__handler_return_tail
 """,
-        """flow_main_uart_service_1be6_1d6c:
+        """uart_link_parser__volume_mark_dirty:
     bsf         event_flags, 3, BANKED
     ; V3.1 Fix B': do NOT copy computed->logical here (deferred to volume_dsp_write)
     nop
@@ -54,7 +54,7 @@ _WITH_NOPS_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     nop
     nop
     nop
-    bra         flow_main_uart_service_1be6_1e6c
+    bra         uart_link_parser__handler_return_tail
 """,
     ),
 )

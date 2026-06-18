@@ -15,7 +15,7 @@ Goals:
   1. keep audio muted;
   2. drain `event_flags.bit4` route/channel sync before the final selected-preset reassert;
   3. run the final selected-preset reassert through the existing FIELD-5 validated row writer;
-  4. only after `main_i2c_service_32f8` or equivalent device init, run `event_flags.bit1` input-route physical side effects;
+  4. only after `i2c_secondary_apply_wake_init_table` or equivalent device init, run `event_flags.bit1` input-route physical side effects;
   5. restore nonzero volume only after bit1 succeeds or after a visible fault keeps the MAIN muted/safe.
 - Keep the fix compact. MAIN program space is tight; current project policy accepts a minimum 10-byte free-space floor for this release train.
 
@@ -44,17 +44,17 @@ Non-goals:
 
 ## Current Implementation Evidence
 
-- `src/dlcp_fw/asm/dlcp_main_v34.asm` `adc_boot_gate`: after `mssp_hard_reset` and `clrf_i2c_coeff_0123_and_write`, the current wake path sets `event_flags.bit1`, `event_flags.bit4`, and `active_flags.bit7`, then calls `cmd_dispatch_gated` before `main_i2c_service_32f8`.
+- `src/dlcp_fw/asm/dlcp_main_v34.asm` `run_wake_rail_gate_and_dsp_cold_init`: after `mssp_hard_reset` and `tas3108_write_zero_volume_coeff`, the current wake path sets `event_flags.bit1`, `event_flags.bit4`, and `active_flags.bit7`, then calls `cmd_dispatch_gated` before `i2c_secondary_apply_wake_init_table`.
 - `cmd_dispatch_gated`: calls `cmd_dispatch_input_route_if_dirty` before checking `active_flags.bit7`, so lifecycle reassert does not currently isolate input-route side effects from the active7 phase.
-- `flow_cmd_dispatch_gated_1a76`: active7 lifecycle cancels preset APPLY, mutes, calls `cmd_dispatch_input_route_if_dirty`, calls `cmd_dispatch_route_sync_if_dirty`, clears bit6, and runs `main_core_service_4574`.
-- `cmd_dispatch_input_route_if_dirty`: for `event_flags.bit1`, reaches the physical route ladder and can call `i2c_secondary_dev_write`, `main_i2c_service_48e2`, `main_core_service_4516`, and `i2c_tas3108_reg1f_write`.
+- `cmd_dispatch_gated__check_reconnect_reapply`: active7 lifecycle cancels preset APPLY, mutes, calls `cmd_dispatch_input_route_if_dirty`, calls `cmd_dispatch_route_sync_if_dirty`, clears bit6, and runs `preset_replay_selected_table_blocking`.
+- `cmd_dispatch_input_route_if_dirty`: for `event_flags.bit1`, reaches the physical route ladder and can call `i2c_secondary_dev_write`, `i2c_tas3108_reg1f_02_clear_source_pins`, `drive_audio_route_select_latches`, and `i2c_tas3108_reg1f_write`.
 - `i2c_tas3108_reg1f_write`: emits six TAS bytes (`0x68, 0x1F, 0, 0, 0, data`), matching the observed `I6` if a not-ready device NACKs that transaction.
 - `i2c_secondary_dev_write`: emits three bytes to the secondary/SRC side; the route ladder can emit two such writes plus a TAS `0x1F` refresh.
 - `i2c_byte_tx`: latches ACKSTAT into `dsp_fault_flags.bit2` and increments `diag_i`. The fix must respect that latch instead of hiding it.
-- `main_i2c_service_32f8`: current post-wake secondary/SRC init table; FIELD-10 names this as the device-readiness barrier.
-- `main_i2c_service_2100`: route/channel sync can touch the secondary device and TAS coefficient space, so it belongs before final selected-preset reassert while muted.
+- `i2c_secondary_apply_wake_init_table`: current post-wake secondary/SRC init table; FIELD-10 names this as the device-readiness barrier.
+- `i2c_apply_channel_route_sync_burst`: route/channel sync can touch the secondary device and TAS coefficient space, so it belongs before final selected-preset reassert while muted.
 - `preset_job_commit`: FIELD-7 sets `active_flags.bit7` and then can clear mute latches before active7 runs. The protected invariant is not "mute latch remains set"; it is "TAS volume remains zero and no nonzero `volume_dsp_write` occurs until the selected image is golden and the lifecycle fault gate is clean."
-- `tests/sim/test_v34_v173_refactoring_contracts.py`: currently pins the old active7 and `adc_boot_gate` ordering; these tests must be updated to encode the FIELD-10 split.
+- `tests/sim/test_v34_v173_refactoring_contracts.py`: currently pins the old active7 and `run_wake_rail_gate_and_dsp_cold_init` ordering; these tests must be updated to encode the FIELD-10 split.
 - `tests/sim/test_v34_v173_field_repros_20260613.py` and `tests/sim/test_v34_field_bugs_20260610.py`: already contain FIELD-6/FIELD-7 style lifecycle repro helpers and TAS NACK injections.
 - `src/dlcp_fw/sim/dlcp_sim_native.py`: exposes SRC4382 and TAS3108 NACK injection plus I2C stats. Existing count-based hooks are not enough by themselves to prove phase order; FIELD-10 tests need PC barriers and transaction/log assertions.
 
@@ -71,7 +71,7 @@ What is missing:
 
 - A contract that active7 lifecycle never runs bit1 input-route physical I2C before post-wake device init.
 - A clean late route-input phase that is isolated from volume restore, retryable on failure, and checks a well-owned ACKSTAT/fault state.
-- A barrier status phase around `main_i2c_service_32f8`; the barrier itself performs secondary I2C writes and must not be erased by a later ACKSTAT clear.
+- A barrier status phase around `i2c_secondary_apply_wake_init_table`; the barrier itself performs secondary I2C writes and must not be erased by a later ACKSTAT clear.
 - Regression tests that reproduce startup `I6` behavior with an injected early-not-ready window.
 - Structural tests proving bit4 remains before final selected-preset reassert while bit1 is after the device-init barrier.
 - A release-size gate tied to the relaxed 10-byte free-space floor.
@@ -97,9 +97,9 @@ Required tests:
 
 1. Structural FIELD-10 ordering test in `tests/sim/test_v34_v173_refactoring_contracts.py`:
    - `cmd_dispatch_gated` must bypass bit1 input-route work while `active_flags.bit7` is set.
-   - `flow_cmd_dispatch_gated_1a76` must drain `cmd_dispatch_route_sync_if_dirty` before `main_core_service_4574`.
-   - `flow_cmd_dispatch_gated_1a76` must not call `cmd_dispatch_input_route_if_dirty`.
-   - `adc_boot_gate` must not set or drain `event_flags.bit1` before `main_i2c_service_32f8`; pre-existing bit1 must survive active7 and remain pending for the late phase.
+   - `cmd_dispatch_gated__check_reconnect_reapply` must drain `cmd_dispatch_route_sync_if_dirty` before `preset_replay_selected_table_blocking`.
+   - `cmd_dispatch_gated__check_reconnect_reapply` must not call `cmd_dispatch_input_route_if_dirty`.
+   - `run_wake_rail_gate_and_dsp_cold_init` must not set or drain `event_flags.bit1` before `i2c_secondary_apply_wake_init_table`; pre-existing bit1 must survive active7 and remain pending for the late phase.
    - active7 must not arm `event_flags.bit3`/volume restore while wake-late bit1 is pending.
    - no `volume_dsp_write` can occur between late bit1 and its ACK/fault classification gate.
 2. Active7 source matrix:
@@ -111,13 +111,13 @@ Required tests:
    - exercise cold boot, standby/wake, reconnect/reset paths, and both PB1/PB2.
 4. Phase-locked early-not-ready tests:
    - construct `Chain` directly and arm/reset I2C stats before first stepping for cold-start tests; avoid helpers that already run to connected.
-   - use `step_until_pc_hit` or an equivalent PC barrier for `cmd_dispatch_gated`, `flow_cmd_dispatch_gated_1a76`, `main_i2c_service_32f8`, late bit1, and volume restore.
+   - use `step_until_pc_hit` or an equivalent PC barrier for `cmd_dispatch_gated`, `cmd_dispatch_gated__check_reconnect_reapply`, `i2c_secondary_apply_wake_init_table`, late bit1, and volume restore.
    - reset TAS/SRC stats and write logs around each phase.
    - assert no pre-barrier TAS `0x1F` or secondary route-ladder bit1 transaction is consumed.
    - table-drive both MAIN units and both device families: TAS address/data NACK and secondary/SRC address/data NACK.
    - if current stats cannot attribute the transaction, add the smallest simulator transaction timeline or not-ready-until-PC hook and test that hook.
 5. Barrier and late-bit1 failure/retry tests:
-   - inject NACK during `main_i2c_service_32f8`; assert BF/08-visible fault, effective mute, bit1/volume not run, and retry/success path before volume.
+   - inject NACK during `i2c_secondary_apply_wake_init_table`; assert BF/08-visible fault, effective mute, bit1/volume not run, and retry/success path before volume.
    - inject NACK during late bit1; assert `event_flags.bit1` remains or is re-armed, TAS volume remains zero, BF/08/CONTROL `!` is visible, and retry succeeds only after the injected window clears.
    - include pre-existing `dsp_fault_flags.bit2` and bit6 cases to prove prior faults are preserved and volume restore is gated on `(dsp_fault_flags & 0x44) == 0`.
    - seed/pre-arm `event_flags.bit3` before wake and from active7 success; prove no nonzero `volume_dsp_write` occurs until barrier success plus late-bit1 success.
@@ -144,20 +144,20 @@ Required compact shape:
 
 1. Keep `cmd_dispatch_input_route_if_dirty` as the sole physical owner for bit1 route/input side effects. Do not duplicate the route ladder.
 2. In `cmd_dispatch_gated`, check `active_flags.bit7` before calling `cmd_dispatch_input_route_if_dirty`. This makes active7 an explicit lifecycle bypass instead of letting pending bit1 run as a preamble. Update stale comments that say FIELD-6 lifecycle uses bit1 before preset validation.
-3. In `flow_cmd_dispatch_gated_1a76`, remove the `cmd_dispatch_input_route_if_dirty` call. Keep:
+3. In `cmd_dispatch_gated__check_reconnect_reapply`, remove the `cmd_dispatch_input_route_if_dirty` call. Keep:
    - cancel preset APPLY;
-   - force mute through `clrf_i2c_coeff_0123_and_write`;
+   - force mute through `tas3108_write_zero_volume_coeff`;
    - drain `cmd_dispatch_route_sync_if_dirty`;
    - clear `event_flags.bit6` only; do not clear `dsp_fault_flags.bit6` except through the existing BF/08 fault-clear owner;
-   - run the FIELD-5 validated selected-image reassert path (`main_core_service_4574` only if that path remains the validated row writer by current code evidence);
+   - run the FIELD-5 validated selected-image reassert path (`preset_replay_selected_table_blocking` only if that path remains the validated row writer by current code evidence);
    - on failure, keep mute and set the existing BF/08-visible fault bits.
-4. In `adc_boot_gate`, before `main_i2c_service_32f8`, set only the lifecycle bits needed for route/channel sync and selected-preset reassert (`event_flags.bit4` and `active_flags.bit7`). Do not set or drain bit1 there.
-5. Add an explicit barrier status phase around `main_i2c_service_32f8`:
+4. In `run_wake_rail_gate_and_dsp_cold_init`, before `i2c_secondary_apply_wake_init_table`, set only the lifecycle bits needed for route/channel sync and selected-preset reassert (`event_flags.bit4` and `active_flags.bit7`). Do not set or drain bit1 there.
+5. Add an explicit barrier status phase around `i2c_secondary_apply_wake_init_table`:
    - sample/preserve prior visible fault state;
    - clear the ACKSTAT latch only for an isolated barrier attempt;
    - introduce or reuse an audited compact wake lifecycle state with explicit `barrier_pending`, `late_bit1_pending`, and `fault_mute_owned` semantics. One byte or spare audited bits are acceptable; the selected storage must be named in implementation evidence.
    - if the barrier sets bit2 or any visible fault bit remains (`dsp_fault_flags & 0x44`), assert effective mute (`active_flags.bit4`), set `barrier_pending`, advertise/keep BF/08, clear/suppress any stale `event_flags.bit3`, do not run late bit1, and do not schedule volume.
-   - retry `main_i2c_service_32f8` only from this named pending state. Do not depend on accidental future wake/reconnect traffic. On success, clear `barrier_pending`, proceed to `late_bit1_pending`, and keep volume suppressed.
+   - retry `i2c_secondary_apply_wake_init_table` only from this named pending state. Do not depend on accidental future wake/reconnect traffic. On success, clear `barrier_pending`, proceed to `late_bit1_pending`, and keep volume suppressed.
 6. Add an isolated late-bit1 wrapper/entry after the barrier and UART-safe wake housekeeping:
    - run the existing `cmd_dispatch_input_route_if_dirty` owner;
    - return before any volume path;
@@ -304,7 +304,7 @@ Post-flash smoke, if separately approved, must write durable artifacts under `ar
 - `cmd_dispatch_gated` and active7 lifecycle structurally prevent bit1 input-route physical I2C before post-wake device init.
 - `event_flags.bit4` route/channel sync still drains before final selected-preset reassert.
 - Final selected-preset reassert is structurally proven to use the FIELD-5 validated row writer or an equivalent checked path.
-- Barrier success (`main_i2c_service_32f8`) and late bit1 success are both required before any nonzero volume restore; failures assert effective mute, preserve/re-arm retry state, and surface BF/08/CONTROL `!`.
+- Barrier success (`i2c_secondary_apply_wake_init_table`) and late bit1 success are both required before any nonzero volume restore; failures assert effective mute, preserve/re-arm retry state, and surface BF/08/CONTROL `!`.
 - Clean cold boot, standby/wake, and reconnect settle with cmd-`0x44` `diag_i == 0` on both MAINs in simulation when no explicit fault is injected.
 - Phase-locked TAS and secondary/SRC early-not-ready windows cannot produce a healthy, unmuted `I6` state, and late-window failures retry cleanly before volume restore.
 - Existing FIELD-5/FIELD-6/FIELD-7 DSP coefficient-safety tests remain green.
@@ -333,13 +333,13 @@ Final mechanism:
 - `active_flags.bit5` owns automatic/fault mute while `active_flags.bit4`
   keeps effective mute asserted.
 - `cmd_dispatch_gated` retries a pending wake barrier before active7 or normal
-  volume work.  `wake_i2c_barrier_attempt` owns `main_i2c_service_32f8` plus
+  volume work.  `wake_i2c_barrier_attempt` owns `i2c_secondary_apply_wake_init_table` plus
   the secondary `0x1B` wake-tail write and returns carry on ACKSTAT/fault.
 - Active7 no longer drains bit1 as a preamble.  It zero-mutes, drains bit4,
   clears bit6, validates the selected preset image through
-  `main_core_service_4574`, and leaves filename/volume work gated by the later
+  `preset_replay_selected_table_blocking`, and leaves filename/volume work gated by the later
   FIELD-10 phases.
-- `adc_boot_gate` runs the post-wake barrier before arming late bit1 and volume
+- `run_wake_rail_gate_and_dsp_cold_init` runs the post-wake barrier before arming late bit1 and volume
   restore.
 - Late bit1 NACKs are retryable and keep fault-owned mute until success.
 - `preset_job_apply_i2c_entry` now treats a pre-existing ACKSTAT latch as a
@@ -469,8 +469,8 @@ Review gate status: reviewed - ready for implementation, zero unresolved High/Me
 Process:
 1. Read AGENTS.md, README.md, docs/V34_FIELD_BUGS_20260610.md FIELD-10, docs/IMPL_V34_FIELD10_WAKE_I2C_PHASE_ORDER.md, docs/IMPL_V34_FIELD6_WAKE_ROUTE_SYNC_DSP_OWNERSHIP.md, docs/IMPL_V34_FIELD7_FIELD8_PRESET_DSP_SAFETY.md, docs/REFACTORING_V34_V173_SPEC.md, docs/IMPL_REFACTORING_V34_V173.md, docs/HARDWARE_TEST.md, and docs/exploratory_oracle/ORACLE_PROTOCOL.md.
 2. Verify the IMPL review gate has no unresolved High/Medium. If not clean, update the IMPL before coding.
-3. Implement only the approved IMPL. Preserve d69d689 FIELD-6/7 final-writer safety. Keep bit4 route/channel sync before final validated preset reassert; isolate bit1 until after main_i2c_service_32f8; gate volume on barrier success + retryable late-bit1 success + (dsp_fault_flags & 0x44)==0. Add explicit compact lifecycle state for barrier_pending, late_bit1_pending, and fault_mute_owned; suppress stale bit3 until both gates pass. No diag_i clearing, blind sleeps/retries, duplicated route ladder, or unrelated refactors.
-4. Add/update tests first: structural active7/adc_boot_gate ordering, active7 producer matrix, pre-existing bit1/bit3, phase-locked TAS+secondary address/data NACKs on PB1/PB2, barrier retry, retryable late-bit1, forced-mute user-intent recovery, asleep preset re-arm before volume, BF/08/CONTROL ! visibility, cmd-0x44 I0, and FIELD-5/6/7 regression guards.
+3. Implement only the approved IMPL. Preserve d69d689 FIELD-6/7 final-writer safety. Keep bit4 route/channel sync before final validated preset reassert; isolate bit1 until after i2c_secondary_apply_wake_init_table; gate volume on barrier success + retryable late-bit1 success + (dsp_fault_flags & 0x44)==0. Add explicit compact lifecycle state for barrier_pending, late_bit1_pending, and fault_mute_owned; suppress stale bit3 until both gates pass. No diag_i clearing, blind sleeps/retries, duplicated route ladder, or unrelated refactors.
+4. Add/update tests first: structural active7/run_wake_rail_gate_and_dsp_cold_init ordering, active7 producer matrix, pre-existing bit1/bit3, phase-locked TAS+secondary address/data NACKs on PB1/PB2, barrier retry, retryable late-bit1, forced-mute user-intent recovery, asleep preset re-arm before volume, BF/08/CONTROL ! visibility, cmd-0x44 I0, and FIELD-5/6/7 regression guards.
 5. Record pre/post MAIN size ledger: used bytes, last used, free bytes, free object words, 0x1000..0x4BFF diff. Build canonical V3.4 with `PY="${DLCP_PYTHON:-.venv_ep0/bin/python}"; PYTHONPATH=src "$PY" scripts/build_v34_release.py`; stop if margin before 0x4C00 is <10 bytes.
 6. Run focused tests from the IMPL, then full sim: `PYTHONPATH=src "$PY" -m pytest -q -n 16 tests/sim`.
 7. Run 30m hunter: `PYTHONPATH=src "$PY" scripts/sim_chain_exploratory.py --duration 30m --campaign all --control-hex firmware/patched/releases/DLCP_Control_V1.73.hex --main-hex firmware/patched/releases/DLCP_Firmware_V3.4.hex --out-dir artifacts/sim/current/exploratory/field10_$(date +%Y%m%d_%H%M%S)`. Treat no-fault diag.I as blocking unless reclassified by evidence; enforce quorum: 3 POR/hard-reset-like, 3 standby-reset, 12 wakes, 10 no-fault, PB1/PB2 diag observations. Select cards, then use subagents as LLM judges mirroring judge->artifact-verify->correctness-verify->synthesize. Do not use codex -p. Reconcile all High/Medium.

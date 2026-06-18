@@ -179,12 +179,12 @@ host/USB traffic that keeps debouncing the full-sync counter).
 Source of bug (verified against current sources):
 
 - `preset_select_handler` gates the broadcast on `filename_dirty_flags.bit6`:
-  `btfsc filename_dirty_flags_b0, 6 / bra preset_select_handler_done` runs
+  `btfsc filename_dirty_flags_b0, 6 / bra preset_select_handler__return_to_parser` runs
   **before** `movwf preset_job_target_b2` (`dlcp_main_v34.asm:9974-9994`). So while
   bit6 is set the broadcast is dropped and the requested target is **not stored**.
 - The handler's own header contract (`dlcp_main_v34.asm:9957-9972`) says the
   target **should be recorded** during the gate and picked up once
-  `main_core_service_265c` clears bit6 after persist. The implementation
+  `persist_dirty_runtime_state_to_eeprom` clears bit6 after persist. The implementation
   contradicts the header (inline comment at `:9976-9979` admits "Target NOT
   stored"); recovery instead depends on the ~6 s CONTROL full-sync re-broadcast.
 
@@ -216,7 +216,7 @@ with a concurrent HFD filename write) and self-healing.
 Fixed 2026-06-09 by deletion: the parser-entry gate was redundant defense in
 the wrong layer — the HOLDING->APPLY transition already carries a bit6
 backstop immediately before `preset_load_filename` (the only code that can
-clobber the host's in-flight filename RAM), and `main_core_service_265c`
+clobber the host's in-flight filename RAM), and `persist_dirty_runtime_state_to_eeprom`
 already tolerates the job persisting concurrently. The handler now always
 records the target; a new 2-word PENDING park keeps the deferred job un-muted
 until the host's `force_persist` clears bit6, after which the switch applies

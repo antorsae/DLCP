@@ -1,7 +1,7 @@
-"""V3.2/V3.4 main_i2c_service_2100 table-shape guard.
+"""V3.2/V3.4 i2c_apply_channel_route_sync_burst table-shape guard.
 
 Pins the packed dispatch/source tables introduced when
-``main_i2c_service_2100`` was rewritten from two inline xorlw-chain
+``i2c_apply_channel_route_sync_burst`` was rewritten from two inline xorlw-chain
 switches into two table-driven loops.  A corruption of either table
 silently redirects RAM writes to the wrong per-channel block, which
 would corrupt the DSP sync state without any visible parser-level
@@ -32,7 +32,7 @@ pytestmark = pytest.mark.dual_supported
 
 # Counter -> (FSR1L, FSR1H) pairs that the old xorlw chains dispatched to.
 # See docs/V32_SIZE_OPTIMIZATION_PROGRESS.md and the body comments on
-# ``main_i2c_service_2100_dispatch_table`` / ``_source_table``.
+# ``channel_route_pair_destination_table`` / ``_source_table``.
 DISPATCH_TABLE_EXPECTED = [
     (0xD7, 0x00),  # 0 -> ram_0x0D7/0x0D8  (bank 0)
     (0xDB, 0x00),  # 1 -> ram_0x0DB/0x0DC  (bank 0)
@@ -86,7 +86,7 @@ def _table_bytes(ih: IntelHex, byte_addr: int, count: int) -> list[int]:
 
 def test_dispatch_table_bytes_match_expected(main_symbols_and_hex):
     symbols, ih = main_symbols_and_hex
-    byte_addr = symbols["main_i2c_service_2100_dispatch_table"]
+    byte_addr = symbols["channel_route_pair_destination_table"]
     expected = [b for pair in DISPATCH_TABLE_EXPECTED for b in pair]
     actual = _table_bytes(ih, byte_addr, len(expected))
     assert actual == expected, (
@@ -96,7 +96,7 @@ def test_dispatch_table_bytes_match_expected(main_symbols_and_hex):
 
 def test_source_table_bytes_match_expected(main_symbols_and_hex):
     symbols, ih = main_symbols_and_hex
-    byte_addr = symbols["main_i2c_service_2100_source_table"]
+    byte_addr = symbols["channel_route_sync_source_block_table"]
     expected = [b for pair in SOURCE_TABLE_EXPECTED for b in pair]
     actual = _table_bytes(ih, byte_addr, len(expected))
     assert actual == expected, (
@@ -110,8 +110,8 @@ def test_tables_do_not_cross_256_byte_page(main_symbols_and_hex):
     # whole table lives within a single 256-byte page.
     symbols, _ = main_symbols_and_hex
     for label, span_bytes in (
-        ("main_i2c_service_2100_dispatch_table", len(DISPATCH_TABLE_EXPECTED) * 2),
-        ("main_i2c_service_2100_source_table", len(SOURCE_TABLE_EXPECTED) * 2),
+        ("channel_route_pair_destination_table", len(DISPATCH_TABLE_EXPECTED) * 2),
+        ("channel_route_sync_source_block_table", len(SOURCE_TABLE_EXPECTED) * 2),
     ):
         byte_addr = symbols[label]
         low_start = byte_addr & 0xFF

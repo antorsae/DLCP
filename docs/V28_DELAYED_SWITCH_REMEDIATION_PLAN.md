@@ -56,22 +56,22 @@ The `V2.8` binary patch helper at `preset_select_delayed` does the whole job in 
 
 The source equivalent in `V3.1` still follows the same synchronous structure:
 
-- `main_uart_service_1be6`
+- `uart_link_parser_drain_rx_and_forward`
 - `preset_select_handler`
 - `preset_select_delayed`
-- `main_core_service_4574`
+- `preset_replay_selected_table_blocking`
 
 This means preset switching is still parser-blocking, even in the source rewrite.
 
 ### 2. Preset apply is monolithic
 
-`main_core_service_4574` iterates the preset table and repeatedly calls `main_i2c_service_381c`.
+`preset_replay_selected_table_blocking` iterates the preset table and repeatedly calls `preset_table_apply_entry_legacy_blocking`.
 
 That means one preset switch is not one small transaction. It is a long sequence of back-to-back I2C writes, all inside the same parser-triggered call path.
 
 ### 3. The low-level MSSP helper blocks on raw START/STOP waits
 
-`main_i2c_service_381c` uses raw:
+`preset_table_apply_entry_legacy_blocking` uses raw:
 
 - `SSPCON2.SEN` wait loops
 - `SSPCON2.PEN` wait loops
@@ -105,7 +105,7 @@ The most likely root causes, in order:
 
 1. Parser starvation during delayed switch/apply.
 2. RX ring overwrite or parser desynchronization while `cmd=0x20` is still running.
-3. Partial preset apply or stuck MSSP START/STOP during `main_i2c_service_381c`.
+3. Partial preset apply or stuck MSSP START/STOP during `preset_table_apply_entry_legacy_blocking`.
 4. Mute/standby state being entangled with the switch helper rather than managed as independent desired state.
 5. CONTROL lacking an explicit convergence check beyond bounded retry bursts.
 
@@ -203,7 +203,7 @@ Refactor the preset apply path so low-level I2C failures become first-class even
 
 Required changes:
 
-- make `main_i2c_service_381c` return success/failure for each record
+- make `preset_table_apply_entry_legacy_blocking` return success/failure for each record
 - add bounded START and STOP waits
 - on timeout, perform MSSP reset and bus-clear/ping recovery as appropriate
 - retry a single record a bounded number of times

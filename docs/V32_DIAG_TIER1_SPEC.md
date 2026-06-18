@@ -817,7 +817,7 @@ Source-level (Tier A):
 - cmd 0x21 handler UNCHANGED at 7 frames.
 - New `cmd 0x22` handler emits 4 frames (BF/28..BF/2B), each with
   `andlw 0x0F` mask + cmd-XOR ACK suppression.
-- New `hid_cmd_diag_snapshot` routine for cmd 0x44.
+- New `hid_diag_snapshot_emit` routine for cmd 0x44.
 - HID dispatch routes cmd 0x44 to the new handler.
 - Chain dispatch routes cmd 0x22 to the new handler.
 

@@ -44,7 +44,7 @@ SRC4382 reference evidence:
 
 Firmware evidence:
 
-- `main_i2c_service_27f0` owns Auto Detect scanning, selected-source monitoring,
+- `poll_src4382_route_monitor` owns Auto Detect scanning, selected-source monitoring,
   `ram_0x093` route requests, `ram_0x0AB` route shadow, and route-change
   `event_flags.bit1`.
 - `cmd_dispatch_gated` owns the selected SRC4382 route pair writes and the

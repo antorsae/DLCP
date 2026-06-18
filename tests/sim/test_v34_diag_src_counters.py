@@ -9,7 +9,7 @@ I/D/S/B/R/A/P set:
   L 0x3C1  Auto-Detect loss-debounce confirmed source losses
   C 0x3C2  SRC route changes applied (route request != shadow)
   T 0x3C3  preset table walks (cold/wake/reconnect apply + async job COMMIT)
-  M 0x3C4  DSP mute writes (clrf_i2c_coeff_0123_and_write entries)
+  M 0x3C4  DSP mute writes (tas3108_write_zero_volume_coeff entries)
 
 Visibility is the extended USB HID cmd 0x44 payload: length byte 0x10 with
 the five cells appended AFTER the legacy reset flags so legacy offsets are
@@ -199,20 +199,20 @@ def test_cmd44_extended_payload_reflects_cells(settled_chain) -> None:
 def test_cmd44_source_uses_counted_copy_helper() -> None:
     """V3.4 cmd 0x44 keeps the 7/4/5-cell layout via one counted copier."""
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = text.split("copy_postinc0_to_postinc2_count_w:", 1)[1].split(
-        "hid_cmd_diag_snapshot:", 1
+    helper = text.split("hid_diag_snapshot_copy_block_count_w:", 1)[1].split(
+        "hid_diag_snapshot_emit:", 1
     )[0]
-    body = text.split("hid_cmd_diag_snapshot:", 1)[1].split(
+    body = text.split("hid_diag_snapshot_emit:", 1)[1].split(
         "; DSP Preset Table B", 1
     )[0]
 
-    assert "movwf       stock_04C_acc, ACCESS" in helper
+    assert "movwf       diff_count_update_compare_or_route_mask_scratch_byte, ACCESS" in helper
     assert "movf        POSTINC0, W, ACCESS" in helper
     assert "movwf       POSTINC2, ACCESS" in helper
-    assert "decfsz      stock_04C_acc, F, ACCESS" in helper
+    assert "decfsz      diff_count_update_compare_or_route_mask_scratch_byte, F, ACCESS" in helper
     assert "return      0" in helper
 
-    assert body.count("rcall       copy_postinc0_to_postinc2_count_w") == 3
+    assert body.count("rcall       hid_diag_snapshot_copy_block_count_w") == 3
     assert "movlw       0x07" in body
     assert "movlw       0x04" in body
     assert "movlw       0x05" in body

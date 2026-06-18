@@ -66,21 +66,21 @@ def test_v32_firmware_hid_entrypoint_matches_listing() -> None:
     """The firmware-HID facade must jump to the current V3.2 USB service."""
     lst_text = V32_MAIN_ASM.with_suffix(".lst").read_text(encoding="utf-8")
     match = re.search(
-        r"^main_usb_service_3a26\s+ADDRESS\s+([0-9A-Fa-f]{8})\b",
+        r"^usb_hid_dispatch_out_report_if_ready\s+ADDRESS\s+([0-9A-Fa-f]{8})\b",
         lst_text,
         re.MULTILINE,
     )
-    assert match, "V3.2 listing has no main_usb_service_3a26 symbol"
+    assert match, "V3.2 listing has no usb_hid_dispatch_out_report_if_ready symbol"
     service_pc = int(match.group(1), 16)
 
     py_facade_src = (PROJECT_ROOT / "src/dlcp_fw/sim/dlcp_sim_native.py").read_text(
         encoding="utf-8"
     )
     assert "_main_symbol_for_hex(" in py_facade_src
-    assert "main_usb_service_3a26" in py_facade_src
+    assert "usb_hid_dispatch_out_report_if_ready" in py_facade_src
     assert (
         native_facade._main_symbol_for_hex(
-            str(V32_MAIN_HEX), "main_usb_service_3a26", 0
+            str(V32_MAIN_HEX), "usb_hid_dispatch_out_report_if_ready", 0
         )
         == service_pc
     )
@@ -153,7 +153,7 @@ def test_v32_runtime_eeprom_identity_matches_release_hex_without_seed() -> None:
 
 def test_v32_firmware_hid_report_enters_dispatch_and_reads_eeprom() -> None:
     """Firmware-path USB HID gate: a simulated host EP1 report must be
-    consumed by V3.2 ``main_usb_service_3a26`` and enter the real
+    consumed by V3.2 ``usb_hid_dispatch_out_report_if_ready`` and enter the real
     ``hid_command_dispatch`` path.
 
     This specifically guards against the old ``SimHidBackend`` shape,

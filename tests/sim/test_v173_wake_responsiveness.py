@@ -7,7 +7,7 @@ closed-loop WAITING loops, leaving the foreground dead (no polls, no parser,
 no buttons, no IR re-arm) while the LCD shows ``Waiting for DLCP`` with the
 conn bit set.  With the delays removed, the evidence-driven loops own the
 wait, so wake-to-responsive is bounded by the MAIN wake bring-up (~8 s of
-``adc_boot_gate`` rail settle + blocking DSP table apply) instead of the
+``run_wake_rail_gate_and_dsp_cold_init`` rail settle + blocking DSP table apply) instead of the
 ~14 s banner delay.
 """
 

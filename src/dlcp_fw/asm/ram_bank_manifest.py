@@ -7,6 +7,7 @@ provides canonical aliases for source-level safety checks.
 
 from __future__ import annotations
 
+import csv
 from dataclasses import dataclass, replace
 from functools import lru_cache
 from pathlib import Path
@@ -34,14 +35,16 @@ class RamCell:
     owner: str = "stock-derived"
     alias_of: str | None = None
     strict_bsr: bool = True
+    op_alias_name: str | None = None
+    phys_alias_name: str | None = None
 
     @property
     def phys_alias(self) -> str:
-        return f"{self.alias}_phys"
+        return self.phys_alias_name or f"{self.alias}_phys"
 
     @property
     def op_alias(self) -> str:
-        return f"{self.alias}_op"
+        return self.op_alias_name or f"{self.alias}_op"
 
 
 @dataclass(frozen=True)
@@ -88,11 +91,18 @@ _EQU_RE = re.compile(r"^\s*(\w+)\s+(?:EQU|equ)\s+(\S+)\s*(?:;(.*))?$")
 _RAW_RAM_RE = re.compile(r"^ram_0x([0-9A-Fa-f]{3})$")
 _STOCK_ALIAS_RE = re.compile(r"^stock_([0-9A-Fa-f]{3})_b([0-9])$")
 _STOCK_PHYS_ALIAS_RE = re.compile(r"^stock_([0-9A-Fa-f]{3})_b([0-9])_phys$")
+_STOCK_LEDGER_ALIAS_RE = re.compile(
+    r"^stock_([0-9A-Fa-f]{3})_(?:acc|b[0-9])(?:_(?:op|phys))?$"
+)
 _MOVLB_RE = re.compile(r"\bmovlb\s+0x([0-9A-Fa-f]+)\b", re.IGNORECASE)
 
 _BANK_HINT_RE = re.compile(
     r"physical\s+0x([0-9A-Fa-f]{3})|\bBANK\s+([0-9])\b",
     re.IGNORECASE,
+)
+
+_MAIN_RENAME_LEDGER = (
+    PROJECT_ROOT / "artifacts" / "reanalysis" / "dlcp_main_v34_rename_ledger.tsv"
 )
 
 _F_OPERAND_MNEMONICS = (
@@ -282,7 +292,31 @@ def _semantic_stock_alias(phys: int, bank: int, access: str) -> str | None:
     return None
 
 
-def _alias_for(name: str, bank: int, access: str) -> str:
+@lru_cache(maxsize=1)
+def _main_rename_ledger() -> dict[str, str]:
+    if not _MAIN_RENAME_LEDGER.exists():
+        return {}
+    out: dict[str, str] = {}
+    with _MAIN_RENAME_LEDGER.open(newline="", encoding="utf-8") as handle:
+        for row in csv.DictReader(handle, delimiter="\t"):
+            old = row.get("oldname", "")
+            new = row.get("newname", "")
+            if row.get("status") == "emitted" and old and new and old != new:
+                out[old] = new
+    return out
+
+
+@lru_cache(maxsize=1)
+def _main_ledger_stock_phys_values() -> set[int]:
+    out: set[int] = set()
+    for old in _main_rename_ledger():
+        match = _STOCK_LEDGER_ALIAS_RE.match(old)
+        if match is not None:
+            out.add(int(match.group(1), 16))
+    return out
+
+
+def _default_alias_for(name: str, bank: int, access: str) -> str:
     raw = _RAW_RAM_RE.match(name)
     if raw is not None:
         semantic = _semantic_stock_alias(int(raw.group(1), 16), bank, access)
@@ -294,6 +328,25 @@ def _alias_for(name: str, bank: int, access: str) -> str:
     if access == "access":
         return f"{name}_acc"
     return f"{name}_b{bank}"
+
+
+def _alias_family_for(
+    target: str,
+    name: str,
+    bank: int,
+    access: str,
+) -> tuple[str, str | None, str | None]:
+    base = _default_alias_for(name, bank, access)
+    if not target.startswith("main-"):
+        return base, None, None
+
+    renames = _main_rename_ledger()
+    alias = renames.get(base, base)
+    return (
+        alias,
+        renames.get(f"{base}_op", f"{alias}_op"),
+        renames.get(f"{base}_phys", f"{alias}_phys"),
+    )
 
 
 def _is_table_data_line_mask(lines: list[str]) -> list[bool]:
@@ -429,7 +482,12 @@ def load_manifest(target: str) -> dict[str, RamCell]:
         owner: str,
     ) -> RamCell:
         bank = phys >> 8
-        alias = _alias_for(source_name, bank, access)
+        alias, op_alias, phys_alias = _alias_family_for(
+            target,
+            source_name,
+            bank,
+            access,
+        )
         return RamCell(
             target=target,
             source_name=source_name,
@@ -443,6 +501,8 @@ def load_manifest(target: str) -> dict[str, RamCell]:
                 access == "banked"
                 and (bank != 0 or alias == "an0_delay_b0")
             ),
+            op_alias_name=op_alias,
+            phys_alias_name=phys_alias,
         )
 
     for name, value, raw_value, own_comment, block_comments in parse_equates(spec.inc_path):
@@ -499,7 +559,12 @@ def load_manifest(target: str) -> dict[str, RamCell]:
     known_names = {cell.alias for cell in cells.values()} | {
         cell.source_name for cell in cells.values()
     }
-    for phys in sorted(_source_inferred_stock_cells(target, known_names) | _EXPLICIT_STOCK_PHYS[target]):
+    ledger_phys = _main_ledger_stock_phys_values() if target.startswith("main-") else set()
+    for phys in sorted(
+        _source_inferred_stock_cells(target, known_names)
+        | _EXPLICIT_STOCK_PHYS[target]
+        | ledger_phys
+    ):
         add_family(
             make_cell(
                 source_name=f"ram_0x{phys:03X}",

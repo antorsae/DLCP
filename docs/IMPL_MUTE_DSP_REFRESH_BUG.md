@@ -143,7 +143,7 @@ Current-red strict-xfail until fixed:
   periodic `B0/06` input frame before the next mute step, and both MAINs remain
   muted with only zero/absent `0x30` writes through at least one full-sync cycle.
 - Real SRC Auto Detect service: seed SRC4382 status/registers so
-  `main_i2c_service_27f0` raises the route event, not just direct frame
+  `poll_src4382_route_monitor` raises the route event, not just direct frame
   injection; assert SRC route writes still happen and TAS `0x30` stays zero.
 - V1.73 source-shape guard: pin full-sync step order and sender encodings for
   volume/input/mute in V1.73 source.
@@ -195,8 +195,8 @@ Required design:
 Also audit all TAS `0x30` writers:
 
 - `volume_dsp_write`
-- `clrf_i2c_coeff_0123_and_write` callers
-- `main_core_service_4574` / preset table apply path
+- `tas3108_write_zero_volume_coeff` callers
+- `preset_replay_selected_table_blocking` / preset table apply path
 - any baked/canonical preset table entry that can target `0x30`
 
 Either prove canonical/baked preset tables do not write `0x30`, or guard the

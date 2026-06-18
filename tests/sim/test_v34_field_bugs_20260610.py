@@ -624,7 +624,7 @@ def test_field2_serial_cmd1d_garbage_must_not_corrupt_profile(
     killing the Hypex remote).  Sim evidence 2026-06-10: the current V3.4
     serial path already rejects/ignores this vector -- this test guards that
     it stays true.  The HID setup-byte write path
-    (``flow_hid_command_dispatch_114a``, report byte -> RAM 0x0B8 unclamped)
+    (``hid_command_dispatch__opcode04_stage_fault_action``, report byte -> RAM 0x0B8 unclamped)
     remains an open hardening item tracked in docs/V34_FIELD_BUGS_20260610.md.
     """
     chain = _boot_v34_main(field_main_hex)
@@ -794,7 +794,7 @@ def test_field1_info_only_warns_on_rc5_profile(
 # ---------------------------------------------------------------------------
 # Task #8 resolution (2026-06-11): the session-49 "parser loss" mechanism.
 # Single-instruction tracing on the run-era binary showed the V3.2 parser
-# stall watchdog (main_service_rx_frame_gap) firing MID-FRAME inside a
+# stall watchdog (periodic_service_loop__check_rx_frame_gap) firing MID-FRAME inside a
 # normal inter-byte gap: the stock parser idles at fpos=1 after every
 # dispatched frame, so the watchdog's 8-bit counter accumulates through
 # every inter-frame idle and is never reset when a real frame starts.

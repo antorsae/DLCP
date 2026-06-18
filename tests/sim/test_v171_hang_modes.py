@@ -22,7 +22,7 @@ by design and are NOT regressions:
     actual variable-length burst lives on the V3.2 MAIN reply
     side -- ``cmd21_diag_query_handler`` /
     ``cmd22_reset_flags_query_handler`` branch into
-    ``diag_send_burst_xx`` which loops to emit 7 or 4 BF/2N reply
+    ``diag_low_nibble_reply_burst`` which loops to emit 7 or 4 BF/2N reply
     frames; that lives in dlcp_main_v32.asm, not here.)
 
 The currently pinned hang classes:

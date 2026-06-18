@@ -606,7 +606,7 @@ These are checkpoint artifacts, not a termination condition.
 
 Executed parents:
 
-- `W08-E01`: counted-loop rewrite in `main_core_service_297e`
+- `W08-E01`: counted-loop rewrite in `float32_exp_limit1024_in_place`
   (`used=14529`, `last_used=0x4923`, `free=732`)
 - `W08-E03`: late-tail wrapper cleanup
   (`used=14689`, `last_used=0x49C3`, `free=572`)

@@ -45,7 +45,7 @@ Explicit user decisions:
 
 - `src/dlcp_fw/asm/dlcp_main_v34.asm`
   - `src4382_loss_debounce EQU 0x2F3` is already available and wipe-protected.
-  - `main_i2c_service_27f0` reads `0x13`, treats `RXCKR == 0` as source-loss evidence, and currently confirms after six selected-route misses.
+  - `poll_src4382_route_monitor` reads `0x13`, treats `RXCKR == 0` as source-loss evidence, and currently confirms after six selected-route misses.
   - The same service maps scan index to route request, reads `0x12` only on source-present, and reconciles `ram_0x093` with `ram_0x0AB`.
   - `cmd_dispatch_gated` writes the selected SRC4382 route pair and refreshes TAS3108; this path must remain the only route-apply path.
   - SRC4382 init writes register `0x0E = 0x08`, enabling receiver auto-mute on formal lock loss.
@@ -158,24 +158,24 @@ Selected-route RXCKR-zero path:
 ; after 0x13 read returned W=0 and stock_0AB != 0
 movlw       SRC4382_REG_RX_LOCK
 call        i2c_secondary_dev_random_read, 0x0
-bc          flow_main_i2c_service_27f0_ad_monitor_timeout ; hold route
+bc          poll_src4382_route_monitor__join_after_monitor_or_timeout ; hold route
 andlw       SRC4382_UNLOCK_MASK
-bz          flow_main_i2c_service_27f0_ad_soft_hold       ; locked
+bz          poll_src4382_route_monitor__clear_loss_debounce_for_soft_hold       ; locked
 
 ; unlocked: count sustained hard loss only
 movlb       0x02
 incf        src4382_loss_debounce_b2, F, BANKED
 movlw       SRC4382_HARD_LOSS_CONFIRM_SAMPLES
 cpfslt      src4382_loss_debounce_b2, BANKED
-bra         flow_main_i2c_service_27f0_ad_loss_confirmed
+bra         poll_src4382_route_monitor__confirm_route_loss
 ; fall through/branch to soft hold
 
-flow_main_i2c_service_27f0_ad_soft_hold:
+poll_src4382_route_monitor__clear_loss_debounce_for_soft_hold:
 movlb       0x02
 clrf        src4382_loss_debounce_b2, BANKED
 movlb       0x0
-movff       stock_0AB_b0_phys, stock_093_b0_phys
-bra         flow_main_i2c_service_27f0_ad_monitor
+movff       applied_route_shadow_phys, pending_route_request_phys
+bra         poll_src4382_route_monitor__reload_source_monitor_countdown
 ```
 
 Acquisition RXCKR-nonzero path when no route selected:
@@ -184,9 +184,9 @@ Acquisition RXCKR-nonzero path when no route selected:
 ; before applying a candidate while stock_0AB == 0
 movlw       SRC4382_REG_RX_LOCK
 call        i2c_secondary_dev_random_read, 0x0
-bc          flow_main_i2c_service_27f0_ad_monitor_timeout
+bc          poll_src4382_route_monitor__join_after_monitor_or_timeout
 andlw       SRC4382_UNLOCK_MASK
-bnz         flow_main_i2c_service_27f0_ad_scan_miss
+bnz         poll_src4382_route_monitor__advance_scan_after_miss
 ; then continue into existing route-map/source-present path
 ```
 

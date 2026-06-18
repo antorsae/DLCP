@@ -40,8 +40,8 @@ def _v32_symbol(name: str, fallback: int) -> int:
     return int(symbols.get(name, fallback))
 
 
-PC_ADC_BOOT_GATE_LO = _v32_symbol("adc_boot_gate", 0x27BE)
-PC_ADC_BOOT_GATE_HI = _v32_symbol("adc_boot_gate_exit", PC_ADC_BOOT_GATE_LO + 0x44)
+PC_ADC_BOOT_GATE_LO = _v32_symbol("run_wake_rail_gate_and_dsp_cold_init", 0x27BE)
+PC_ADC_BOOT_GATE_HI = _v32_symbol("adc_boot_gate__start_dsp_cold_init", PC_ADC_BOOT_GATE_LO + 0x44)
 PC_UART_REENABLE_LO = PC_ADC_BOOT_GATE_HI
 PC_UART_REENABLE_HI = PC_UART_REENABLE_LO + 0x80
 
@@ -123,7 +123,7 @@ SCENARIOS: dict[str, ScenarioDefinition] = {
         label="V32-SIM-INJECT-UART-BURST-WAKE-GIE0",
         requested_injection="high-rate UART bursts during the wake GIE=0 window",
         topology="V1.71 CONTROL + 2x V3.2 MAIN",
-        model="native wake frame starts adc_boot_gate; PC-aligned raw MAIN0 EUSART burst follows",
+        model="native wake frame starts run_wake_rail_gate_and_dsp_cold_init; PC-aligned raw MAIN0 EUSART burst follows",
     ),
 }
 
@@ -533,7 +533,7 @@ def run_uart_burst_wake_gie0(cfg: SweepConfig, chunks: int) -> dict[str, object]
         },
         "model_limitations": [
             "The wake trigger is injected into V3.2's native RX ring; the burst "
-            "is PC-aligned to adc_boot_gate and uses the silicon EUSART RX gate "
+            "is PC-aligned to run_wake_rail_gate_and_dsp_cold_init and uses the silicon EUSART RX gate "
             "to record accepted vs dropped bytes."
         ],
     }

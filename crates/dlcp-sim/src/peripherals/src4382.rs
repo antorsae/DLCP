@@ -579,7 +579,7 @@ mod tests {
     }
 
     /// Init burst of 16 register writes from V3.2's
-    /// `main_i2c_service_32f8` (asm:4807-4870).  Each
+    /// `i2c_secondary_apply_wake_init_table` (asm:4807-4870).  Each
     /// transaction is independent (own START / STOP); the
     /// register file accumulates.
     #[test]

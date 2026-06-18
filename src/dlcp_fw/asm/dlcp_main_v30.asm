@@ -28,7 +28,7 @@
     dw          0xFFFF
     movff       FSR2L, isr_save_fsr2l
     movff       FSR2H, isr_save_fsr2h
-    call        main_isr_dispatch, 0x1
+    call        isr_high_priority_dispatch, 0x1
 label_000:
     goto        label_494
 
@@ -3590,14 +3590,14 @@ function_023:
     rrcf        ram_0x016, F, ACCESS
     rrcf        ram_0x015, F, ACCESS
     return      0
-adc_boot_gate:
+run_wake_rail_gate_and_dsp_cold_init:
     bcf         INTCON, 7, ACCESS
     bcf         LATB, 2, ACCESS
     movlb       0x0
     clrf        ram_0x088, BANKED
     clrf        ram_0x089, BANKED
     bsf         ADCON0, 1, ACCESS
-adc_boot_gate_loop:
+adc_boot_gate__poll_an0_rail_ready:
     clrf        ram_0x004, ACCESS
     movlw       0x0A
     movwf       ram_0x003, ACCESS
@@ -3621,7 +3621,7 @@ label_342:
     subwf       ram_0x088, W, BANKED
     movlw       0x02
     subwfb      ram_0x089, W, BANKED
-    bnc         adc_boot_gate_loop
+    bnc         adc_boot_gate__poll_an0_rail_ready
     clrf        ram_0x004, ACCESS
     movlw       0x46
     movwf       ram_0x003, ACCESS
@@ -4603,7 +4603,7 @@ label_422:
     call        function_007, 0x0
     bsf         PIE1, 5, ACCESS
     bsf         active_flags, 3, ACCESS
-    goto        adc_boot_gate
+    goto        run_wake_rail_gate_and_dsp_cold_init
 
 function_036:
     movlw       0x08
@@ -5239,7 +5239,7 @@ label_478:
     call        function_123, 0x0
     movf        ram_0x00E, W, ACCESS
     return      0
-main_isr_dispatch:
+isr_high_priority_dispatch:
     pop
     btfss       PIR2, 5, ACCESS
     bra         timer0_irq_handler
@@ -5534,11 +5534,11 @@ label_498:
     bnz         label_498
     clrf        ram_0x05F, ACCESS
     clrf        active_flags, ACCESS
-    movlw       LOW(inline_data_table_47E6)         ; TBLPTR -> inline_data_table_47E6
+    movlw       LOW(fw_update_status_text_seed_table)         ; TBLPTR -> fw_update_status_text_seed_table
     movwf       TBLPTRL, ACCESS
-    movlw       HIGH(inline_data_table_47E6)
+    movlw       HIGH(fw_update_status_text_seed_table)
     movwf       TBLPTRH, ACCESS
-    movlw       UPPER(inline_data_table_47E6)
+    movlw       UPPER(fw_update_status_text_seed_table)
     movwf       TBLPTRU, ACCESS
     lfsr        FSR0, 0x01E5
     lfsr        FSR1, 0x0016
@@ -6269,16 +6269,16 @@ function_073:
     swapf       ram_0x004, F, ACCESS
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
-    rcall       tblrd_lookup
+    rcall       hex_scratch_nibble_to_ascii
     call        uart_tx_byte_blocking, 0x0
     movwf       ram_0x005, ACCESS
     movff       ram_0x006, ram_0x004
     movlw       0x0F
-    rcall       tblrd_lookup
+    rcall       hex_scratch_nibble_to_ascii
     call        uart_tx_byte_blocking, 0x0
     xorwf       ram_0x005, F, ACCESS
     return      0
-tblrd_lookup:
+hex_scratch_nibble_to_ascii:
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     addlw       LOW(hex_lookup_table)               ; indexed TBLPTR -> hex_lookup_table
@@ -6797,7 +6797,7 @@ standby_event_dispatch:
     bra         label_598
     btfss       active_flags, 3, ACCESS
     bra         label_596
-    call        adc_boot_gate, 0x0
+    call        run_wake_rail_gate_and_dsp_cold_init, 0x0
     bra         label_597
 label_596:
     call        hw_standby_shutdown, 0x0
@@ -6820,7 +6820,7 @@ mssp_hard_reset:
     bsf         TRISB, 0, ACCESS
     bsf         SSPCON1, 5, ACCESS
     return      0
-periodic_service_loop:
+run_main_service_pass:
     call        function_047, 0x0
     call        function_006, 0x0
     call        function_015, 0x0
@@ -6831,7 +6831,7 @@ periodic_service_loop:
 ; ---------------------------------------------------------------------------
 ; Inline Data Table (0x47E6-0x47FB)
 ; ---------------------------------------------------------------------------
-inline_data_table_47E6:  ; UART status strings for FW update
+fw_update_status_text_seed_table:  ; UART status strings for FW update
     dw  0x202D, 0x4146, 0x4C49, 0x0020, 0x5746, 0x555F, 0x6470, 0x3000
     dw  0x3030, 0x3030, 0x0030
 
@@ -6951,10 +6951,10 @@ i2c_wait_bus_idle:
     retlw       0x1F
 label_606:
     call        function_035, 0x0
-main_processing_loop:
+run_main_foreground_loop:
     call        function_026, 0x0
-    call        periodic_service_loop, 0x0
-    bra         main_processing_loop
+    call        run_main_service_pass, 0x0
+    bra         run_main_foreground_loop
 hard_reset:
     clrf        INTCON, ACCESS
     dw          0xF000

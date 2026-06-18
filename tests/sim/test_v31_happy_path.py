@@ -151,7 +151,7 @@ def test_boot_volume_applied_to_ram(main_hex: Path) -> None:
     """After boot, the EEPROM-loaded volume must be applied to RAM.
 
     The firmware loads volume from EEPROM[0x00-0x03] during
-    main_core_service_1e88 and applies it via the volume write path.
+    restore_eeprom_settings_on_boot and applies it via the volume write path.
     Either ``computed_volume`` (0x06E) or ``logical_volume`` (0x066)
     must be non-zero post-boot.
 

@@ -29,12 +29,12 @@ def _assert_ordered(body: str, *needles: str) -> None:
 
 def test_v34_main_i2c_service_2100_classifies_sen_and_pen_timeouts() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "flow_main_i2c_service_2100_2286", ["main_i2c_service_2100_timeout"])
+    body = _label_body(text, "i2c_apply_channel_route_sync_burst__start_next_dsp_transaction", ["i2c_apply_channel_route_sync_burst__timeout"])
 
     sen_match = re.search(
         r"bsf\s+SSPCON2,\s+0,\s+ACCESS\s*\n"
         r"\s*call\s+wait_sen_bounded,\s+0x0\s*\n"
-        r"\s*bc\s+main_i2c_service_2100_timeout\b",
+        r"\s*bc\s+i2c_apply_channel_route_sync_burst__timeout\b",
         body,
     )
     assert sen_match is not None, "SEN/START timeout must use generic recovery"
@@ -42,7 +42,7 @@ def test_v34_main_i2c_service_2100_classifies_sen_and_pen_timeouts() -> None:
     pen_match = re.search(
         r"bsf\s+SSPCON2,\s+2,\s+ACCESS\s*\n"
         r"\s*call\s+wait_pen_bounded,\s+0x0\s*\n"
-        r"\s*bc\s+main_i2c_service_2100_pen_timeout\b",
+        r"\s*bc\s+i2c_apply_channel_route_sync_burst__pen_timeout\b",
         body,
     )
     assert pen_match is not None, "PEN/STOP timeout must use PEN-specific recovery"
@@ -63,8 +63,8 @@ def test_v34_shared_i2c_start_helper_preserves_carry_timeout_contract() -> None:
             ["i2c_secondary_dev_random_timeout"],
             "bc          i2c_secondary_dev_random_timeout",
         ),
-        "i2c_tas3108_reg1f_write": (["i2c_reg1f_done"], "bc          i2c_reg1f_timeout"),
-        "i2c_tas3108_coeff_write": (["coeff_write_pen_done"], "bc          coeff_write_timeout"),
+        "i2c_tas3108_reg1f_write": (["i2c_tas3108_reg1f_write__return_success"], "bc          i2c_reg1f_timeout"),
+        "i2c_tas3108_coeff_write": (["i2c_tas3108_coeff_write__return_success"], "bc          coeff_write_timeout"),
     }
     for label, (next_labels, carry_branch) in expected.items():
         body = _label_body(text, label, next_labels)
@@ -92,7 +92,7 @@ def test_v34_i2c_timeout_recovery_sets_visible_diag_and_carry_contract() -> None
 
 def test_v34_i2c_wait_bus_idle_timeout_returns_error_after_recovery() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "i2c_wait_bus_idle", ["flow_i2c_wait_bus_idle_48c6"])
+    body = _label_body(text, "i2c_wait_bus_idle", ["boot_cold_init__run_peripheral_init"])
     assert "rcall       i2c_timeout_recover_advertise" in body
     assert re.search(
         r"rcall\s+i2c_timeout_recover_advertise\s*\n\s*retlw\s+0x1F",

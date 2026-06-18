@@ -197,13 +197,13 @@ def test_rxckr_only_loss_mutation_is_rejected(tmp_path: Path) -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8")
     old = (
         "    andlw       SRC4382_UNLOCK_MASK\n"
-        "    bz          flow_main_i2c_service_27f0_ad_soft_hold\n"
-        "flow_main_i2c_service_27f0_ad_hard_loss_sample:\n"
+        "    bz          poll_src4382_route_monitor__clear_loss_debounce_for_soft_hold\n"
+        "poll_src4382_route_monitor__sample_hard_route_loss:\n"
     )
     new = (
         "    andlw       SRC4382_UNLOCK_MASK\n"
-        "    bra         flow_main_i2c_service_27f0_ad_hard_loss_sample ; mutation: RXCKR-only loss\n"
-        "flow_main_i2c_service_27f0_ad_hard_loss_sample:\n"
+        "    bra         poll_src4382_route_monitor__sample_hard_route_loss ; mutation: RXCKR-only loss\n"
+        "poll_src4382_route_monitor__sample_hard_route_loss:\n"
     )
     assert old in text, "RXCKR-only mutation anchor drifted"
 

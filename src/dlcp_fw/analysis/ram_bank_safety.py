@@ -871,15 +871,15 @@ def _default_roots(target: str, program: _AsmProgram) -> list[tuple[int, BsrStat
         "main-v33": (
             # Reset enters the app trampoline; interrupt dispatch starts at the
             # vector spill/call body, which has no source label in this file.
-            "flow_app_entry_1014",
+            "app_entry__jump_to_cold_init",
             "hid_command_dispatch",
-            "main_isr_dispatch",
+            "isr_high_priority_dispatch",
         ),
         "main-v34": (
             # V3.4 is the V3.3 successor and starts from the same CFG roots.
-            "flow_app_entry_1014",
+            "app_entry__jump_to_cold_init",
             "hid_command_dispatch",
-            "main_isr_dispatch",
+            "isr_high_priority_dispatch",
         ),
         "control-v172": (
             "vector_reset",

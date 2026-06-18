@@ -116,13 +116,13 @@ def test_v32_cmd23_health_dispatch_and_reply_shape() -> None:
         after,
     ), "cmd 0x23 dispatch must immediately follow cmd 0x22 with xorlw 0x01"
 
-    body = _label_body(text, "cmd23_health_query_handler", "diag_send_burst_xx")
+    body = _label_body(text, "cmd23_health_query_handler", "diag_low_nibble_reply_burst")
     assert re.search(r"movlw\s+0xBF\b", body)
     assert re.search(r"movlw\s+0x2C\b", body)
     assert re.search(r"movlw\s+0x00\b", body)
     assert len(re.findall(r"rcall\s+uart_tx_byte_blocking", body)) == 3
     assert re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", body)
-    assert "goto        flow_main_uart_service_1be6_1e6c" in body
+    assert "goto        uart_link_parser__handler_return_tail" in body
 
 
 def test_v171_bf2c_is_exact_parser_case_not_diag_range_extension() -> None:

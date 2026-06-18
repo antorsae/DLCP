@@ -78,7 +78,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
 - [done] P1.5 Hardware stack (31-deep) with PUSH/POP, STKPTR, STVREN
   - verify: `cd crates/dlcp-sim && cargo test --release stack::tests`
   - artifact: `crates/dlcp-sim/src/stack.rs`
-  - notes: stack-overflow + STVREN reset is a real V3.2 hardening test (`feat(v3.2): main_service_rx_frame_gap parser stall watchdog` etc.).
+  - notes: stack-overflow + STVREN reset is a real V3.2 hardening test (`feat(v3.2): periodic_service_loop__check_rx_frame_gap parser stall watchdog` etc.).
 
 - [done] P1.6 Reset sources (POR, MCLR, BOR, WDT, RESET, stack-over/underflow)
   - verify: `cd crates/dlcp-sim && cargo test --release reset::tests`
@@ -430,7 +430,7 @@ This file is **machine-readable**.  Sub-tasks have a fixed shape:
   (ce2ce5b) + Bug #45 CONTROL-side firmware fix (5e43ca1; LOW
   follow-up a057f86) + Bug #44 firmware fix (ed4fd16) + wake-clamp +
   boot_epoch fixes (3fa6f4b, a2c0382), plus the earlier V3.2 §C
-  `adc_boot_gate` MAIN-side firmware fix (task #84): **the
+  `run_wake_rail_gate_and_dsp_cold_init` MAIN-side firmware fix (task #84): **the
   V1.71+V3.2+V3.2 chain now converges to Volume display in rust
   within 96 chunks of 200K Tcy (~19M Tcy)**, matching the gpsim
   convergence cadence on the same chain.  Probe:

@@ -117,7 +117,7 @@ Verification:
   | R2-4 | High | **HW gate can pass without the feature** — change the existing preset gate + add a failing `DLCP_HW_PRESET_FILENAME_CONFIRM` gate ([§10](#10-test-plan-red-test-first)). |
   | R2-5 | High | **OCR can't prove scrolling content** — raw ordered row capture + scroll reconstruction + tests ([§10](#10-test-plan-red-test-first)). |
   | R2-6 | Med | **pacing test too weak** — explicit unpaced-fails / paced-completes red/green vs the existing ring xfail ([§10](#10-test-plan-red-test-first)). |
-  | R2-7 | Med | **MAIN handler too blocking** — a 55–90 ms in-handler burst stalls USB/I2C/preset; convert to an **incremental reply job** serviced from `periodic_service_loop` ([§4](#4-main-implementation-v33)). |
+  | R2-7 | Med | **MAIN handler too blocking** — a 55–90 ms in-handler burst stalls USB/I2C/preset; convert to an **incremental reply job** serviced from `run_main_service_pass` ([§4](#4-main-implementation-v33)). |
   | R2-8 | Med | **health visibility lost on Preset** — move a **compact health glyph to row-0 col 14**; change the contract + test ([§7](#row-0-status-zone-r2-8--r2-9), [§9](#9-versioning--build)). |
   | R2-9 | Med | **row-0 dropped DSP-fault precedence** — col-15 shows `'!'` on fault, else A/B ([§7](#row-0-status-zone-r2-8--r2-9)). |
   | R2-10 | Low/Med | **row-dirty flag undefined** — define `FNAME_ROW_DIRTY` (bit 3) ([§6](#6-control-ram-allocation-v172)). |
@@ -321,12 +321,12 @@ MAIN that can only emit START `0x2F`: prefix-first.
 
 A 30-char reply is 33 frames = 99 B, **exceeding CONTROL's 48-byte RX ring**, so
 the reply must be paced. Instead of a blocking in-handler delay, MAIN emits at
-most one frame per pass from `periodic_service_loop` ([§4](#4-main-implementation-v33)),
+most one frame per pass from `run_main_service_pass` ([§4](#4-main-implementation-v33)),
 keeping the command handler non-blocking.
 
 **Pacing is a mandatory rate limit, not an assumption (R3-5 / R2-6).** "One
 frame per pass" is *not* a timing contract: MAIN passes can be fast (µs), MAIN
-also runs synchronous bursts (e.g. `diag_send_burst_xx`, `send_status_burst`,
+also runs synchronous bursts (e.g. `diag_low_nibble_reply_burst`, `send_status_burst`,
 `cmd25_identity_query_handler`), and CONTROL only drains when
 `display_loop_iteration` reaches `rx_parser_entry`. So the filename job is
 lowest-priority: it MUST emit no frame in a foreground pass where another
@@ -354,7 +354,7 @@ Diagnostics MAIN-identity reply range.)
 ## 4. MAIN implementation (`V3.3`)
 
 `dlcp_main_v33.asm` (clone of v33 Diagnostics identity). The reply is an **incremental job**
-(modeled on `preset_job_service`), so the parser handler never blocks (R2-7).
+(modeled on `advance_preset_job_state_machine`), so the parser handler never blocks (R2-7).
 
 **Job RAM** — MAIN BANK-2 reserved scratch (`0x2F4..0x2FF`, the "Tier-2
 reserved" tail in `dlcp_main_ram.inc`). Use fixed sources instead of a generic
@@ -372,7 +372,7 @@ pointer to fit the job plus pacing state into the 12-byte window:
 | `0x2FB` | `fn_job_len` | expected printable length `L` (0..30), sent in the LEN signature |
 | `0x2FC` | `fname_tx_gap_lo` | 16-bit non-blocking inter-frame countdown low byte |
 | `0x2FD` | `fname_tx_gap_hi` | 16-bit non-blocking inter-frame countdown high byte |
-| `0x2FE` | `chain_tx_emitted` | pass-local arbitration flag; clear at `periodic_service_loop` top |
+| `0x2FE` | `chain_tx_emitted` | pass-local arbitration flag; clear at `run_main_service_pass` top |
 | `0x2FF` | `fn_job_tmp` | scratch for source reads / direction compare; not live across passes |
 
 Because `0x2F4..0x2FF` is wipe-protected across the flash-service init wipe,
@@ -462,8 +462,8 @@ reclaim code first; do not move the table silently.
    The 16-byte compare + other-slot read are bounded (tens of µs) — far short of
    the incremental burst; defer them into the SEND_START pass if the handler must
    stay minimal.
-3. **`filename_reply_job_service`** — called once per pass from
-   `periodic_service_loop`; emits **one complete frame** then returns:
+3. **`filename_reply_emit_next_frame_if_ready`** — called once per pass from
+   `run_main_service_pass`; emits **one complete frame** then returns:
    ```
    ; R3-1 abort: if filename_rev is odd or filename_rev != fn_job_rev
    ;             -> state = IDLE, return
@@ -488,7 +488,7 @@ reclaim code first; do not move the table silently.
    there is no pacing-delay scratch hazard (the prior blocking-delay design is
    gone). `L` is computed once in the arm handler and sealed by the LEN frame.
 
-`periodic_service_loop` clears `chain_tx_emitted` at its top; every service that
+`run_main_service_pass` clears `chain_tx_emitted` at its top; every service that
 consumes, forwards, or emits chain UART traffic sets it. The filename job runs last
 (after `main_uart_service`, status/full-sync, BF/08, diagnostics, and
 `cmd25_identity_query_handler`) and emits only if `chain_tx_emitted == 0` and the
@@ -1216,7 +1216,7 @@ Simulator (`tests/sim/`):
    parser/ring overwrite under worst-case status/diag/identity interleaving; the
    handler does not block USB/I2C/preset progress. Assert the inter-frame gate
    actually limits the rate (not "one per pass") by measuring native UART
-   frame-start timestamps. Assert `periodic_service_loop` clears
+   frame-start timestamps. Assert `run_main_service_pass` clears
    `chain_tx_emitted`, all chain traffic producers set it, `filename_reply_job`
    runs last, and filename code does not call `timer3_blocking_delay`.
 2b. **MAIN snapshot guard (R3-1)** — mutate `preset_filename_ram_base` (USB cmd 0x03
@@ -1304,7 +1304,7 @@ Simulator (`tests/sim/`):
     and fails if filename code crosses release metadata or the bootloader window.
 5f. **Structural implementation hooks** — tests parse real source/equates/listings
     for `chain_tx_emitted` coverage on all actual MAIN chain send paths:
-    `main_uart_service_1be6` parser forward/ACK echo, `send_status_burst`,
+    `uart_link_parser_drain_rx_and_forward` parser forward/ACK echo, `send_status_burst`,
     `send_dsp_fault_status`, `cmd21_diag_query_handler`,
     `cmd22_reset_flags_query_handler`, `cmd23_health_query_handler`,
     `cmd25_identity_query_handler`, `report_cmd29_status`, and filename.

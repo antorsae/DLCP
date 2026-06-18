@@ -74,7 +74,7 @@ label-based references:
 | 0x16AA, 0x16CE, 0x18E6, 0x43D0 | `movlw 0x10` | `movlw HIGH(hex_lookup_table)` | TBLPTRH for nibble table |
 | 0x37CE | `addlw 0x29` | `addlw LOW(string_desc_ptr_table)` | String descriptor ptrs at 0x1029 |
 | 0x37D2 | `movlw 0x10` | `movlw HIGH(string_desc_ptr_table)` | TBLPTRH for same |
-| 0x3D82, 0x3D86, 0x3D8A | `movlw 0xE6/0x47/0x00` | `movlw LOW/HIGH/UPPER(inline_data_table_47E6)` | Inline data at 0x47E6 |
+| 0x3D82, 0x3D86, 0x3D8A | `movlw 0xE6/0x47/0x00` | `movlw LOW/HIGH/UPPER(fw_update_status_text_seed_table)` | Inline data at 0x47E6 |
 | 0x3DA2 | `movlw 0x00` | `movlw UPPER(0x0000)` | Clear TBLPTRU |
 | 0x42BA, 0x42C0, 0x42D6 | `movlw 0x30/0x0B/0x30` | `movlw UPPER/LOW/UPPER(_CONFIG6H/_CONFIG1L)` | Config space (fixed HW, not code) |
 
@@ -144,7 +144,7 @@ Boot block jumps here after USB bootloader timeout/exit.  Must be
 
 **0x1008 — High-priority ISR entry (LIVE)**:
 ALL interrupts arrive here (USBIF, T0IF, TMR3IF, RCIF, OERR).  The
-stock ISR entry saves FSR2L/H and calls `main_isr_dispatch`.  This
+stock ISR entry saves FSR2L/H and calls `isr_high_priority_dispatch`.  This
 address is inside the fixed entry block (0x1000–0x1013) which is
 placed BEFORE any shift padding.  **Must stay at exactly 0x1008.**
 
@@ -186,7 +186,7 @@ NOP/data happening to be benign:
 isr_high_entry:                 ; 0x1008 — HIGH-PRIORITY ISR (LIVE)
     movff   FSR2L, isr_save_fsr2l
     movff   FSR2H, isr_save_fsr2h
-    call    main_isr_dispatch, 0x1
+    call    isr_high_priority_dispatch, 0x1
 app_init:                       ; 0x1014
     goto    main_flash_service
     nop                         ; 0x1018 pad
@@ -205,7 +205,7 @@ app_entry:
 isr_high_entry:                 ; 0x1008: HIGH-PRIORITY ISR (LIVE)
     movff   FSR2L, isr_save_fsr2l   ; 0x1008
     movff   FSR2H, isr_save_fsr2h   ; 0x100C
-    call    main_isr_dispatch, 0x1  ; 0x1010
+    call    isr_high_priority_dispatch, 0x1  ; 0x1010
 app_init:                       ; 0x1014
     goto    main_flash_service      ; 0x1014 (4 bytes)
 isr_low_stub:                   ; 0x1018: LOW-PRIORITY ISR (DEAD)
@@ -228,13 +228,13 @@ against the shifted hex to prove behavioral equivalence.
 **Implementation**:
 
 1. Copy `dlcp_main_v30_comments.asm` to `dlcp_main_v30_shifted.asm`
-2. After the ISR dispatch call at 0x1012 (before `flow_app_entry_1014`),
+2. After the ISR dispatch call at 0x1012 (before `app_entry__jump_to_cold_init`),
    insert:
    ```asm
    ; Relocation safety padding — proves no hardcoded addresses remain
        fill    0x0000, 0x111    ; 0x111 NOP words = 0x222 bytes of padding
    ```
-3. The entry `goto flow_app_entry_1014` naturally jumps over the padding.
+3. The entry `goto app_entry__jump_to_cold_init` naturally jumps over the padding.
 4. Convert the `string_desc_ptr_table` data from hardcoded bytes to
    label-relative `db` values (see A3b).
 5. Assemble with gpasm.  Verify no errors.
@@ -267,7 +267,7 @@ V3.1 enhanced code: ~15.3KB — fits with headroom.
 0x0008 (in the boot block, not emitted by V3.0).  The boot block
 redirects to 0x1008 which is inside the entry stub (before the
 padding).  At 0x1008, the stock ISR entry `movff FSR2L, ...` /
-`call main_isr_dispatch` executes.  The `call main_isr_dispatch`
+`call isr_high_priority_dispatch` executes.  The `call isr_high_priority_dispatch`
 target resolves to the shifted address via its label.  **ISR path is
 safe** — the entry block is before the padding, and the call target
 is label-resolved.
@@ -291,7 +291,7 @@ points.  After shift, every `org` must use the new address.
 | `timer3_blocking_delay` | 0x447E | TBD | Timer3 shim |
 | (alt i2c_wait_bus_idle) | 0x4492 | TBD | function_113 overlay |
 | (alt uart_tx) | 0x2D9E | TBD | function_111 overlay |
-| `adc_boot_gate` | 0x2D8C | TBD | ADC boot bypass |
+| `run_wake_rail_gate_and_dsp_cold_init` | 0x2D8C | TBD | ADC boot bypass |
 
 **2. Overlay precondition bytes** (manifests.py L382+):
 Byte-value checks like `0x447E: 0xA0`, `0x45FA: 0x04` verify the
@@ -330,7 +330,7 @@ against the shifted hex:
 
 **Note on AN0 boot cycle count**: The NOP padding is inserted AFTER
 the ISR dispatch call site (0x1012).  The main entry `goto` at 0x1000
-jumps to `flow_app_entry_1014` (now at 0x1236) which then `goto`s to
+jumps to `app_entry__jump_to_cold_init` (now at 0x1236) which then `goto`s to
 the main flash service function.  The `goto` is a 2-cycle instruction
 regardless of target distance on PIC18.  The only cycle difference is
 if a `call` target shifts (different instruction fetch pipeline), but

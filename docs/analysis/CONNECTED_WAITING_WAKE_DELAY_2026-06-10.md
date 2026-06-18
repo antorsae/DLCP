@@ -7,7 +7,7 @@ both CONTROL banner delays deleted, MAIN parallel two-MAIN wake added,
 reconnect exit hardened to require a real poll answer. Wake-to-responsive:
 250M ticks -> 126M ticks against a 160M-tick red-first bound
 (`tests/sim/test_v173_wake_responsiveness.py`). The deeper async-reapply
-(chunked `adc_boot_gate` apply) remains a designed follow-up — see the
+(chunked `run_wake_rail_gate_and_dsp_cold_init` apply) remains a designed follow-up — see the
 corrected architecture notes below.
 
 ## Symptom under investigation
@@ -159,12 +159,12 @@ Implemented changes:
    delay and the 0x1388 wake delay). The loops own the wait. Measured effect
    alone: 250M -> 232M ticks — which exposed the real dominant term:
 2. **The two MAINs woke SEQUENTIALLY.** Fine-grained probing of the fixed
-   build showed MAIN0 deaf (`adc_boot_gate`, CREN=0) for ~116M ticks, and
+   build showed MAIN0 deaf (`run_wake_rail_gate_and_dsp_cold_init`, CREN=0) for ~116M ticks, and
    MAIN1 only *starting* its own identical deaf gate afterwards — MAIN0's
    UART quiesce eats the forwarded wake, so MAIN1 only hears the Bug #45 H2
    re-emit at MAIN0's gate *exit*. Ring forwarding through deaf MAIN1 also
    blackholes MAIN0's poll answers. Total ≈ 2 gates ≈ 232M ticks.
-3. **MAIN: parallel two-MAIN wake.** `adc_boot_gate` now re-broadcasts
+3. **MAIN: parallel two-MAIN wake.** `run_wake_rail_gate_and_dsp_cold_init` now re-broadcasts
    `B0/03/01` downstream at gate **entry**, before `uart_quiesce_for_wake`
    (new shared `wake_rebroadcast_downstream` helper; the exit-time H2 re-emit
    stays as backstop, now via the same helper). Both MAINs gate concurrently;
@@ -191,7 +191,7 @@ against it; recalibrating is a separate, firmware-wide audit.
 ## Remaining follow-up (designed, not implemented)
 
 Chunking the MAIN wake apply itself (the ~116M-tick deaf gate) must preserve
-`adc_boot_gate`'s acoustic ordering: the amp enable (`LATB.3`) may only rise
+`run_wake_rail_gate_and_dsp_cold_init`'s acoustic ordering: the amp enable (`LATB.3`) may only rise
 after the coefficient table is fully applied. An async conversion therefore
 has to defer the amp enable and the post-apply service calls into the job's
 COMMIT (the V3.2 async preset-job machinery is the template), and exempt the

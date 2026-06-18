@@ -598,7 +598,7 @@ class SimHidBackend:
         Older sim tests answered cmd 0x03/0x06/0x43 by mirroring side
         effects directly in Python.  That hid bugs in the real firmware
         HID path.  The rust facade now stages a configured EP1 OUT
-        transaction and invokes ``main_usb_service_3a26`` /
+        transaction and invokes ``usb_hid_dispatch_out_report_if_ready`` /
         ``hid_command_dispatch`` on the target MAIN, returning the EP1 IN
         payload.  Keep bootloader handoff/stream commands as Python
         shortcuts because the Microchip boot block itself is not modeled.
@@ -714,7 +714,7 @@ class SimHidBackend:
         if subcmd == _CMD03_FILENAME_WRITE_SUBCMD:
             # WRITE bytes 2..2+0x1E into RAM 0x2C0..0x2DD.  Critical:
             # the V3.2 firmware-side WRITE handler (asm lines 355-374,
-            # main_core_service_15b0/15be) MAPS payload byte 0x00 to RAM
+            # hid_out_payload_index_to_fsr2/15be) MAPS payload byte 0x00 to RAM
             # 0xFF -- it's how the host signals "end of filename
             # padding" without needing a length field.  The flasher's
             # ``_name_slot_to_cmd03_payload`` mirrors this by converting
@@ -758,7 +758,7 @@ class SimHidBackend:
         line ~393, ``bsf ram_0x0BD, 5/6, BANKED``).  Bit 6 is the gate
         added in ``test_v32_usb_filename_xact_gate.py`` work; clearing
         it requires firmware-side service via the
-        ``main_core_service_265c`` join after persist completes."""
+        ``persist_dirty_runtime_state_to_eeprom`` join after persist completes."""
         chain = self._hub._chain
         current = chain.read_main_reg(unit, _FILENAME_DIRTY_FLAGS_ADDR) & 0xFF
         chain.write_main_reg(
@@ -889,7 +889,7 @@ class SimHidBackend:
 
         Cross-checked against ``crates/dlcp-sim/src/peripherals/usb.rs::
         handle_memread`` (the rust shortcut for the firmware path) and
-        the live V3.2 firmware's ``hid_cmd_diag_memread`` handler.
+        the live V3.2 firmware's ``hid_diag_memread_dispatch`` handler.
 
         Request layout: ``[0x43, region, addr_lo, addr_hi, length, ...]``
         Response layout: ``[0x43, status, length, data...]``
@@ -987,7 +987,7 @@ class SimUsbHub:
     # ~70 cmd 0x43 reads in a row during ``_verify_capture_overlay`` --
     # they'd accumulate ~1.5 s of sim time, which gives chain frames
     # (V1.71 CONTROL's ~6 s full_sync_burst step 6) and asynchronous
-    # firmware paths (preset_job_service, active_flags.7 reapply
+    # firmware paths (advance_preset_job_state_machine, active_flags.7 reapply
     # cleared by cmd_dispatch_gated) plenty of opportunity to converge
     # before the next EP0 polling phase fires.
     DEFAULT_STEP_TICKS_PER_HID_OP = 1_000_000

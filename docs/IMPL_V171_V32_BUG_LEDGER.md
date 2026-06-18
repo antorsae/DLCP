@@ -1284,7 +1284,7 @@ Observed behavior:
   roughly `912` ACKed transmit bytes/s with no source and `1147` ACKed
   transmit bytes/s with a source present in the firmware-path simulator.
 - The first attempted cadence rewrite replaced the legacy
-  `main_i2c_service_27f0` path and live hardware immediately sounded thin with
+  `poll_src4382_route_monitor` path and live hardware immediately sounded thin with
   missing bass after flashing MAIN+CONTROL.
 - The later rev `0x6D` in-place candidate retested with corrected speaker wiring
   and Auto Detect audio worked, but selecting fixed digital sources
@@ -1326,7 +1326,7 @@ Red test target:
 
 Acceptance:
 
-- The legacy `main_i2c_service_27f0` route/DSP contract is preserved.
+- The legacy `poll_src4382_route_monitor` route/DSP contract is preserved.
 - No-source and source-present Auto Detect SRC4382 traffic are reduced by more
   than 10x from the stock-equivalent simulator baseline.
 - Worst-position source discovery still converges through SRC route and

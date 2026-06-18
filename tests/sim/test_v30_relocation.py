@@ -166,7 +166,7 @@ def test_shifted_symbols_consistent(shifted_symbols: Dict[str, int]) -> None:
     """All code symbols shift by exactly 0x222; preset_table_a stays pinned."""
     stock_addrs = {
         "hid_command_dispatch": 0x10AC,
-        "adc_boot_gate": 0x2D8C,
+        "run_wake_rail_gate_and_dsp_cold_init": 0x2D8C,
         "timer3_blocking_delay": 0x447E,
         "rx_ring_read": 0x45FA,
         "rx_ring_has_data": 0x4872,

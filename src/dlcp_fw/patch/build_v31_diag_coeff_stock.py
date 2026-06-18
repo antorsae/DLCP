@@ -24,7 +24,7 @@ _OLD_COEFF_BLOCK = """i2c_tas3108_coeff_write:
     call        i2c_wait_bus_idle, 0x0
     bsf         SSPCON2, 0, ACCESS          ; SEN = START
     call        wait_sen_bounded, 0x0
-    bc          coeff_write_pen_done
+    bc          i2c_tas3108_coeff_write__return_success
     movlw       0x68
     call        i2c_byte_tx, 0x0
     movlw       0x30
@@ -33,26 +33,26 @@ _OLD_COEFF_BLOCK = """i2c_tas3108_coeff_write:
     movff       i2c_coeff_1, ram_0x04A
     movff       i2c_coeff_2, ram_0x04B
     movff       i2c_coeff_3, ram_0x04C
-    call        main_i2c_service_39a6, 0x0
+    call        i2c_emit_tas3108_coeff_from_staged_float, 0x0
     bsf         SSPCON2, 2, ACCESS          ; PEN = STOP
     ; Fix F: boot-gated PEN wait — bounded after boot, stock during boot
     btfss       event_flags, 7, BANKED      ; boot complete?
     bra         coeff_write_pen_stock       ; no: stock unbounded (safe during DSP init)
     call        wait_pen_bounded, 0x0
     bc          coeff_write_pen_timeout
-    bra         coeff_write_pen_done
+    bra         i2c_tas3108_coeff_write__return_success
 coeff_write_pen_timeout:
     ; PEN stuck: flag fault and force NACK for retry. On real HW the
     ; watchdog would catch true hangs; in gpsim the test harness
     ; force-clears SSPCON2 after clearing the fault model.
     bsf         dsp_fault_flags, 6, BANKED  ; flag DSP fault
     bsf         dsp_fault_flags, 2, BANKED  ; force NACK → volume_dsp_write retries
-    bra         coeff_write_pen_done
+    bra         i2c_tas3108_coeff_write__return_success
 coeff_write_pen_stock:
     btfss       SSPCON2, 2, ACCESS
-    bra         coeff_write_pen_done
+    bra         i2c_tas3108_coeff_write__return_success
     bra         coeff_write_pen_stock
-coeff_write_pen_done:
+i2c_tas3108_coeff_write__return_success:
     return      0
 """
 
@@ -70,14 +70,14 @@ coeff_write_wait_sen_stock:
     movff       i2c_coeff_1, ram_0x04A
     movff       i2c_coeff_2, ram_0x04B
     movff       i2c_coeff_3, ram_0x04C
-    call        main_i2c_service_39a6, 0x0
+    call        i2c_emit_tas3108_coeff_from_staged_float, 0x0
     bsf         SSPCON2, 2, ACCESS          ; stock STOP wait
 coeff_write_pen_stock:
     btfss       SSPCON2, 2, ACCESS
-    bra         coeff_write_pen_done
+    bra         i2c_tas3108_coeff_write__return_success
     bra         coeff_write_pen_stock
 coeff_write_pen_timeout:
-coeff_write_pen_done:
+i2c_tas3108_coeff_write__return_success:
     return      0
 """
 
@@ -115,7 +115,7 @@ def _is_already_stock_coeff_write(text: str) -> bool:
     if body_start < 0:
         return False
     # Bound the search to the function body.  The canonical source
-    # ends the function at ``coeff_write_pen_done:`` + ``return  0``
+    # ends the function at ``i2c_tas3108_coeff_write__return_success:`` + ``return  0``
     # followed by a blank-line gap before the next routine, so a
     # plain ``\n\n`` search bounds the scan correctly for the
     # current shape.  4000-byte fallback caps run-time if a future

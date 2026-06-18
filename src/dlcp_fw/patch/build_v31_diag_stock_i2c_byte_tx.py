@@ -25,44 +25,44 @@ _OLD_I2C_BYTE_TX = """i2c_byte_tx:
     movff       WREG, ram_0x005
     movff       ram_0x005, SSPBUF
     btfsc       SSPCON1, 7, ACCESS
-    bra         flow_i2c_byte_tx_exit
+    bra         i2c_byte_tx__return
     movff       SSPCON1, ram_0x004
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     xorlw       0x08
-    bz          flow_i2c_byte_tx_master
+    bz          i2c_byte_tx__recheck_master_mode
     movff       SSPCON1, ram_0x004
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     xorlw       0x0B
-    bz          flow_i2c_byte_tx_master
+    bz          i2c_byte_tx__recheck_master_mode
     bsf         SSPCON1, 4, ACCESS
-flow_i2c_byte_tx_sspif:
+i2c_byte_tx__wait_sspif_slave_mode:
     btfss       PIR1, 3, ACCESS
-    bra         flow_i2c_byte_tx_sspif
+    bra         i2c_byte_tx__wait_sspif_slave_mode
     btfss       SSPSTAT, 2, ACCESS
     movf        SSPSTAT, W, ACCESS
-    bra         flow_i2c_byte_tx_exit
-flow_i2c_byte_tx_master:
+    bra         i2c_byte_tx__return
+i2c_byte_tx__recheck_master_mode:
     ; Re-check mode (stock pattern preserved)
     movff       SSPCON1, ram_0x004
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     xorlw       0x08
-    bz          flow_i2c_byte_tx_bf
+    bz          i2c_byte_tx__wait_bf_clear_master
     movff       SSPCON1, ram_0x004
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     xorlw       0x0B
-    bnz         flow_i2c_byte_tx_exit
-flow_i2c_byte_tx_bf:
+    bnz         i2c_byte_tx__return
+i2c_byte_tx__wait_bf_clear_master:
     ; V3.1: bounded BF wait (stock was unbounded loop)
     call        wait_bf_clear_bounded, 0x0
-    bc          flow_i2c_byte_tx_exit
+    bc          i2c_byte_tx__return
     call        i2c_wait_bus_idle, 0x0
     ; V3.1 Fix A: ACKSTAT check after successful master TX
     ; Save/restore BSR — callers may have any bank selected and stock
@@ -73,7 +73,7 @@ flow_i2c_byte_tx_bf:
     bsf         dsp_fault_flags, 2, BANKED
     movff       ram_0x00E, BSR              ; restore caller's BSR
     movf        SSPCON2, W, ACCESS
-flow_i2c_byte_tx_exit:
+i2c_byte_tx__return:
     return      0
 """
 
@@ -81,46 +81,46 @@ _NEW_I2C_BYTE_TX = """i2c_byte_tx:
     movff       WREG, ram_0x005
     movff       ram_0x005, SSPBUF
     btfsc       SSPCON1, 7, ACCESS
-    bra         flow_i2c_byte_tx_exit
+    bra         i2c_byte_tx__return
     movff       SSPCON1, ram_0x004
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     xorlw       0x08
-    bz          flow_i2c_byte_tx_master
+    bz          i2c_byte_tx__recheck_master_mode
     movff       SSPCON1, ram_0x004
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     xorlw       0x0B
-    bz          flow_i2c_byte_tx_master
+    bz          i2c_byte_tx__recheck_master_mode
     bsf         SSPCON1, 4, ACCESS
-flow_i2c_byte_tx_sspif:
+i2c_byte_tx__wait_sspif_slave_mode:
     btfss       PIR1, 3, ACCESS
-    bra         flow_i2c_byte_tx_sspif
+    bra         i2c_byte_tx__wait_sspif_slave_mode
     btfss       SSPSTAT, 2, ACCESS
     movf        SSPSTAT, W, ACCESS
-    bra         flow_i2c_byte_tx_exit
-flow_i2c_byte_tx_master:
+    bra         i2c_byte_tx__return
+i2c_byte_tx__recheck_master_mode:
     ; DIAG: restore full stock master-side i2c_byte_tx path
     movff       SSPCON1, ram_0x004
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     xorlw       0x08
-    bz          flow_i2c_byte_tx_bf
+    bz          i2c_byte_tx__wait_bf_clear_master
     movff       SSPCON1, ram_0x004
     movlw       0x0F
     andwf       ram_0x004, F, ACCESS
     movf        ram_0x004, W, ACCESS
     xorlw       0x0B
-    bnz         flow_i2c_byte_tx_exit
-flow_i2c_byte_tx_bf:
+    bnz         i2c_byte_tx__return
+i2c_byte_tx__wait_bf_clear_master:
     btfsc       SSPSTAT, 0, ACCESS
-    bra         flow_i2c_byte_tx_bf
+    bra         i2c_byte_tx__wait_bf_clear_master
     call        i2c_wait_bus_idle, 0x0
     movf        SSPCON2, W, ACCESS
-flow_i2c_byte_tx_exit:
+i2c_byte_tx__return:
     return      0
 """
 

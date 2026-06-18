@@ -1,7 +1,7 @@
 """V3.2 SRC4382/input-service regression coverage.
 
 The 2026-05-19 Auto Detect cadence experiment replaced the legacy
-``main_i2c_service_27f0`` body and field hardware immediately reported a
+``poll_src4382_route_monitor`` body and field hardware immediately reported a
 thin/no-bass audio regression.  Keep the release on the known-good
 stock-equivalent SRC4382/input service until a future redesign proves audio
 parity on hardware.
@@ -115,7 +115,7 @@ def _assert_autodetect_source_present_drives_route_and_dsp(v32_hex: Path) -> Non
 
 def test_v32_src4382_service_retains_legacy_dsp_refresh_contract() -> None:
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    body = _label_body(text, "main_i2c_service_27f0", "main_core_service_297e")
+    body = _label_body(text, "poll_src4382_route_monitor", "float32_exp_limit1024_in_place")
     dispatch = _label_body(text, "cmd_dispatch_gated", "cmd_gate_reject")
 
     assert "src4382_autodetect_service" not in body
@@ -257,7 +257,7 @@ def test_v32_route_event_applies_src_route_and_dsp_refresh(
     the SRC4382 audio route and drive the downstream TAS3108 refresh.
 
     This pins the contract that the failed Auto Detect rewrite missed:
-    ``main_i2c_service_27f0`` computes ``ram_0x093`` and sets
+    ``poll_src4382_route_monitor`` computes ``ram_0x093`` and sets
     ``event_flags.bit1``; ``cmd_dispatch_gated`` consumes that event by
     writing the SRC route pair and refreshing TAS3108 coefficient 0x30.
     """

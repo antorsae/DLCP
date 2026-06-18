@@ -1146,7 +1146,7 @@ simulator complexity.
 
 ## Re-flash pop monitoring (V3.2+ no-pop flash entry)
 
-Validates the V3.2 `flash_entry_quiet_shutdown` path against the pre-V3.2
+Validates the V3.2 `flash_entry_mute_and_reset` path against the pre-V3.2
 single-Tcy `RESET` POP described in
 [`docs/NO_POP_FIRMWARE_FLASH.md`](NO_POP_FIRMWARE_FLASH.md).
 
@@ -1192,8 +1192,8 @@ the pair) is the minimum acceptance gate for this work.
 
 | Cycle | Expected | Failure interpretation |
 |---|---|---|
-| Cycle 1, MAIN0 | no pop | If pop: `flash_entry_quiet_shutdown` did not run, or version marker not bumped — verify EEPROM `03/02/33` via `dlcp_main_flash.py --info-only` after flash |
-| Cycle 2, MAIN0 | no pop | If first was clean but second is loud: `flash_entry_quiet_shutdown` may be aborting via the bounded I2C-timeout path on a wedged secondary device |
+| Cycle 1, MAIN0 | no pop | If pop: `flash_entry_mute_and_reset` did not run, or version marker not bumped — verify EEPROM `03/02/33` via `dlcp_main_flash.py --info-only` after flash |
+| Cycle 2, MAIN0 | no pop | If first was clean but second is loud: `flash_entry_mute_and_reset` may be aborting via the bounded I2C-timeout path on a wedged secondary device |
 | Cycle 1+2, MAIN1 | no pop | Same interpretations apply per-PB — the helper runs identically on both MAINs |
 
 If any of the four cycles produces an audible pop comparable to the
@@ -1207,7 +1207,7 @@ To verify the EEPROM-marker-first ordering, power-cut the unit ~50 ms
 into the new Phase A (i.e. during the 100 ms `timer3_blocking_delay`
 between rail drop and the final amp gate).  Power back on — the unit
 must drop straight into the bootloader because
-`main_flash_service_46de` already committed `EEPROM[0xFF] = 0` before
+`eeprom_write_byte_if_changed` already committed `EEPROM[0xFF] = 0` before
 the helper started.  Verify the bootloader can still accept a
 subsequent flash stream by running `scripts/dlcp_v32_release_flash.py`
 again; the unit should re-enumerate and re-flash cleanly.

@@ -12,10 +12,10 @@ now descriptive of the shipped behavior; the original "proposed" framing
 is preserved below for historical context.
 
 - Helper at `src/dlcp_fw/asm/dlcp_main_v32.asm` — search for label
-  `flash_entry_quiet_shutdown:` (~line 8568).
-- Dispatch site redirect at `flow_hid_command_dispatch_13d0` — search
-  for the call to `main_flash_service_46de` followed by
-  `goto flash_entry_quiet_shutdown` (~line 745).
+  `flash_entry_mute_and_reset:` (~line 8568).
+- Dispatch site redirect at `hid_command_dispatch__enter_fw_update_boot_marker` — search
+  for the call to `eeprom_write_byte_if_changed` followed by
+  `goto flash_entry_mute_and_reset` (~line 745).
 - EEPROM version marker floor bumped from `0x03, 0x02, 0x32` to
   `0x03, 0x02, 0x33`. Canonical `V3.2` release builds now keep
   incrementing that third byte monotonically; the current build may
@@ -46,15 +46,15 @@ firmware-level, not hardware-level — see the traces below.
 ### Code evidence
 
 Flash-entry path in `src/dlcp_fw/asm/dlcp_main_v32.asm`
-(within `flow_hid_command_dispatch_13d0`):
+(within `hid_command_dispatch__enter_fw_update_boot_marker`):
 
 ```asm
     ; ... stage default settings, clear scratch, set dirty flags ...
-    call    main_core_service_265c, 0x0     ; routine housekeeping
+    call    persist_dirty_runtime_state_to_eeprom, 0x0     ; routine housekeeping
     clrf    ram_0x008, ACCESS               ; EEPROM addr hi = 0x00
     setf    ram_0x007, ACCESS               ; EEPROM addr lo = 0xFF
     clrf    ram_0x009, ACCESS               ; value = 0x00
-    call    main_flash_service_46de, 0x0    ; EEPROM[0xFF] = 0
+    call    eeprom_write_byte_if_changed, 0x0    ; EEPROM[0xFF] = 0
     call    hard_reset, 0x0                 ; <-- single-Tcy RESET: POP
 ```
 
@@ -95,7 +95,7 @@ effects combine at the amp input.
 2. Drops `LATB.bit4`, `LATA.bit6`, `LATA.bit3/4/5` (amp enable + source
    select) while the pins are still being driven, landing them cleanly at
    logic LOW rather than high-Z.
-3. Runs the 4-iteration rail-bleed loop (`flow_hw_standby_shutdown_3c58` @
+3. Runs the 4-iteration rail-bleed loop (`hw_standby_shutdown__rail_discharge_pulse_loop` @
    `0x3C58`): toggles `0x71.0x1C` between 0/1 with `250 ms` of
    `timer3_blocking_delay` between each toggle — a controlled ~1 second
    discharge to ground.
@@ -134,12 +134,12 @@ the next `RESET` — or a subsequent software/WDT reset — still lands in the
 bootloader. The order is therefore:
 
 ```
-main_flash_service_46de    ; EEPROM[0xFF] = 0 (idempotent, ~4 ms)
-flash_entry_quiet_shutdown ; Phase A
+eeprom_write_byte_if_changed    ; EEPROM[0xFF] = 0 (idempotent, ~4 ms)
+flash_entry_mute_and_reset ; Phase A
 hard_reset                  ; Phase B (tail)
 ```
 
-### Phase A — the `flash_entry_quiet_shutdown` helper
+### Phase A — the `flash_entry_mute_and_reset` helper
 
 Place this new helper anywhere free flash space exists in the V3.2 app code
 region (the 0x47FC..0x496F window has several small unused gaps; practical
@@ -149,9 +149,9 @@ will resolve the label.
 
 ```asm
 ; ---------------------------------------------------------------------------
-; Function: flash_entry_quiet_shutdown      (V3.2+ pop-free flash entry)
+; Function: flash_entry_mute_and_reset      (V3.2+ pop-free flash entry)
 ; ---------------------------------------------------------------------------
-; Called ONLY from the flash-trigger handler in flow_hid_command_dispatch_13d0
+; Called ONLY from the flash-trigger handler in hid_command_dispatch__enter_fw_update_boot_marker
 ; after EEPROM[0xFF]=0 has been committed. Drives the same sequence that
 ; hw_standby_shutdown uses to land the amp inputs at a known quiescent point
 ; BEFORE the PIC18 RESET instruction tristates every pin.
@@ -170,7 +170,7 @@ will resolve the label.
 ; still reach the goto hard_reset at the bottom — worst case is a single
 ; click, never a hang.
 ; ---------------------------------------------------------------------------
-flash_entry_quiet_shutdown:
+flash_entry_mute_and_reset:
     rcall       preset_force_mute               ; (1) DSP coefficients = 0
     clrf        ram_0x006, ACCESS               ; (2) drop audio rails via 0x71
     movlw       0x1B
@@ -196,19 +196,19 @@ flash_entry_quiet_shutdown:
 
 ### Phase A call-site change
 
-In `flow_hid_command_dispatch_13d0` change exactly one line:
+In `hid_command_dispatch__enter_fw_update_boot_marker` change exactly one line:
 
 ```diff
      clrf        ram_0x008, ACCESS
      setf        ram_0x007, ACCESS
      clrf        ram_0x009, ACCESS
-     call        main_flash_service_46de, 0x0    ; EEPROM[0xFF] = 0
+     call        eeprom_write_byte_if_changed, 0x0    ; EEPROM[0xFF] = 0
 -    call        hard_reset, 0x0
-+    goto        flash_entry_quiet_shutdown      ; V3.2+: pop-free reset path
-     bra         flow_hid_command_dispatch_15aa
++    goto        flash_entry_mute_and_reset      ; V3.2+: pop-free reset path
+     bra         hid_command_dispatch__clear_opcode_and_return
 ```
 
-`goto` (rather than `call`) is preferred: `flash_entry_quiet_shutdown` is a
+`goto` (rather than `call`) is preferred: `flash_entry_mute_and_reset` is a
 one-way terminator, identical to the original `call hard_reset` in that
 regard, and `goto` saves one stack slot and one instruction.
 
@@ -231,7 +231,7 @@ regard, and `goto` saves one stack slot and one instruction.
   shutdown_3c58`). Standby can afford 1 s; flash entry cannot, and the loop
   is unnecessary once the DSP is digitally zeroed and the secondary rails
   are dropped.
-- **Do not reorder `main_flash_service_46de` after the quiet shutdown.** The
+- **Do not reorder `eeprom_write_byte_if_changed` after the quiet shutdown.** The
   EEPROM marker must be committed first so any partial shutdown is still
   rescued by the next reset.
 - **Do not replace `preset_force_mute`'s `i2c_tas3108_coeff_write` with
@@ -249,19 +249,19 @@ regard, and `goto` saves one stack slot and one instruction.
 | Host HID timeout for "device vanished" | Added latency ≈ 150 ms (3 × secondary writes ≈ 1.5 ms each + 100 ms timer3 settle + ~5 ms DSP coefficient write). `dlcp_main_flash.py` uses libusb with a multi-second enumeration window — well within margin. |
 | Bootloader re-enumeration | Unchanged. `RESET` still fires at the same final step, USB is still disconnected by the hardware reset, the bootloader still reads `EEPROM[0xFF] = 0` and stays in update mode. |
 | Existing hard_reset panic paths | Untouched. `uart_tx_byte_blocking` still reaches `hard_reset` directly; volume-write escalation remains a bounded DSP-fault path and does not enter `hard_reset`. |
-| EEPROM wear | No extra EEPROM writes. `main_flash_service_46de` runs exactly once per flash entry, same as before. |
+| EEPROM wear | No extra EEPROM writes. `eeprom_write_byte_if_changed` runs exactly once per flash entry, same as before. |
 | Code-size impact | ~28 instructions (~56 bytes) new; one instruction changed (`call` → `goto`). No relocation cascade (see verification #1 below). |
 | Test coverage | Simulation gate (`tests/sim/test_dlcp_main_flash.py`) passes unchanged — it does not model audio. Pop regression needs hardware loopback capture; see Test Strategy below. |
 
 ## Implementation Steps
 
 1. Edit `src/dlcp_fw/asm/dlcp_main_v32.asm`.
-2. Insert the `flash_entry_quiet_shutdown` block in the
+2. Insert the `flash_entry_mute_and_reset` block in the
    0x47FC..0x496F "Remaining Code" region (practical placement: right after
-   `usb_shutdown` at `0x48F0`, before `main_core_service_48fe`). The exact
+   `usb_shutdown` at `0x48F0`, before `usb_ep1_configure_if_enabled`). The exact
    address is gpasm-resolved; no `org` directive is needed.
-3. At the flash-trigger site inside `flow_hid_command_dispatch_13d0`, replace
-   `call hard_reset, 0x0` with `goto flash_entry_quiet_shutdown`.
+3. At the flash-trigger site inside `hid_command_dispatch__enter_fw_update_boot_marker`, replace
+   `call hard_reset, 0x0` with `goto flash_entry_mute_and_reset`.
 4. Re-assemble:
 
    ```bash
@@ -296,7 +296,7 @@ Classification per the V3.2 hang-hardening-plan convention:
     pair); the rig has no automated audible-pop detector, so
     automated soak tests are not a substitute.
   - Post-flash boot should remain pop-free (this is already handled by
-    `adc_boot_gate`'s staged delays; verify no regression).
+    `run_wake_rail_gate_and_dsp_cold_init`'s staged delays; verify no regression).
   - Optional: `scripts/hardware_loop.py` capture of the audio output
     across a re-flash cycle, comparing pre/post peak amplitude in the
     0 ms .. 500 ms window after `HID cmd 0x40` is sent.  Useful for
@@ -319,9 +319,9 @@ Minimum release gate:
 Because the change is entirely additive in code space and the EEPROM marker
 is still written first, rollback is trivial:
 
-- Revert the `goto flash_entry_quiet_shutdown` back to `call hard_reset, 0x0`
-  in `flow_hid_command_dispatch_13d0`.
-- Leave the dead `flash_entry_quiet_shutdown` helper in place (it consumes
+- Revert the `goto flash_entry_mute_and_reset` back to `call hard_reset, 0x0`
+  in `hid_command_dispatch__enter_fw_update_boot_marker`.
+- Leave the dead `flash_entry_mute_and_reset` helper in place (it consumes
   ~56 bytes of flash but has no side effect) OR delete it.
 - Re-assemble; gpasm output should diff only the single changed instruction.
   A reverted build is safe to deploy alongside a forward build because the
@@ -333,13 +333,13 @@ These are out of scope for this change but worth tracking as distinct
 hardening items:
 
 - **Apply the same pattern to the `V3.x` USB-disconnect handler path**
-  (`main_usb_service_475c` → `usb_shutdown`) — when the user yanks the USB
+  (`usb_poll_host_presence_reinit_or_shutdown` → `usb_shutdown`) — when the user yanks the USB
   cable, UCON is cleared with no prior DSP mute, and there's a small click
   that the current standby path does NOT suppress because `usb_shutdown`
   skips `hw_standby_shutdown`. Same Phase A helper can be reused.
 - **Panic path upgrade** — for the `volume_dsp_write` final escalation, if
   the retry counter is exhausted AND the bus-clear/ping path succeeded
-  (i.e. the bus is NOT wedged), invoke `flash_entry_quiet_shutdown` instead
+  (i.e. the bus is NOT wedged), invoke `flash_entry_mute_and_reset` instead
   of `hard_reset` so a healthy-bus panic is also pop-free. The
   bus-not-healthy panic still goes through bare `hard_reset`. Requires
   adding a branch inside the escalation chain to differentiate the two

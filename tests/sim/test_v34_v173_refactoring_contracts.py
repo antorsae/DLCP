@@ -136,8 +136,8 @@ def test_v34_v173_listing_size_gates_keep_refactoring_headroom() -> None:
 
 def test_v34_src4382_cold_init_table_preserves_exact_ordered_writes() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "main_i2c_service_32f8", ["main_i2c_service_32f8_table"])
-    table = _db_ints_for_label(text, "main_i2c_service_32f8_table", ["i2c_secondary_write_rows"])
+    body = _label_body(text, "i2c_secondary_apply_wake_init_table", ["i2c_secondary_wake_init_table"])
+    table = _db_ints_for_label(text, "i2c_secondary_wake_init_table", ["i2c_secondary_write_table_rows"])
 
     assert list(zip(table[0::2], table[1::2])) == [
         (0x3F, 0x01),
@@ -160,17 +160,17 @@ def test_v34_src4382_cold_init_table_preserves_exact_ordered_writes() -> None:
     _assert_ordered(
         body,
         "call        i2c_wait_bus_idle, 0x0",
-        "movlw       LOW(main_i2c_service_32f8_table)",
-        "movlw       HIGH(main_i2c_service_32f8_table)",
+        "movlw       LOW(i2c_secondary_wake_init_table)",
+        "movlw       HIGH(i2c_secondary_wake_init_table)",
         "movlw       0x10",
-        "bra         i2c_secondary_write_rows",
+        "bra         i2c_secondary_write_table_rows",
     )
 
 
 def test_v34_standby_shutdown_secondary_write_table_preserves_rail_drop_order() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "hw_standby_shutdown", ["flow_hw_standby_shutdown_3c34"])
-    table = _db_ints_for_label(text, "hw_standby_shutdown_i2c_table", ["main_core_service_3c82"])
+    body = _label_body(text, "hw_standby_shutdown", ["hw_standby_shutdown__select_master_baud"])
+    table = _db_ints_for_label(text, "hw_standby_shutdown_i2c_table", ["usb_ep1_out_copy_packet_if_ready"])
 
     assert list(zip(table[0::2], table[1::2])) == [
         (0x00, 0x1B),
@@ -182,14 +182,14 @@ def test_v34_standby_shutdown_secondary_write_table_preserves_rail_drop_order() 
         "movlw       LOW(hw_standby_shutdown_i2c_table)",
         "movlw       HIGH(hw_standby_shutdown_i2c_table)",
         "movlw       0x03",
-        "rcall       i2c_secondary_write_rows",
+        "rcall       i2c_secondary_write_table_rows",
         "btfss       PORTC, 2, ACCESS",
     )
 
 
 def test_v34_i2c_table_walker_uses_fault_safe_access_counter_and_no_tos_rewrite() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "i2c_secondary_write_rows", ["main_core_service_3398"])
+    body = _label_body(text, "i2c_secondary_write_table_rows", ["truncate_float32_to_integral_float_in_place"])
 
     assert "TOSL" not in body
     assert "TOSH" not in body
@@ -198,90 +198,90 @@ def test_v34_i2c_table_walker_uses_fault_safe_access_counter_and_no_tos_rewrite(
     _assert_ordered(
         body,
         "clrf        TBLPTRU, ACCESS",
-        "movwf       stock_008_acc, ACCESS",
+        "movwf       flash_end_high_or_loop_mask_scratch_byte, ACCESS",
         "tblrd*+",
-        "movff       TABLAT, stock_006_b0_phys",
+        "movff       TABLAT, status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys",
         "tblrd*+",
         "movf        TABLAT, W, ACCESS",
-        "rcall       i2c_secondary_dev_write_mid_window",
-        "decfsz      stock_008_acc, F, ACCESS",
+        "rcall       i2c_secondary_dev_write_call_range_trampoline",
+        "decfsz      flash_end_high_or_loop_mask_scratch_byte, F, ACCESS",
         "return      0",
     )
 
 
 def test_v34_boot_marker_check_accepts_0x77_or_0x88_with_single_eeprom_read() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "main_i2c_service_355c", ["flow_main_i2c_service_355c_35bc"])
+    body = _label_body(text, "boot_init_peripherals_and_enter_adc_gate", ["boot_init_peripherals_and_enter_adc_gate__maybe_rewrite_config_bits"])
 
     assert body.count("call        eeprom_read_byte, 0x0") == 1
     assert "xorlw       0x88" not in body
     _assert_ordered(
         body,
-        "clrf        stock_004_acc, ACCESS",
-        "setf        stock_003_acc, ACCESS",
+        "clrf        addr_high_table_row_or_checksum_scratch_byte, ACCESS",
+        "setf        addr_low_counter_or_payload_scratch_byte, ACCESS",
         "call        eeprom_read_byte, 0x0",
         "xorlw       0x77",
-        "bz          flow_main_i2c_service_355c_35bc",
+        "bz          boot_init_peripherals_and_enter_adc_gate__maybe_rewrite_config_bits",
         "xorlw       0xFF",
-        "bz          flow_main_i2c_service_355c_35bc",
+        "bz          boot_init_peripherals_and_enter_adc_gate__maybe_rewrite_config_bits",
     )
 
 
 def test_v34_main_i2c_service_2100_uses_bank0_clear_wrapper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "ram_block_clear_4_bank0_w", ["main_i2c_service_2100"])
-    body = _label_body(text, "main_i2c_service_2100", ["main_i2c_service_2100_dispatch_table"])
+    helper = _label_body(text, "ram_block_clear_four_bytes_bank0_from_w", ["i2c_apply_channel_route_sync_burst"])
+    body = _label_body(text, "i2c_apply_channel_route_sync_burst", ["channel_route_pair_destination_table"])
 
     _assert_ordered(
         helper,
-        "clrf        stock_004_acc, ACCESS",
+        "clrf        addr_high_table_row_or_checksum_scratch_byte, ACCESS",
         "movlb       0x0",
-        "bra         ram_block_clear_4",
+        "bra         ram_block_clear_four_bytes_from_w",
     )
-    assert body.count("rcall       ram_block_clear_4_bank0_w") == 4
-    assert body.count("rcall       prep_bank1_ram004") == 3
+    assert body.count("rcall       ram_block_clear_four_bytes_bank0_from_w") == 4
+    assert body.count("rcall       ram_clear_prepare_page1_address_high") == 3
     _assert_ordered(
         body,
         "movlw       0xD7",
-        "rcall       ram_block_clear_4_bank0_w",
+        "rcall       ram_block_clear_four_bytes_bank0_from_w",
         "movlw       0xDB",
-        "rcall       ram_block_clear_4_bank0_w",
+        "rcall       ram_block_clear_four_bytes_bank0_from_w",
         "movlw       0xDF",
-        "rcall       ram_block_clear_4_bank0_w",
-        "rcall       prep_bank1_ram004",
+        "rcall       ram_block_clear_four_bytes_bank0_from_w",
+        "rcall       ram_clear_prepare_page1_address_high",
         "movlw       0xD9",
-        "rcall       ram_block_clear_4",
+        "rcall       ram_block_clear_four_bytes_from_w",
         "movlw       0xE3",
-        "rcall       ram_block_clear_4_bank0_w",
-        "rcall       prep_bank1_ram004",
+        "rcall       ram_block_clear_four_bytes_bank0_from_w",
+        "rcall       ram_clear_prepare_page1_address_high",
         "movlw       0xDD",
-        "rcall       ram_block_clear_4",
-        "rcall       prep_bank1_ram004",
+        "rcall       ram_block_clear_four_bytes_from_w",
+        "rcall       ram_clear_prepare_page1_address_high",
         "movlw       0xE1",
-        "rcall       ram_block_clear_4",
+        "rcall       ram_block_clear_four_bytes_from_w",
     )
 
 
 def test_v34_cmd_dispatch_reg1f_route3_reuses_existing_pair_setup() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    route3 = _label_body(text, "flow_cmd_dispatch_gated_1932", ["flow_cmd_dispatch_gated_194c"])
-    reg1f = _label_body(text, "flow_cmd_dispatch_gated_1966", ["flow_cmd_dispatch_gated_1970"])
+    route3 = _label_body(text, "cmd_dispatch_gated__route_code_3_i2c_pair", ["cmd_dispatch_gated__route_code_4_i2c_pair"])
+    reg1f = _label_body(text, "cmd_dispatch_gated__default_route_reg1f_write", ["cmd_dispatch_gated__dispatch_input_route_code"])
 
     _assert_ordered(
         route3,
         "movlw       0x08",
-        "movwf       stock_006_acc, ACCESS",
+        "movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS",
         "movlw       0x30",
         "bra         cmd_dispatch_gated_i2c_pair",
     )
     _assert_ordered(
         reg1f,
-        "call        main_core_service_4516, 0x0",
+        "call        drive_audio_route_select_latches, 0x0",
         "movlw       0x01",
         "call        i2c_tas3108_reg1f_write, 0x0",
-        "bra         flow_cmd_dispatch_gated_1932",
+        "bra         cmd_dispatch_gated__route_code_3_i2c_pair",
     )
-    assert "movwf       stock_006_acc, ACCESS" not in reg1f
+    assert "movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS" not in reg1f
     assert "bra         cmd_dispatch_gated_i2c_pair" not in reg1f
 
 
@@ -289,36 +289,36 @@ def test_v34_zero_peepholes_stay_compact_without_status_sensitive_reuse() -> Non
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     volume = _label_body(
         text,
-        "flow_cmd_dispatch_gated_volume_unmuted",
-        ["flow_cmd_dispatch_gated_19d6"],
+        "cmd_dispatch_gated__apply_unmuted_volume_dirty",
+        ["cmd_dispatch_gated__select_applied_route_trim"],
     )
-    adaptive = _label_body(text, "adaptive_baud_select", ["s3_coeff_stage_049"])
-    flash = _label_body(text, "main_flash_service_3ce8", ["flow_main_flash_service_3ce8_3d4e"])
+    adaptive = _label_body(text, "adaptive_baud_select", ["stage_tas3108_coeff_input_scratch"])
+    flash = _label_body(text, "fw_update_signature_status_word_helper", ["boot_cold_init__clear_ram_and_runtime_state"])
 
-    assert "movff       stock_0A4_b0_phys, stock_0B0_b0_phys" not in volume
-    assert "bra         flow_cmd_dispatch_gated_19d6" not in volume
+    assert "movff       channel_enable_mask_phys, channel_enable_shadow_phys" not in volume
+    assert "bra         cmd_dispatch_gated__select_applied_route_trim" not in volume
     _assert_ordered(
         volume,
-        "clrf        stock_0A4_b0, BANKED",
-        "clrf        stock_0B0_b0, BANKED",
-        "clrf        stock_09A_b0, BANKED",
+        "clrf        channel_enable_mask_b0, BANKED",
+        "clrf        channel_enable_shadow_b0, BANKED",
+        "clrf        route_volume_trim_offset_b0, BANKED",
     )
 
-    assert "movff       stock_093_b0_phys, stock_0AB_b0_phys" not in adaptive
+    assert "movff       pending_route_request_phys, applied_route_shadow_phys" not in adaptive
     _assert_ordered(
         adaptive,
-        "clrf        stock_093_b0, BANKED",
-        "clrf        stock_0AB_b0, BANKED",
+        "clrf        pending_route_request_b0, BANKED",
+        "clrf        applied_route_shadow_b0, BANKED",
         "bcf         INTCON3, 4, ACCESS",
     )
 
     _assert_ordered(
         flash,
-        "movff       stock_00A_b0_phys, POSTDEC2",
-        "rcall       fsr2_bank0_from_stock007",
-        "btfsc       stock_005_acc, 7, ACCESS",
+        "movff       eeprom_mask_or_flash_src_high_scratch_phys, POSTDEC2",
+        "rcall       fw_update_signature_load_fsr2_from_status_ptr",
+        "btfsc       length_mask_or_divisor_low_scratch_byte, 7, ACCESS",
         "bsf         INDF2, 0, ACCESS",
-        "rcall       fsr2_bank0_from_stock007",
+        "rcall       fw_update_signature_load_fsr2_from_status_ptr",
     )
     assert "movlw       0x00\n    iorwf       POSTDEC2, F, ACCESS" not in flash
     assert "iorwf       POSTINC2, F, ACCESS" not in flash
@@ -328,29 +328,29 @@ def test_v34_zero_peepholes_stay_compact_without_status_sensitive_reuse() -> Non
 def test_v34_boolean_staging_uses_file_register_increment_shape() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     expected = {
-        "flow_hid_command_dispatch_12ca": (
-            ["flow_hid_command_dispatch_12e0"],
-            "stock_04C_acc",
+        "hid_command_dispatch__check_mute_state_dirty": (
+            ["hid_command_dispatch__check_channel_setup_dirty"],
+            "diff_count_update_compare_or_route_mask_scratch_byte",
             "btfsc       active_flags_acc, 4, ACCESS",
         ),
         "wake_request_handler": (
             ["standby_request_handler"],
-            "stock_005_acc",
+            "length_mask_or_divisor_low_scratch_byte",
             "btfss       active_flags_acc, 3, ACCESS",
         ),
         "cmd03_stage_mute_refresh_w": (
             ["cmd03_mute_on_handler"],
-            "stock_005_acc",
+            "length_mask_or_divisor_low_scratch_byte",
             "btfsc       active_flags_acc, 4, ACCESS",
         ),
-        "flow_main_i2c_service_27f0_mute_status": (
-            ["flow_main_i2c_service_27f0_295a"],
-            "stock_008_acc",
+        "poll_src4382_route_monitor__sync_nonpcm_mute_state": (
+            ["poll_src4382_route_monitor__clear_nonpcm_mute_mirror"],
+            "flash_end_high_or_loop_mask_scratch_byte",
             "btfsc       active_flags_acc, 4, ACCESS",
         ),
-        "usb_endpoint_mark_done_fsr0": (
+        "usb_endpoint_mark_state_done": (
             ["flash_read"],
-            "stock_006_acc",
+            "status_addr_high_or_i2c_payload_scratch_byte",
             "btfss       INDF0, 6, ACCESS",
         ),
     }
@@ -363,65 +363,65 @@ def test_v34_boolean_staging_uses_file_register_increment_shape() -> None:
             f"incf        {scratch}, F, ACCESS",
         )
         assert f"movwf       {scratch}, ACCESS" not in body
-    setup_copy = _label_body(text, "main_core_service_3c82", ["main_flash_service_3ce8"])
-    reply_copy = _label_body(text, "main_core_service_3fd0", ["usb_endpoint_mark_done_fsr0"])
+    setup_copy = _label_body(text, "usb_ep1_out_copy_packet_if_ready", ["fw_update_signature_status_word_helper"])
+    reply_copy = _label_body(text, "usb_ep1_in_copy_scratch_buffer_to_bdt", ["usb_endpoint_mark_state_done"])
     _assert_ordered(
         setup_copy,
-        "btfsc       stock_40C_b4, 7, BANKED",
+        "btfsc       usb_ep1_out_bd_status_b4, 7, BANKED",
         "return      0",
-        "lfsr        FSR0, stock_40C_b4_phys",
-        "bra         usb_endpoint_mark_done_fsr0",
+        "lfsr        FSR0, usb_ep1_out_bd_status_phys",
+        "bra         usb_endpoint_mark_state_done",
     )
     _assert_ordered(
         reply_copy,
-        "lfsr        FSR0, stock_410_b4_phys",
+        "lfsr        FSR0, usb_ep1_in_bd_status_phys",
     )
-    assert "bra         usb_endpoint_mark_done_fsr0" not in reply_copy
-    assert "rcall       usb_endpoint_mark_done_fsr0" not in setup_copy
-    assert "rcall       usb_endpoint_mark_done_fsr0" not in reply_copy
+    assert "bra         usb_endpoint_mark_state_done" not in reply_copy
+    assert "rcall       usb_endpoint_mark_state_done" not in setup_copy
+    assert "rcall       usb_endpoint_mark_state_done" not in reply_copy
     cmd03_helper = _label_body(text, "cmd03_stage_mute_refresh_w", ["cmd03_mute_on_handler"])
     _assert_ordered(
         cmd03_helper,
-        "clrf        stock_005_acc, ACCESS",
+        "clrf        length_mask_or_divisor_low_scratch_byte, ACCESS",
         "btfsc       active_flags_acc, 4, ACCESS",
-        "incf        stock_005_acc, F, ACCESS",
+        "incf        length_mask_or_divisor_low_scratch_byte, F, ACCESS",
         "btfsc       active_flags_acc, 5, ACCESS",
         "retlw       0x01",
         "retlw       0x00",
     )
     for label, next_labels in {
-        "cmd03_mute_on_handler": ["flow_main_uart_service_1be6_1cc2"],
+        "cmd03_mute_on_handler": ["uart_link_parser__stage_zero_mute_compare_value"],
         "cmd03_mute_off_apply": ["cmd03_subdispatch"],
     }.items():
         body = _label_body(text, label, next_labels)
         _assert_ordered(
             body,
             "rcall       cmd03_stage_mute_refresh_w",
-            "bra         flow_main_uart_service_1be6_1cc4",
+            "bra         uart_link_parser__mute_dirty_if_user_shadow_differs",
         )
-        assert "movwf       stock_005_acc, ACCESS" not in body
+        assert "movwf       length_mask_or_divisor_low_scratch_byte, ACCESS" not in body
     mute_off = _label_body(text, "cmd03_mute_off_apply", ["cmd03_subdispatch"])
     _assert_ordered(
         mute_off,
         "bcf         preset_job_flags_b2, 1, BANKED",
         "rcall       cmd03_stage_mute_refresh_w",
-        "bra         flow_main_uart_service_1be6_1cc4",
+        "bra         uart_link_parser__mute_dirty_if_user_shadow_differs",
     )
-    assert "bnz         flow_main_uart_service_1be6_1cc8" not in mute_off
+    assert "bnz         uart_link_parser__mark_mute_refresh_dirty" not in mute_off
 
-    flash = _label_body(text, "main_flash_service_3ce8", ["flow_main_flash_service_3ce8_3d4e"])
-    assert flash.count("rcall       fsr2_bank0_from_stock007") == 4
+    flash = _label_body(text, "fw_update_signature_status_word_helper", ["boot_cold_init__clear_ram_and_runtime_state"])
+    assert flash.count("rcall       fw_update_signature_load_fsr2_from_status_ptr") == 4
     _assert_ordered(
         flash,
-        "rcall       fsr2_bank0_from_stock007",
+        "rcall       fw_update_signature_load_fsr2_from_status_ptr",
         "clrf        POSTINC2, ACCESS",
         "clrf        POSTDEC2, ACCESS",
-        "bra         flow_main_flash_service_3ce8_3d4c",
+        "bra         fw_update_signature_status_word_helper__return",
     )
-    fsr2_helper = _label_body(text, "fsr2_bank0_from_stock007", ["flow_main_flash_service_3ce8_3d4e"])
+    fsr2_helper = _label_body(text, "fw_update_signature_load_fsr2_from_status_ptr", ["boot_cold_init__clear_ram_and_runtime_state"])
     _assert_ordered(
         fsr2_helper,
-        "movf        stock_007_acc, W, ACCESS",
+        "movf        count_flash_page_or_i2c_payload_scratch_byte, W, ACCESS",
         "movwf       FSR2L, ACCESS",
         "clrf        FSR2H, ACCESS",
         "return      0",
@@ -431,36 +431,36 @@ def test_v34_boolean_staging_uses_file_register_increment_shape() -> None:
 
 def test_v34_hid_cmd04_staging_uses_shared_ordered_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    clean_body = _label_body(text, "flow_hid_command_dispatch_1140", ["flow_hid_command_dispatch_114a"])
-    fault_body = _label_body(text, "flow_hid_command_dispatch_114a", ["flow_hid_command_dispatch_115c"])
-    helper = _label_body(text, "hid_stage_0c1_04_0c2_01", ["flow_hid_command_dispatch_1140"])
+    clean_body = _label_body(text, "hid_command_dispatch__opcode04_ack_action_one", ["hid_command_dispatch__opcode04_stage_fault_action"])
+    fault_body = _label_body(text, "hid_command_dispatch__opcode04_stage_fault_action", ["hid_command_dispatch__dispatch_opcode04_action"])
+    helper = _label_body(text, "hid_stage_opcode04_status_one", ["hid_command_dispatch__opcode04_ack_action_one"])
 
-    assert "rcall       hid_stage_0c1_04_0c2_01" in clean_body
+    assert "rcall       hid_stage_opcode04_status_one" in clean_body
     _assert_ordered(
         clean_body,
-        "rcall       hid_stage_0c1_04_0c2_01",
-        "bra         flow_hid_command_dispatch_112a",
+        "rcall       hid_stage_opcode04_status_one",
+        "bra         hid_command_dispatch__delay_before_status_response",
     )
     _assert_ordered(
         fault_body,
-        "movff       stock_11D_b1_phys, stock_0B8_b0_phys",
-        "rcall       hid_stage_0c1_04_0c2_01",
+        "movff       usb_hid_out_arg2_phys, hid_opcode04_arg2_or_cmd1d_setup_phys",
+        "rcall       hid_stage_opcode04_status_one",
         "bsf         dsp_fault_flags_b0, 0, BANKED",
-        "bsf         stock_094_b0, 4, BANKED",
+        "bsf         main_runtime_latch_flags_b0, 4, BANKED",
     )
     _assert_ordered(
         helper,
         "movlw       0x04",
-        "movwf       stock_0C1_b0, BANKED",
+        "movwf       usb_hid_ep1_in_report_selector_b0, BANKED",
         "movlw       0x01",
-        "movwf       stock_0C2_b0, BANKED",
+        "movwf       usb_hid_ep1_in_report_selector_arg_b0, BANKED",
         "return      0",
     )
 
 
 def test_v34_hid_settings_upload_rebuilds_route_bits_with_fsr2() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "flow_hid_command_dispatch_11ce", ["flow_hid_command_dispatch_124e"])
+    body = _label_body(text, "hid_command_dispatch__apply_settings_payload", ["hid_command_dispatch__compare_settings_mirrors"])
 
     for old_label in (
         "flow_hid_command_dispatch_11ee:",
@@ -477,194 +477,194 @@ def test_v34_hid_settings_upload_rebuilds_route_bits_with_fsr2() -> None:
         "flow_hid_command_dispatch_124a:",
     ):
         assert old_label not in text
-    assert "btfsc       stock_124_b1, 0, BANKED" not in body
+    assert "btfsc       usb_hid_out_arg9_b1, 0, BANKED" not in body
     assert body.count("btfsc       INDF2, 0, ACCESS") == 6
     assert body.count("incf        FSR2L, F, ACCESS") == 6
     _assert_ordered(
         body,
         "movlb       0x0",
-        "bcf         stock_094_b0, 5, BANKED",
+        "bcf         main_runtime_latch_flags_b0, 5, BANKED",
         "bcf         active_flags_acc, 4, ACCESS",
-        "lfsr        FSR2, stock_123_b1_phys",
+        "lfsr        FSR2, usb_hid_out_arg8_phys",
         "btfss       INDF2, 0, ACCESS",
-        "bra         hid_settings_mute_done",
-        "bsf         stock_094_b0, 5, BANKED",
+        "bra         hid_command_dispatch__stage_settings_flag_bits",
+        "bsf         main_runtime_latch_flags_b0, 5, BANKED",
         "bsf         active_flags_acc, 4, ACCESS",
-        "hid_settings_mute_done:",
-        "movf        stock_0A4_b0, W, BANKED",
+        "hid_command_dispatch__stage_settings_flag_bits:",
+        "movf        channel_enable_mask_b0, W, BANKED",
         "andlw       0xC0",
-        "movwf       stock_0A4_b0, BANKED",
-        "lfsr        FSR2, stock_124_b1_phys",
+        "movwf       channel_enable_mask_b0, BANKED",
+        "lfsr        FSR2, usb_hid_out_arg9_phys",
         "btfsc       INDF2, 0, ACCESS",
-        "bsf         stock_0A4_b0, 0, BANKED",
+        "bsf         channel_enable_mask_b0, 0, BANKED",
         "incf        FSR2L, F, ACCESS",
         "btfsc       INDF2, 0, ACCESS",
-        "bsf         stock_0A4_b0, 1, BANKED",
+        "bsf         channel_enable_mask_b0, 1, BANKED",
         "incf        FSR2L, F, ACCESS",
         "btfsc       INDF2, 0, ACCESS",
-        "bsf         stock_0A4_b0, 2, BANKED",
+        "bsf         channel_enable_mask_b0, 2, BANKED",
         "incf        FSR2L, F, ACCESS",
         "incf        FSR2L, F, ACCESS",
         "btfsc       INDF2, 0, ACCESS",
-        "bsf         stock_0A4_b0, 3, BANKED",
+        "bsf         channel_enable_mask_b0, 3, BANKED",
         "incf        FSR2L, F, ACCESS",
         "btfsc       INDF2, 0, ACCESS",
-        "bsf         stock_0A4_b0, 4, BANKED",
+        "bsf         channel_enable_mask_b0, 4, BANKED",
         "incf        FSR2L, F, ACCESS",
         "btfsc       INDF2, 0, ACCESS",
-        "bsf         stock_0A4_b0, 5, BANKED",
+        "bsf         channel_enable_mask_b0, 5, BANKED",
     )
 
 
 def test_v34_rail_adc_thresholds_use_shared_carry_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "rail_adc_cmp_hi02_w", ["hw_standby_shutdown"])
-    boot = _label_body(text, "flow_adc_boot_gate_2dbc", ["adc_boot_gate_exit"])
+    helper = _label_body(text, "compare_adc_rail_sample_to_threshold_w", ["hw_standby_shutdown"])
+    boot = _label_body(text, "adc_boot_gate__check_rail_threshold", ["adc_boot_gate__start_dsp_cold_init"])
     standby = _label_body(
         text,
-        "flow_hw_standby_shutdown_3c3e",
-        ["flow_hw_standby_shutdown_3c58"],
+        "hw_standby_shutdown__drop_outputs_after_baud_select",
+        ["hw_standby_shutdown__rail_discharge_pulse_loop"],
     )
-    monitor = _label_body(text, "an0_hysteresis_monitor", ["flow_main_adc_service_4124_41ae"])
+    monitor = _label_body(text, "an0_hysteresis_monitor", ["an0_hysteresis_monitor__reset_delay_counter"])
 
     _assert_ordered(
         helper,
         "movlb       0x0",
-        "subwf       stock_088_b0, W, BANKED",
+        "subwf       adc_rail_sample_lo_b0, W, BANKED",
         "movlw       0x02",
-        "subwfb      stock_089_b0, W, BANKED",
+        "subwfb      adc_rail_sample_hi_b0, W, BANKED",
         "return      0",
     )
     _assert_ordered(
         boot,
         "movlw       0x36",
-        "call        rail_adc_cmp_hi02_w, 0x0",
-        "bc          adc_boot_gate_exit",
+        "call        compare_adc_rail_sample_to_threshold_w, 0x0",
+        "bc          adc_boot_gate__start_dsp_cold_init",
     )
     _assert_ordered(
         standby,
         "movlw       0x28",
-        "rcall       rail_adc_cmp_hi02_w",
-        "bc          flow_hw_standby_shutdown_3c78",
+        "rcall       compare_adc_rail_sample_to_threshold_w",
+        "bc          hw_standby_shutdown__stop_timer0_and_usb",
     )
-    assert monitor.count("rcall       rail_adc_cmp_hi02_w") == 2
+    assert monitor.count("rcall       compare_adc_rail_sample_to_threshold_w") == 2
     _assert_ordered(
         monitor,
         "movlw       0x29",
-        "rcall       rail_adc_cmp_hi02_w",
+        "rcall       compare_adc_rail_sample_to_threshold_w",
         "btfsc       STATUS, 0, ACCESS",
-        "bsf         stock_094_b0, 2, BANKED",
+        "bsf         main_runtime_latch_flags_b0, 2, BANKED",
     )
     _assert_ordered(
         monitor,
-        "btfss       stock_094_b0, 2, BANKED",
-        "bra         flow_main_adc_service_4124_41ae",
+        "btfss       main_runtime_latch_flags_b0, 2, BANKED",
+        "bra         an0_hysteresis_monitor__reset_delay_counter",
         "movlw       0x28",
-        "rcall       rail_adc_cmp_hi02_w",
-        "bc          flow_main_adc_service_4124_41ae",
+        "rcall       compare_adc_rail_sample_to_threshold_w",
+        "bc          an0_hysteresis_monitor__reset_delay_counter",
     )
 
 
 def test_v34_fw_update_addr77_compare_uses_shared_carry_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "fw_update_cmp_addr_77_w", ["fw_update_relay"])
-    add_helper = _label_body(text, "fw_update_add_w_to_08081", ["fw_update_relay"])
+    helper = _label_body(text, "fw_update_compare_relay_addr_limit_w", ["fw_update_relay"])
+    add_helper = _label_body(text, "fw_update_add_byte_to_relay_checksum", ["fw_update_relay"])
     body = _label_body(text, "fw_update_relay", ["main_core_service_184a"])
-    hex_helper = _label_body(text, "hex_byte_to_postinc2_from_01b", ["hex_lookup_table_ptr"])
+    hex_helper = _label_body(text, "hex_store_ascii_byte_to_postinc2", ["hex_lookup_table_ptr"])
     tx_block_helper = _label_body(
         text,
-        "fw_update_tx_block0190_from_w",
-        ["flow_fw_update_relay_172a"],
+        "fw_update_tx_text_block_from_w",
+        ["fw_update_relay__handle_status_checksum_mismatch"],
     )
 
     _assert_ordered(
         helper,
         "movlb       0x0",
-        "subwf       stock_084_b0, W, BANKED",
+        "subwf       fw_update_relay_addr_lo_b0, W, BANKED",
         "movlw       0x77",
-        "subwfb      stock_085_b0, W, BANKED",
+        "subwfb      fw_update_relay_addr_hi_b0, W, BANKED",
         "return      0",
     )
-    assert body.count("rcall       fw_update_cmp_addr_77_w") == 4
+    assert body.count("rcall       fw_update_compare_relay_addr_limit_w") == 4
     for threshold in ("0xC0", "0xBF"):
-        assert f"movlw       {threshold}\n    rcall       fw_update_cmp_addr_77_w" in body
+        assert f"movlw       {threshold}\n    rcall       fw_update_compare_relay_addr_limit_w" in body
     _assert_ordered(
         add_helper,
         "movlb       0x0",
-        "addwf       stock_080_b0, F, BANKED",
+        "addwf       fw_update_relay_checksum_accum_lo_b0, F, BANKED",
         "movlw       0x00",
-        "addwfc      stock_081_b0, F, BANKED",
+        "addwfc      fw_update_relay_checksum_accum_hi_b0, F, BANKED",
         "return      0",
     )
-    assert body.count("rcall       fw_update_add_w_to_08081") == 3
-    assert body.count("rcall       fw_update_tx_block0190_from_w") == 3
+    assert body.count("rcall       fw_update_add_byte_to_relay_checksum") == 3
+    assert body.count("rcall       fw_update_tx_text_block_from_w") == 3
     _assert_ordered(
         tx_block_helper,
-        "clrf        stock_019_acc, ACCESS",
-        "movwf       stock_018_acc, ACCESS",
+        "clrf        float32_product_or_uart_base_high_scratch_byte, ACCESS",
+        "movwf       float32_product_or_uart_base_scratch_byte, ACCESS",
         "goto        uart_tx_block_from_buffer",
     )
     assert (
-        "clrf        stock_019_acc, ACCESS\n"
+        "clrf        float32_product_or_uart_base_high_scratch_byte, ACCESS\n"
         "    movlw       0x1D\n"
-        "    movwf       stock_018_acc, ACCESS\n"
+        "    movwf       float32_product_or_uart_base_scratch_byte, ACCESS\n"
         "    call        uart_tx_block_from_buffer, 0x0"
     ) not in body
     assert (
-        "movwf       stock_01B_acc, ACCESS\n"
-        "    clrf        stock_019_acc, ACCESS\n"
-        "    movff       stock_01B_b0_phys, stock_018_b0_phys\n"
+        "movwf       fw_update_hex_or_float32_quotient_or_uart_block_scratch, ACCESS\n"
+        "    clrf        float32_product_or_uart_base_high_scratch_byte, ACCESS\n"
+        "    movff       fw_update_hex_byte_or_uart_block_base_low_scratch_phys, preset_header_tas_reg_or_uart_block_base_low_scratch_phys\n"
         "    call        uart_tx_block_from_buffer, 0x0"
     ) not in body
     assert (
-        "clrf        stock_019_acc, ACCESS\n"
+        "clrf        float32_product_or_uart_base_high_scratch_byte, ACCESS\n"
         "    movlw       0x2F\n"
-        "    movwf       stock_018_acc, ACCESS\n"
+        "    movwf       float32_product_or_uart_base_scratch_byte, ACCESS\n"
         "    call        uart_tx_block_from_buffer, 0x0"
     ) not in body
     assert (
         "movlw       0x0F\n"
-        "    andwf       stock_01B_acc, F, ACCESS\n"
-        "    andwf       stock_01B_acc, F, ACCESS"
+        "    andwf       fw_update_hex_or_float32_quotient_or_uart_block_scratch, F, ACCESS\n"
+        "    andwf       fw_update_hex_or_float32_quotient_or_uart_block_scratch, F, ACCESS"
     ) not in body
     _assert_ordered(
         body,
         "movlw       0x9A",
-        "rcall       setup_fsr2_page_1_or_2",
-        "movff       stock_080_b0_phys, stock_01B_b0_phys",
-        "rcall       hex_byte_to_postinc2_from_01b",
+        "rcall       setup_fsr2_page1_or_page2_from_w_carry",
+        "movff       fw_update_relay_checksum_accum_lo_phys, fw_update_hex_byte_or_uart_block_base_low_scratch_phys",
+        "rcall       hex_store_ascii_byte_to_postinc2",
         "clrf        INDF2, ACCESS",
         "movlw       0x02",
-        "addwf       stock_04B_acc, F, ACCESS",
+        "addwf       fw_update_offset_or_channel_enable_row_base_scratch, F, ACCESS",
     )
     assert "rcall       hex_lookup_table_ptr                ; indexed TBLPTR -> hex_lookup_table" not in body
     _assert_ordered(
         body,
-        "lfsr        FSR2, stock_19D_b1_phys",
-        "movff       stock_087_b0_phys, stock_01B_b0_phys",
-        "rcall       hex_byte_to_postinc2_from_01b",
-        "movff       stock_086_b0_phys, stock_01B_b0_phys",
-        "rcall       hex_byte_to_postinc2_from_01b",
+        "lfsr        FSR2, fw_update_intel_hex_record_addr_hi_high_nibble_phys",
+        "movff       fw_update_relay_saved_addr_hi_phys, fw_update_hex_byte_or_uart_block_base_low_scratch_phys",
+        "rcall       hex_store_ascii_byte_to_postinc2",
+        "movff       fw_update_relay_saved_addr_lo_phys, fw_update_hex_byte_or_uart_block_base_low_scratch_phys",
+        "rcall       hex_store_ascii_byte_to_postinc2",
     )
     _assert_ordered(
         body,
-        "lfsr        FSR2, stock_02F_b0_phys",
-        "movff       stock_046_b0_phys, stock_01B_b0_phys",
-        "rcall       hex_byte_to_postinc2_from_01b",
-        "movff       stock_04A_b0_phys, stock_01B_b0_phys",
-        "rcall       hex_byte_to_postinc2_from_01b",
+        "lfsr        FSR2, float32_preset_fw_update_scratch_byte0_b0_phys",
+        "movff       fw_update_even_addr_pending_byte_b0_phys, fw_update_hex_byte_or_uart_block_base_low_scratch_phys",
+        "rcall       hex_store_ascii_byte_to_postinc2",
+        "movff       fw_update_relay_current_byte_phys, fw_update_hex_byte_or_uart_block_base_low_scratch_phys",
+        "rcall       hex_store_ascii_byte_to_postinc2",
     )
     _assert_ordered(
         hex_helper,
-        "movff       stock_01B_b0_phys, stock_01C_b0_phys",
-        "swapf       stock_01B_acc, F, ACCESS",
-        "rcall       hex_01b_low_nibble_to_postinc2",
-        "movff       stock_01C_b0_phys, stock_01B_b0_phys",
-        "bra         hex_01b_low_nibble_to_postinc2",
-        "hex_01b_low_nibble_to_postinc2:",
+        "movff       fw_update_hex_byte_or_uart_block_base_low_scratch_phys, hex_byte_save_or_uart_status_block_buffer_phys",
+        "swapf       fw_update_hex_or_float32_quotient_or_uart_block_scratch, F, ACCESS",
+        "rcall       hex_store_ascii_low_nibble_to_postinc2",
+        "movff       hex_byte_save_or_uart_status_block_buffer_phys, fw_update_hex_byte_or_uart_block_base_low_scratch_phys",
+        "bra         hex_store_ascii_low_nibble_to_postinc2",
+        "hex_store_ascii_low_nibble_to_postinc2:",
         "movlw       0x0F",
-        "andwf       stock_01B_acc, F, ACCESS",
-        "movf        stock_01B_acc, W, ACCESS",
+        "andwf       fw_update_hex_or_float32_quotient_or_uart_block_scratch, F, ACCESS",
+        "movf        fw_update_hex_or_float32_quotient_or_uart_block_scratch, W, ACCESS",
         "rcall       hex_lookup_table_ptr",
         "tblrd*",
         "movff       TABLAT, POSTINC2",
@@ -675,122 +675,122 @@ def test_v34_fw_update_addr77_compare_uses_shared_carry_helper() -> None:
 
 def test_v34_fw_update_stages_005_and_008_with_shared_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "fw_update_stage_005_w_008_1", ["clear_fw_update_status_accumulators"])
-    init = _label_body(text, "fw_update_init_sequence", ["flow_hid_command_dispatch_14fc"])
-    relay = _label_body(text, "flow_fw_update_relay_16fa", ["flow_fw_update_relay_172a"])
+    helper = _label_body(text, "fw_update_stage_uart_rx_window", ["fw_update_clear_relay_status_accumulators"])
+    init = _label_body(text, "fw_update_start_relay_handshake", ["fw_update_init_sequence__gate_relay_session"])
+    relay = _label_body(text, "fw_update_relay__poll_status_response", ["fw_update_relay__handle_status_checksum_mismatch"])
     clear_helper = _label_body(
         text,
-        "fw_update_ram_clear_len_w",
-        ["clear_fw_update_status_accumulators"],
+        "fw_update_clear_buffer_from_003_len_w",
+        ["fw_update_clear_relay_status_accumulators"],
     )
 
     _assert_ordered(
         helper,
-        "movwf       stock_005_acc, ACCESS",
+        "movwf       length_mask_or_divisor_low_scratch_byte, ACCESS",
         "movlb       0x1",
         "movlw       0x01",
-        "movwf       stock_008_acc, ACCESS",
+        "movwf       flash_end_high_or_loop_mask_scratch_byte, ACCESS",
         "return      0",
     )
-    _assert_ordered(init, "movlw       0xDC", "rcall       fw_update_stage_005_w_008_1")
+    _assert_ordered(init, "movlw       0xDC", "rcall       fw_update_stage_uart_rx_window")
     _assert_ordered(
         init,
-        "rcall       clear_fw_update_status_accumulators",
-        "call        prep_bank1_ram004, 0x0",
+        "rcall       fw_update_clear_relay_status_accumulators",
+        "call        ram_clear_prepare_page1_address_high, 0x0",
         "movlw       0xC7",
-        "rcall       fw_update_ram_clear_len_w",
+        "rcall       fw_update_clear_buffer_from_003_len_w",
         "movlw       0x9A",
-        "rcall       fw_update_ram_clear_len_w",
+        "rcall       fw_update_clear_buffer_from_003_len_w",
         "movlw       0xD1",
-        "rcall       fw_update_ram_clear_len_w",
+        "rcall       fw_update_clear_buffer_from_003_len_w",
     )
-    assert init.count("rcall       fw_update_ram_clear_len_w") == 3
-    assert "call        ram_block_clear, 0x0" not in init
+    assert init.count("rcall       fw_update_clear_buffer_from_003_len_w") == 3
+    assert "call        clear_ram_span_from_staged_addr_count, 0x0" not in init
     _assert_ordered(
         clear_helper,
-        "movwf       stock_005_acc, ACCESS",
-        "goto        ram_block_clear",
+        "movwf       length_mask_or_divisor_low_scratch_byte, ACCESS",
+        "goto        clear_ram_span_from_staged_addr_count",
     )
-    assert init.count("call        prep_bank1_ram004, 0x0") == 1
-    _assert_ordered(relay, "movlw       0x0A", "rcall       fw_update_stage_005_w_008_1")
+    assert init.count("call        ram_clear_prepare_page1_address_high, 0x0") == 1
+    _assert_ordered(relay, "movlw       0x0A", "rcall       fw_update_stage_uart_rx_window")
 
 
 def test_v34_cmd19_status_bit_fanout_uses_rotate_carry_shape() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     body = _label_body(
         text,
-        "flow_main_core_service_2328_2380",
-        ["flow_main_core_service_2328_240c"],
+        "stage_hid_ep1_in_report_from_selector__stage_selector5_status_snapshot",
+        ["stage_hid_ep1_in_report_from_selector__stage_selector6_version_setup"],
     )
-    helper = _label_body(text, "status_fanout3_from_006_to_fsr2", ["main_core_service_24ac"])
+    helper = _label_body(text, "fanout_channel_enable_bits_to_usb_report_bytes", ["copy_indexed_fsr2_byte_to_hid_ep1_in"])
 
     _assert_ordered(
         body,
-        "clrf        stock_163_b1, BANKED",
+        "clrf        usb_hid_ep1_in_report_payload_byte6_b1, BANKED",
         "btfsc       active_flags_acc, 4, ACCESS",
-        "incf        stock_163_b1, F, BANKED",
-        "movff       stock_0A4_b0_phys, stock_006_b0_phys",
-        "lfsr        FSR2, stock_164_b1_phys",
+        "incf        usb_hid_ep1_in_report_payload_byte6_b1, F, BANKED",
+        "movff       channel_enable_mask_phys, status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys",
+        "lfsr        FSR2, usb_hid_ep1_in_report_payload_byte7_phys",
         "movlw       0x03",
-        "rcall       status_fanout3_from_006_to_fsr2",
+        "rcall       fanout_channel_enable_bits_to_usb_report_bytes",
         "incf        FSR2L, F, ACCESS",
         "movlw       0x03",
-        "rcall       status_fanout3_from_006_to_fsr2",
+        "rcall       fanout_channel_enable_bits_to_usb_report_bytes",
     )
     _assert_ordered(
         helper,
-        "rrcf        stock_006_acc, F, ACCESS",
+        "rrcf        status_addr_high_or_i2c_payload_scratch_byte, F, ACCESS",
         "clrf        INDF2, ACCESS",
         "rlcf        POSTINC2, F, ACCESS",
         "decfsz      WREG, F, ACCESS",
-        "bra         status_fanout3_from_006_to_fsr2",
+        "bra         fanout_channel_enable_bits_to_usb_report_bytes",
         "return      0",
     )
-    assert "clrf        stock_164_b1, BANKED" not in body
-    assert "clrf        stock_168_b1, BANKED" not in body
-    assert "movlb       0x0\n    btfsc       stock_0A4_b0" not in body
-    assert "movwf       stock_164_b1, BANKED" not in body
+    assert "clrf        usb_hid_ep1_in_report_payload_byte7_b1, BANKED" not in body
+    assert "clrf        usb_hid_ep1_in_report_payload_byte11_b1, BANKED" not in body
+    assert "movlb       0x0\n    btfsc       channel_enable_mask_b0" not in body
+    assert "movwf       usb_hid_ep1_in_report_payload_byte7_b1, BANKED" not in body
 
 
 def test_v34_volume_logical_diff_uses_shared_z_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    hid = _label_body(text, "flow_hid_command_dispatch_124e", ["flow_hid_command_dispatch_12a2"])
-    uart = _label_body(text, "volume_cmd_handler", ["flow_main_uart_service_1be6_1d80"])
-    helper = _label_body(text, "volume_logical_diff_z", ["main_core_service_15b0"])
+    hid = _label_body(text, "hid_command_dispatch__compare_settings_mirrors", ["hid_command_dispatch__check_route_trim_dirty"])
+    uart = _label_body(text, "volume_cmd_handler", ["uart_link_parser__volume_query_reply"])
+    helper = _label_body(text, "volume_logical_diff_z", ["hid_out_payload_index_to_fsr2"])
 
     _assert_ordered(
         hid,
         "movf        input_select_mirror_b0, W, BANKED",
         "xorwf       input_select_b0, W, BANKED",
         "btfss       STATUS, 2, ACCESS",
-        "bsf         stock_094_b0, 0, BANKED",
+        "bsf         main_runtime_latch_flags_b0, 0, BANKED",
         "rcall       volume_logical_diff_z",
-        "flow_hid_command_dispatch_129c:",
-        "bz          flow_hid_command_dispatch_12a2",
+        "hid_command_dispatch__mark_volume_dirty_if_changed:",
+        "bz          hid_command_dispatch__check_route_trim_dirty",
     )
     _assert_ordered(
         uart,
         "movwf       computed_volume_2_b0, BANKED",
         "movwf       computed_volume_3_b0, BANKED",
         "rcall       volume_logical_diff_z",
-        "flow_main_uart_service_1be6_1d68:",
-        "bz          flow_main_uart_service_1be6_1e6c",
+        "uart_link_parser__volume_return_if_unchanged:",
+        "bz          uart_link_parser__handler_return_tail",
     )
     _assert_ordered(
         helper,
         "movlb       0x0",
         "movf        logical_volume_3_b0, W, BANKED",
         "xorwf       computed_volume_3_b0, W, BANKED",
-        "bnz         volume_logical_diff_ret",
+        "bnz         volume_logical_diff_z__return",
         "movf        logical_volume_2_b0, W, BANKED",
         "xorwf       computed_volume_2_b0, W, BANKED",
-        "bnz         volume_logical_diff_ret",
+        "bnz         volume_logical_diff_z__return",
         "movf        logical_volume_1_b0, W, BANKED",
         "xorwf       computed_volume_1_b0, W, BANKED",
-        "bnz         volume_logical_diff_ret",
+        "bnz         volume_logical_diff_z__return",
         "movf        logical_volume_b0, W, BANKED",
         "xorwf       computed_volume_b0, W, BANKED",
-        "volume_logical_diff_ret:",
+        "volume_logical_diff_z__return:",
         "return      0",
     )
     assert hid.count("rcall       volume_logical_diff_z") == 1
@@ -799,254 +799,254 @@ def test_v34_volume_logical_diff_uses_shared_z_helper() -> None:
 
 def test_v34_eeprom_write_gie_snapshot_uses_increment_boolean_shape() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "eeprom_write_blocking", ["main_flash_service_4406"])
+    body = _label_body(text, "eeprom_write_blocking", ["nvm_unlock_and_set_wr"])
 
     _assert_ordered(
         body,
         "bsf         EECON1, 2, ACCESS",
-        "clrf        stock_006_acc, ACCESS",
+        "clrf        status_addr_high_or_i2c_payload_scratch_byte, ACCESS",
         "btfsc       INTCON, 7, ACCESS",
-        "incf        stock_006_acc, F, ACCESS",
+        "incf        status_addr_high_or_i2c_payload_scratch_byte, F, ACCESS",
         "bcf         INTCON, 7, ACCESS",
-        "rcall       main_flash_service_4406",
+        "rcall       nvm_unlock_and_set_wr",
     )
     assert "movlw       0x00\n    btfsc       INTCON, 7, ACCESS" not in body
-    assert "movwf       stock_006_acc, ACCESS" not in body
+    assert "movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS" not in body
 
 
 def test_v34_flash_page_c0_setup_uses_shared_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "flash_addr_setup_page_c0_0300", ["main_flash_service_2bb8"])
-    body = _label_body(text, "main_flash_service_2bb8", ["main_core_service_2ca8"])
+    helper = _label_body(text, "fw_update_stage_flash_page_window", ["fw_update_commit_hid_payload_page"])
+    body = _label_body(text, "fw_update_commit_hid_payload_page", ["float32_divide_primary_by_secondary_in_place"])
 
     _assert_ordered(
         helper,
-        "rcall       flash_addr_setup_from_82_83",
-        "clrf        stock_008_acc, ACCESS",
+        "rcall       fw_update_stage_flash_addr_from_cursor",
+        "clrf        flash_end_high_or_loop_mask_scratch_byte, ACCESS",
         "movlw       0xC0",
-        "movwf       stock_007_acc, ACCESS",
+        "movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS",
         "movlb       0x3",
         "movlw       0x03",
-        "movwf       stock_00A_acc, ACCESS",
-        "clrf        stock_009_acc, ACCESS",
+        "movwf       eeprom_mask_or_flash_src_high_scratch_byte, ACCESS",
+        "clrf        flash_src_low_or_rx_length_scratch_byte, ACCESS",
         "return      0",
     )
-    assert body.count("rcall       flash_addr_setup_page_c0_0300") == 2
+    assert body.count("rcall       fw_update_stage_flash_page_window") == 2
     assert (
-        "rcall       flash_addr_setup_from_82_83\n"
-        "    clrf        stock_008_acc, ACCESS\n"
+        "rcall       fw_update_stage_flash_addr_from_cursor\n"
+        "    clrf        flash_end_high_or_loop_mask_scratch_byte, ACCESS\n"
         "    movlw       0xC0"
     ) not in body
 
 
 def test_v34_flash_write_reuses_tblptr_stage_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "flash_stage_tblptr_from_014_016", ["flow_flash_write_2eb6"])
-    body = _label_body(text, "flow_flash_write_2eb6", ["main_usb_service_2f4e"])
+    helper = _label_body(text, "flash_write_stage_block_cursor_shadow", ["flash_write__start_next_block"])
+    body = _label_body(text, "flash_write__start_next_block", ["usb_sie_endpoint_pump"])
 
     _assert_ordered(
         helper,
-        "movff       stock_016_b0_phys, stock_013_b0_phys",
-        "movff       stock_015_b0_phys, stock_012_b0_phys",
-        "movff       stock_014_b0_phys, stock_011_b0_phys",
+        "movff       flash_addr_shadow_upper_or_preset_job_index_or_init_copy_end_phys, eeprom_record_count_or_flash_addr_upper_or_preset_addr_low_phys",
+        "movff       float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys, fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys",
+        "movff       flash_addr_shadow_low_or_preset_table_addr_hi_phys, flash_addr_low_or_float32_scale_or_flash_read_tblptru_save_phys",
         "return      0",
     )
-    assert body.count("rcall       flash_stage_tblptr_from_014_016") == 2
+    assert body.count("rcall       flash_write_stage_block_cursor_shadow") == 2
     assert (
-        "movff       stock_016_b0_phys, stock_013_b0_phys\n"
-        "    movff       stock_015_b0_phys, stock_012_b0_phys\n"
-        "    movff       stock_014_b0_phys, stock_011_b0_phys"
+        "movff       flash_addr_shadow_upper_or_preset_job_index_or_init_copy_end_phys, eeprom_record_count_or_flash_addr_upper_or_preset_addr_low_phys\n"
+        "    movff       float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys, fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys\n"
+        "    movff       flash_addr_shadow_low_or_preset_table_addr_hi_phys, flash_addr_low_or_float32_scale_or_flash_read_tblptru_save_phys"
     ) not in body
 
 
 def test_v34_flash_and_core30d8_share_004_006_carry_propagation() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "carry_propagate_004_006", ["flow_flash_write_2eb6"])
-    flash = _label_body(text, "flash_write_stock", ["main_usb_service_2f4e"])
-    core_30d8 = _label_body(text, "main_core_service_30d8", ["main_core_service_3188"])
+    helper = _label_body(text, "propagate_carry_to_u32_scratch_high24", ["flash_write__start_next_block"])
+    flash = _label_body(text, "flash_write_without_preset_remap", ["usb_sie_endpoint_pump"])
+    core_30d8 = _label_body(text, "float32_pack_mantissa_exponent_sign", ["shift_003_006_right_clear_c"])
 
     _assert_ordered(
         helper,
         "movlw       0x00",
-        "addwfc      stock_004_acc, F, ACCESS",
-        "addwfc      stock_005_acc, F, ACCESS",
-        "addwfc      stock_006_acc, F, ACCESS",
+        "addwfc      addr_high_table_row_or_checksum_scratch_byte, F, ACCESS",
+        "addwfc      length_mask_or_divisor_low_scratch_byte, F, ACCESS",
+        "addwfc      status_addr_high_or_i2c_payload_scratch_byte, F, ACCESS",
         "return      0",
     )
     _assert_ordered(
         flash,
         "movlw       0x20",
-        "addwf       stock_003_acc, F, ACCESS",
-        "rcall       carry_propagate_004_006",
+        "addwf       addr_low_counter_or_payload_scratch_byte, F, ACCESS",
+        "rcall       propagate_carry_to_u32_scratch_high24",
     )
     _assert_ordered(
         core_30d8,
-        "incf        stock_003_acc, F, ACCESS",
-        "rcall       carry_propagate_004_006",
-        "rcall       main_core_service_3188",
+        "incf        addr_low_counter_or_payload_scratch_byte, F, ACCESS",
+        "rcall       propagate_carry_to_u32_scratch_high24",
+        "rcall       shift_003_006_right_clear_c",
     )
-    assert text.count("rcall       carry_propagate_004_006") == 2
+    assert text.count("rcall       propagate_carry_to_u32_scratch_high24") == 2
 
 
 def test_v34_core30d8_keeps_live_exponent_or_without_scratch_zero_fanout() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "main_core_service_30d8", ["main_core_service_3188"])
+    body = _label_body(text, "float32_pack_mantissa_exponent_sign", ["shift_003_006_right_clear_c"])
 
     _assert_ordered(
         body,
         "movlw       0xFE",
-        "andwf       stock_006_acc, W, ACCESS",
-        "bz          flow_main_core_service_30d8_311a",
+        "andwf       status_addr_high_or_i2c_payload_scratch_byte, W, ACCESS",
+        "bz          float32_pack_mantissa_exponent_sign__check_guard_byte",
     )
     _assert_ordered(
         body,
-        "movf        stock_006_acc, W, ACCESS",
-        "bz          flow_main_core_service_30d8_313c",
+        "movf        status_addr_high_or_i2c_payload_scratch_byte, W, ACCESS",
+        "bz          float32_pack_mantissa_exponent_sign__normalize_left_to_mantissa_msb",
     )
     _assert_ordered(
         body,
-        "rrcf        stock_007_acc, F, ACCESS",
-        "movf        stock_007_acc, W, ACCESS",
-        "iorwf       stock_006_acc, F, ACCESS",
-        "clrf        stock_009_acc, ACCESS",
-        "clrf        stock_00A_acc, ACCESS",
-        "clrf        stock_00B_acc, ACCESS",
-        "clrf        stock_00C_acc, ACCESS",
-        "tstfsz      stock_008_acc, ACCESS",
+        "rrcf        count_flash_page_or_i2c_payload_scratch_byte, F, ACCESS",
+        "movf        count_flash_page_or_i2c_payload_scratch_byte, W, ACCESS",
+        "iorwf       status_addr_high_or_i2c_payload_scratch_byte, F, ACCESS",
+        "clrf        flash_src_low_or_rx_length_scratch_byte, ACCESS",
+        "clrf        eeprom_mask_or_flash_src_high_scratch_byte, ACCESS",
+        "clrf        eeprom_gate_flash_gie_or_uart_timeout_scratch_byte, ACCESS",
+        "clrf        uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, ACCESS",
+        "tstfsz      flash_end_high_or_loop_mask_scratch_byte, ACCESS",
     )
     for dead in (
-        "movwf       stock_00C_acc, ACCESS\n    iorwf       stock_009_acc, W, ACCESS",
-        "movwf       stock_00C_acc, ACCESS\n    iorwf       stock_009_acc, W, ACCESS",
-        "clrf        stock_009_acc, ACCESS\n    movf        stock_009_acc, W, ACCESS",
-        "movf        stock_00C_acc, W, ACCESS\n    iorwf       stock_006_acc, F, ACCESS",
-        "movff       stock_007_b0_phys, timeout_hi_b0_phys",
+        "movwf       uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, ACCESS\n    iorwf       flash_src_low_or_rx_length_scratch_byte, W, ACCESS",
+        "movwf       uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, ACCESS\n    iorwf       flash_src_low_or_rx_length_scratch_byte, W, ACCESS",
+        "clrf        flash_src_low_or_rx_length_scratch_byte, ACCESS\n    movf        flash_src_low_or_rx_length_scratch_byte, W, ACCESS",
+        "movf        uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, W, ACCESS\n    iorwf       status_addr_high_or_i2c_payload_scratch_byte, F, ACCESS",
+        "movff       computed_volume_or_flash_count_eeprom_addr_adc_usb_ptr_scratch_phys, timeout_hi_b0_phys",
     ):
         assert dead not in body
 
 
 def test_v34_flash_write_stock_uses_chain_copy_for_address_snapshot() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "flash_write_stock", ["flow_flash_write_2eb6"])
+    body = _label_body(text, "flash_write_without_preset_remap", ["flash_write__start_next_block"])
 
     for old_copy in (
-        "movff       stock_003_b0_phys, stock_014_b0_phys",
-        "movff       stock_004_b0_phys, stock_015_b0_phys",
-        "movff       saved_w_b0_phys, stock_016_b0_phys",
-        "movff       stock_006_b0_phys, stock_017_b0_phys",
+        "movff       addr_low_counter_or_payload_scratch_phys, flash_addr_shadow_low_or_preset_table_addr_hi_phys",
+        "movff       addr_high_table_row_or_checksum_scratch_phys, float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys",
+        "movff       saved_w_b0_phys, flash_addr_shadow_upper_or_preset_job_index_or_init_copy_end_phys",
+        "movff       status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys, float_product_or_output_index_scratch_bank0_phys",
     ):
         assert old_copy not in body
     _assert_ordered(
         body,
-        "clrf        stock_010_acc, ACCESS",
+        "clrf        flash_gie_or_float_sign_scratch_byte, ACCESS",
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_003_acc_op, stock_014_acc_op, 0x04, 0xFF",
+        "db          0x00, 0x00, addr_low_counter_or_payload_scratch_operand, flash_write_start_addr_shadow_dword_op, 0x04, 0xFF",
         "movlw       0x05",
-        "movwf       stock_00B_acc, ACCESS",
+        "movwf       eeprom_gate_flash_gie_or_uart_timeout_scratch_byte, ACCESS",
     )
 
 
 def test_v34_math_operand_middle_copy_uses_shared_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "math_stage_025_027_to_029_02b", ["main_core_service_297e"])
-    early = _label_body(text, "main_core_service_24c2", ["main_core_service_263e"])
-    s3 = _label_body(text, "s3_math_stage_029", ["main_core_service_301a"])
+    helper = _label_body(text, "copy_math_operand_low24_to_secondary", ["float32_exp_limit1024_in_place"])
+    early = _label_body(text, "float32_add_secondary_to_primary_in_place", ["twos_complement_024_027_after_low_byte_complement"])
+    s3 = _label_body(text, "copy_math_operand_to_secondary_shadow", ["float32_to_int32_in_place"])
 
     _assert_ordered(
         helper,
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_025_acc_op, stock_029_acc_op, 0x03, 0xFF",
+        "db          0x00, 0x00, float32_math_operand_byte0_op, float32_secondary_work_byte0_op, 0x03, 0xFF",
         "return      0",
     )
     _assert_ordered(
         early,
-        "movff       stock_024_b0_phys, stock_028_b0_phys",
-        "rcall       math_stage_025_027_to_029_02b",
-        "rcall       repeat_18_main_core_service_2650",
+        "movff       float32_aux_work_byte0_b0_phys, float32_math_operand_byte3_b0_phys",
+        "rcall       copy_math_operand_low24_to_secondary",
+        "rcall       shift_028_02b_right_23_clear_c",
     )
     _assert_ordered(
         s3,
-        "rcall       math_stage_025_027_to_029_02b",
-        "movff       stock_028_b0_phys, stock_02C_b0_phys",
+        "rcall       copy_math_operand_low24_to_secondary",
+        "movff       float32_math_operand_byte3_b0_phys, float32_secondary_work_byte3_b0_phys",
         "return      0",
     )
-    assert early.count("rcall       math_stage_025_027_to_029_02b") == 1
-    assert s3.count("rcall       math_stage_025_027_to_029_02b") == 1
+    assert early.count("rcall       copy_math_operand_low24_to_secondary") == 1
+    assert s3.count("rcall       copy_math_operand_low24_to_secondary") == 1
 
 
 def test_v34_s3_math_and_adc_helpers_use_chain_copy_descriptors() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    math = _label_body(text, "s3_math_stage_025", ["main_core_service_2d80"])
-    adc = _label_body(text, "s3_adc_stage_427a", ["flow_main_core_service_34c8_3504"])
+    math = _label_body(text, "copy_transform_shadow_to_math_operand", ["main_core_service_2d80"])
+    adc = _label_body(text, "adc_stage_division_operands_from_sample_window", ["format_uint16_radix_ascii_to_w_pointer__emit_next_digit"])
 
     for old_copy in (
-        "movff       stock_02F_b0_phys, stock_025_b0_phys",
-        "movff       stock_030_b0_phys, stock_026_b0_phys",
-        "movff       stock_031_b0_phys, stock_027_b0_phys",
-        "movff       stock_032_b0_phys, stock_028_b0_phys",
+        "movff       float32_preset_fw_update_scratch_byte0_b0_phys, float32_math_operand_byte0_b0_phys",
+        "movff       preset_payload_index_or_float32_shadow_byte1_b0_phys, float32_math_operand_byte1_b0_phys",
+        "movff       preset_table_row_len_phys, float32_math_operand_byte2_b0_phys",
+        "movff       float32_transform_shadow_byte3_b0_phys, float32_math_operand_byte3_b0_phys",
     ):
         assert old_copy not in math
     for old_copy in (
-        "movff       stock_00A_b0_phys, stock_003_b0_phys",
-        "movff       timeout_lo_b0_phys, stock_004_b0_phys",
+        "movff       eeprom_mask_or_flash_src_high_scratch_phys, addr_low_counter_or_payload_scratch_phys",
+        "movff       timeout_lo_b0_phys, addr_high_table_row_or_checksum_scratch_phys",
         "movff       timeout_hi_b0_phys, saved_w_b0_phys",
-        "movff       stock_00D_b0_phys, stock_006_b0_phys",
+        "movff       flash_saved_tblptrh_phys, status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys",
     ):
         assert old_copy not in adc
 
     _assert_ordered(
         math,
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_02F_acc_op, stock_025_acc_op, 0x04, 0xFF",
+        "db          0x00, 0x00, float32_transform_shadow_dword_op, float32_math_operand_byte0_op, 0x04, 0xFF",
         "return      0",
     )
     _assert_ordered(
         adc,
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_00A_acc_op, stock_003_acc_op, 0x04, 0xFF",
+        "db          0x00, 0x00, numeric_format_value_dword_op, addr_low_counter_or_payload_scratch_operand, 0x04, 0xFF",
         "return      0",
     )
 
 
 def test_v34_adc_division_compare_subtract_is_shared() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "adc_div_compare_subtract_003004_by_005006", ["an0_hysteresis_monitor"])
-    adc_div = _label_body(text, "main_adc_service_4124", ["an0_hysteresis_monitor"])
-    core_div = _label_body(text, "main_core_service_427a", ["flash_write_with_gie_off"])
+    helper = _label_body(text, "adc_div_compare_subtract_staged_words", ["an0_hysteresis_monitor"])
+    adc_div = _label_body(text, "adc_divide_staged_words", ["an0_hysteresis_monitor"])
+    core_div = _label_body(text, "adc_remainder_staged_words", ["flash_write_with_gie_off"])
 
     _assert_ordered(
         helper,
-        "movf        stock_005_acc, W, ACCESS",
-        "subwf       stock_003_acc, W, ACCESS",
-        "movf        stock_006_acc, W, ACCESS",
-        "subwfb      stock_004_acc, W, ACCESS",
-        "bnc         adc_div_compare_subtract_done",
-        "movf        stock_005_acc, W, ACCESS",
-        "subwf       stock_003_acc, F, ACCESS",
-        "movf        stock_006_acc, W, ACCESS",
-        "subwfb      stock_004_acc, F, ACCESS",
-        "adc_div_compare_subtract_done:",
+        "movf        length_mask_or_divisor_low_scratch_byte, W, ACCESS",
+        "subwf       addr_low_counter_or_payload_scratch_byte, W, ACCESS",
+        "movf        status_addr_high_or_i2c_payload_scratch_byte, W, ACCESS",
+        "subwfb      addr_high_table_row_or_checksum_scratch_byte, W, ACCESS",
+        "bnc         adc_div_compare_subtract_staged_words__return",
+        "movf        length_mask_or_divisor_low_scratch_byte, W, ACCESS",
+        "subwf       addr_low_counter_or_payload_scratch_byte, F, ACCESS",
+        "movf        status_addr_high_or_i2c_payload_scratch_byte, W, ACCESS",
+        "subwfb      addr_high_table_row_or_checksum_scratch_byte, F, ACCESS",
+        "adc_div_compare_subtract_staged_words__return:",
         "return      0",
     )
     _assert_ordered(
         adc_div,
-        "rlcf        stock_008_acc, F, ACCESS",
-        "rcall       adc_div_compare_subtract_003004_by_005006",
+        "rlcf        flash_end_high_or_loop_mask_scratch_byte, F, ACCESS",
+        "rcall       adc_div_compare_subtract_staged_words",
         "btfsc       STATUS, 0, ACCESS",
-        "bsf         stock_007_acc, 0, ACCESS",
+        "bsf         count_flash_page_or_i2c_payload_scratch_byte, 0, ACCESS",
     )
     _assert_ordered(
         core_div,
-        "btfss       stock_006_acc, 7, ACCESS",
-        "rcall       adc_div_compare_subtract_003004_by_005006",
+        "btfss       status_addr_high_or_i2c_payload_scratch_byte, 7, ACCESS",
+        "rcall       adc_div_compare_subtract_staged_words",
         "bcf         STATUS, 0, ACCESS",
     )
 
 
 def test_v34_usb_endpoint_clear_uses_shared_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "usb_clear_uep1_7", ["main_usb_service_40d6"])
-    reset = _label_body(text, "main_usb_service_40d6", ["main_core_service_41b6"])
-    reinit = _label_body(text, "main_usb_service_41fe", ["i2c_secondary_dev_random_read"])
+    helper = _label_body(text, "usb_clear_uep1_7", ["usb_bus_reset_reinitialize"])
+    reset = _label_body(text, "usb_bus_reset_reinitialize", ["format_int16_decimal_ascii_to_w_pointer"])
+    reinit = _label_body(text, "usb_apply_set_configuration", ["i2c_secondary_dev_random_read"])
 
     _assert_ordered(
         helper,
@@ -1060,45 +1060,45 @@ def test_v34_usb_endpoint_clear_uses_shared_helper() -> None:
         "return      0",
     )
     _assert_ordered(reset, "clrf        UADDR, ACCESS", "rcall       usb_clear_uep1_7", "movlw       0x16")
-    _assert_ordered(reinit, "movwf       stock_0C8_b0, BANKED", "rcall       usb_clear_uep1_7", "clrf        stock_091_b0, BANKED")
+    _assert_ordered(reinit, "movwf       usb_ep0_control_response_mode_b0, BANKED", "rcall       usb_clear_uep1_7", "clrf        usb_reset_lowram_clear_index_b0, BANKED")
     assert reset.count("clrf        UEP1, ACCESS") == 0
     assert reinit.count("clrf        UEP1, ACCESS") == 0
 
 
 def test_v34_usb_descriptor_tblptr_staging_uses_shared_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "usb_stage_tblptr_from_075_076", ["main_flash_service_365c"])
-    setup = _label_body(text, "main_flash_service_365c", ["main_core_service_3672"])
-    descriptor = _label_body(text, "main_flash_service_3796", ["main_flash_service_3810"])
+    helper = _label_body(text, "usb_stage_tblptr_from_flash_ptr_cache", ["usb_ep0_prepare_in_data_copy_pointers"])
+    setup = _label_body(text, "usb_ep0_prepare_in_data_copy_pointers", ["usb_ep0_store_in_data_byte_and_advance"])
+    descriptor = _label_body(text, "usb_ep0_select_get_descriptor_payload", ["read_low_memory_byte_at_tblptr"])
 
     _assert_ordered(
         helper,
-        "movff       stock_075_b0_phys, TBLPTRL",
-        "movff       stock_076_b0_phys, TBLPTRH",
+        "movff       usb_ep0_in_source_ptr_lo_phys, TBLPTRL",
+        "movff       usb_ep0_in_source_ptr_hi_phys, TBLPTRH",
         "clrf        TBLPTRU, ACCESS",
         "return      0",
     )
     _assert_ordered(
         setup,
-        "rcall       usb_stage_tblptr_from_075_076",
-        "rcall       fsr2_from_stock072073",
+        "rcall       usb_stage_tblptr_from_flash_ptr_cache",
+        "rcall       load_fsr2_from_target_ptr",
         "retlw       0x07",
     )
     _assert_ordered(
         descriptor,
-        "movff       TABLAT, stock_075_b0_phys",
-        "movwf       stock_076_b0, BANKED",
-        "rcall       usb_stage_tblptr_from_075_076",
+        "movff       TABLAT, usb_ep0_in_source_ptr_lo_phys",
+        "movwf       usb_ep0_in_source_ptr_hi_b0, BANKED",
+        "rcall       usb_stage_tblptr_from_flash_ptr_cache",
         "movlw       0x07",
     )
-    assert setup.count("rcall       usb_stage_tblptr_from_075_076") == 1
-    assert descriptor.count("rcall       usb_stage_tblptr_from_075_076") == 1
+    assert setup.count("rcall       usb_stage_tblptr_from_flash_ptr_cache") == 1
+    assert descriptor.count("rcall       usb_stage_tblptr_from_flash_ptr_cache") == 1
 
 
 def test_v34_return_value_tails_use_retlw() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    usb_setup = _label_body(text, "main_flash_service_365c", ["main_core_service_3672"])
-    signed = _label_body(text, "signed_hi_bias80_compare_prelude", ["main_usb_service_3a26"])
+    usb_setup = _label_body(text, "usb_ep0_prepare_in_data_copy_pointers", ["usb_ep0_store_in_data_byte_and_advance"])
+    signed = _label_body(text, "signed_hi_bias80_compare_prelude", ["usb_hid_dispatch_out_report_if_ready"])
 
     assert "retlw       0x07" in usb_setup
     assert "movlw       0x07\n    return      0" not in usb_setup
@@ -1108,66 +1108,66 @@ def test_v34_return_value_tails_use_retlw() -> None:
 
 def test_v34_fsr2_from_stock072073_is_shared() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "fsr2_from_stock072073", ["main_core_service_34c8"])
-    filter_body = _label_body(text, "main_core_service_3432", ["fsr2_from_stock072073"])
-    setup = _label_body(text, "main_flash_service_365c", ["main_core_service_3672"])
-    dispatch = _label_body(text, "main_core_service_3710", ["main_flash_service_3796"])
+    helper = _label_body(text, "load_fsr2_from_target_ptr", ["format_uint16_radix_ascii_to_w_pointer"])
+    filter_body = _label_body(text, "usb_ep0_apply_clear_set_feature_request", ["load_fsr2_from_target_ptr"])
+    setup = _label_body(text, "usb_ep0_prepare_in_data_copy_pointers", ["usb_ep0_store_in_data_byte_and_advance"])
+    dispatch = _label_body(text, "usb_ep0_prepare_get_status_reply", ["usb_ep0_select_get_descriptor_payload"])
     standby = _label_body(text, "hw_standby_shutdown", ["hw_standby_shutdown_i2c_table"])
 
     _assert_ordered(
         helper,
-        "movff       stock_072_b0_phys, FSR2L",
-        "movff       stock_073_b0_phys, FSR2H",
+        "movff       fsr2_target_ptr_lo_phys, FSR2L",
+        "movff       fsr2_target_ptr_hi_phys, FSR2H",
         "return      0",
     )
-    assert filter_body.count("rcall       fsr2_from_stock072073") == 4
-    assert setup.count("rcall       fsr2_from_stock072073") == 1
-    assert dispatch.count("rcall       fsr2_from_stock072073") == 1
-    assert "movff       stock_072_b0_phys, FSR2L" not in filter_body
-    assert "movff       stock_073_b0_phys, FSR2H" not in filter_body
+    assert filter_body.count("rcall       load_fsr2_from_target_ptr") == 4
+    assert setup.count("rcall       load_fsr2_from_target_ptr") == 1
+    assert dispatch.count("rcall       load_fsr2_from_target_ptr") == 1
+    assert "movff       fsr2_target_ptr_lo_phys, FSR2L" not in filter_body
+    assert "movff       fsr2_target_ptr_hi_phys, FSR2H" not in filter_body
     _assert_ordered(
         standby,
         "movlw       0x03",
-        "rcall       i2c_secondary_write_rows",
+        "rcall       i2c_secondary_write_table_rows",
         "btfss       PORTC, 2, ACCESS",
     )
 
 
 def test_v34_usb_descriptor_dirty_return_tail_is_shared() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    lowpage = _label_body(text, "usb_stage_lowpage_descriptor_dirty_w", ["usb_stage_descriptor_dirty_return"])
-    helper = _label_body(text, "usb_stage_descriptor_dirty_return", ["usb_service_4080_update_stock096"])
-    setup = _label_body(text, "main_core_service_3188", ["usb_service_4080_update_stock096"])
-    descriptor = _label_body(text, "main_core_service_3682", ["main_core_service_3710"])
+    lowpage = _label_body(text, "usb_ep0_stage_one_byte_lowpage_in_data_pointer", ["usb_ep0_mark_one_byte_lowpage_in_data_ready"])
+    helper = _label_body(text, "usb_ep0_mark_one_byte_lowpage_in_data_ready", ["usb_ep0_arm_next_out_pingpong_bd"])
+    setup = _label_body(text, "shift_003_006_right_clear_c", ["usb_ep0_arm_next_out_pingpong_bd"])
+    descriptor = _label_body(text, "usb_ep0_dispatch_standard_setup_request", ["usb_ep0_prepare_get_status_reply"])
 
     _assert_ordered(
         lowpage,
-        "clrf        stock_076_b0, BANKED",
-        "movwf       stock_075_b0, BANKED",
+        "clrf        usb_ep0_in_source_ptr_hi_b0, BANKED",
+        "movwf       usb_ep0_in_source_ptr_lo_b0, BANKED",
     )
     _assert_ordered(
         helper,
-        "bcf         stock_0CE_b0, 1, BANKED",
+        "bcf         usb_ep0_control_flags_b0, 1, BANKED",
         "movlw       0x01",
-        "movwf       stock_0E7_b0, BANKED",
+        "movwf       usb_ep0_transfer_remaining_lo_b0, BANKED",
         "return      0",
     )
     _assert_ordered(
         setup,
-        "flow_main_core_service_3188_3200:",
+        "usb_ep0_dispatch_hid_setup_request__stage_get_idle_reply:",
         "movlw       0xEA",
-        "bra         usb_stage_lowpage_descriptor_dirty_w",
-        "flow_main_core_service_3188_321c:",
+        "bra         usb_ep0_stage_one_byte_lowpage_in_data_pointer",
+        "usb_ep0_dispatch_hid_setup_request__stage_get_protocol_reply:",
         "movlw       0xE9",
-        "bra         usb_stage_lowpage_descriptor_dirty_w",
+        "bra         usb_ep0_stage_one_byte_lowpage_in_data_pointer",
     )
     _assert_ordered(
         descriptor,
-        "flow_main_core_service_3682_36a2:",
+        "usb_ep0_dispatch_standard_setup_request__get_configuration:",
         "movlw       0xEB",
-        "bra         usb_stage_lowpage_descriptor_dirty_w",
-        "movff       saved_w_b0_phys, stock_075_b0_phys",
-        "bra         usb_stage_descriptor_dirty_return",
+        "bra         usb_ep0_stage_one_byte_lowpage_in_data_pointer",
+        "movff       saved_w_b0_phys, usb_ep0_in_source_ptr_lo_phys",
+        "bra         usb_ep0_mark_one_byte_lowpage_in_data_ready",
     )
     assert "flow_main_core_service_3188_3208:" not in setup
     assert "flow_main_core_service_3682_36ac:" not in descriptor
@@ -1175,31 +1175,31 @@ def test_v34_usb_descriptor_dirty_return_tail_is_shared() -> None:
 
 def test_v34_usb_service_4080_stock096_update_uses_shared_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "usb_service_4080_update_stock096", ["flow_main_core_service_3188_324c"])
-    body = _label_body(text, "flow_main_core_service_3188_324c", ["main_i2c_service_32f8"])
-    core_4080 = _label_body(text, "main_core_service_4080", ["usb_clear_uep1_7"])
+    helper = _label_body(text, "usb_ep0_arm_next_out_pingpong_bd", ["usb_ep0_arm_control_transfer_response"])
+    body = _label_body(text, "usb_ep0_arm_control_transfer_response", ["i2c_secondary_apply_wake_init_table"])
+    core_4080 = _label_body(text, "usb_ep0_arm_out_pingpong_bd", ["usb_clear_uep1_7"])
 
     _assert_ordered(
         helper,
-        "decf        stock_096_b0, W, BANKED",
-        "bnz         usb_service_4080_update_stock096_nonzero",
+        "decf        usb_ep0_out_next_bd_toggle_b0, W, BANKED",
+        "bnz         usb_ep0_arm_next_out_pingpong_bd__arm_even_bd",
         "movlw       0x01",
-        "rcall       main_core_service_4080_window",
-        "clrf        stock_096_b0, BANKED",
+        "rcall       usb_ep0_arm_out_pingpong_bd_window",
+        "clrf        usb_ep0_out_next_bd_toggle_b0, BANKED",
         "return      0",
         "movlw       0x00",
-        "rcall       main_core_service_4080_window",
+        "rcall       usb_ep0_arm_out_pingpong_bd_window",
         "movlw       0x01",
-        "movwf       stock_096_b0, BANKED",
+        "movwf       usb_ep0_out_next_bd_toggle_b0, BANKED",
         "return      0",
     )
-    assert body.count("rcall       usb_service_4080_update_stock096") == 2
-    assert core_4080.count("movwf       stock_119_b1, BANKED") == 1
+    assert body.count("rcall       usb_ep0_arm_next_out_pingpong_bd") == 2
+    assert core_4080.count("movwf       usb_bdt_template_addr_hi_b1, BANKED") == 1
     _assert_ordered(
         core_4080,
-        "lfsr        FSR0, stock_116_b1_phys",
+        "lfsr        FSR0, usb_bdt_template_status_phys",
         "movlw       0x04",
-        "call        copy_postinc0_to_postinc2_count_w, 0x0",
+        "call        hid_diag_snapshot_copy_block_count_w, 0x0",
         "movlw       0xFC",
         "addwf       FSR2L, F, ACCESS",
         "bsf         INDF2, 7, ACCESS",
@@ -1207,7 +1207,7 @@ def test_v34_usb_service_4080_stock096_update_uses_shared_helper() -> None:
     assert "movff       stock_078_b0_phys, FSR2L" not in core_4080
     assert "movff       stock_079_b0_phys, FSR2H" not in core_4080
     assert core_4080.count("movwf       FSR2H, ACCESS") == 1
-    assert "tstfsz      stock_003_acc, ACCESS\n    bra         flow_main_core_service_4080_40a8\n    movlw       0x04\n    movwf       stock_119_b1, BANKED" not in core_4080
+    assert "tstfsz      addr_low_counter_or_payload_scratch_byte, ACCESS\n    bra         usb_ep0_arm_out_pingpong_bd__select_odd_bd\n    movlw       0x04\n    movwf       usb_bdt_template_addr_hi_b1, BANKED" not in core_4080
     assert "bnz         flow_main_core_service_3188_326c" not in body
     assert "bnz         flow_main_core_service_3188_32dc" not in body
     assert "flow_main_core_service_3188_326c:" not in body
@@ -1216,66 +1216,66 @@ def test_v34_usb_service_4080_stock096_update_uses_shared_helper() -> None:
 
 def test_v34_usb_stock116_store_uses_bsr0_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "usb_store_stock116_w_bsr0", ["adaptive_baud_select"])
-    service = _label_body(text, "flow_main_core_service_3188_324c", ["main_i2c_service_32f8"])
-    reset = _label_body(text, "main_usb_service_40d6", ["main_core_service_41b6"])
+    helper = _label_body(text, "usb_stage_bdt_template_status_w", ["adaptive_baud_select"])
+    service = _label_body(text, "usb_ep0_arm_control_transfer_response", ["i2c_secondary_apply_wake_init_table"])
+    reset = _label_body(text, "usb_bus_reset_reinitialize", ["format_int16_decimal_ascii_to_w_pointer"])
 
     _assert_ordered(
         helper,
         "movlb       0x1",
-        "movwf       stock_116_b1, BANKED",
+        "movwf       usb_bdt_template_status_b1, BANKED",
         "movlb       0x0",
         "return      0",
     )
-    assert service.count("rcall       usb_store_stock116_w_bsr0") == 4
-    assert reset.count("rcall       usb_store_stock116_w_bsr0") == 1
+    assert service.count("rcall       usb_stage_bdt_template_status_w") == 4
+    assert reset.count("rcall       usb_stage_bdt_template_status_w") == 1
     _assert_ordered(
         service,
         "movlw       0x04",
-        "rcall       usb_store_stock116_w_bsr0",
-        "rcall       usb_service_4080_update_stock096",
+        "rcall       usb_stage_bdt_template_status_w",
+        "rcall       usb_ep0_arm_next_out_pingpong_bd",
         "movlw       0x48",
-        "rcall       usb_store_stock116_w_bsr0",
+        "rcall       usb_stage_bdt_template_status_w",
         "movlw       0x01",
-        "rcall       main_core_service_4080_window",
+        "rcall       usb_ep0_arm_out_pingpong_bd_window",
         "movlw       0x04",
-        "rcall       usb_store_stock116_w_bsr0",
-        "movf        stock_0D6_b0, W, BANKED",
+        "rcall       usb_stage_bdt_template_status_w",
+        "movf        usb_setup_w_length_hi_b0, W, BANKED",
         "movlw       0x48",
-        "rcall       usb_store_stock116_w_bsr0",
+        "rcall       usb_stage_bdt_template_status_w",
     )
     _assert_ordered(
         reset,
         "movlw       0x04",
-        "rcall       usb_store_stock116_w_bsr0",
+        "rcall       usb_stage_bdt_template_status_w",
         "movlw       0x00",
-        "rcall       main_core_service_4080",
+        "rcall       usb_ep0_arm_out_pingpong_bd",
     )
 
 
 def test_v34_usb_offset_ec_paths_share_0c8_0d3_prelude() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    helper = _label_body(text, "usb_stage_0c8_0d3_offset_ec", ["flow_main_core_service_3682_36c0"])
-    body = _label_body(text, "main_core_service_3682", ["main_core_service_3710"])
+    helper = _label_body(text, "usb_ep0_stage_interface_alt_setting_offset", ["usb_ep0_dispatch_standard_setup_request__get_interface"])
+    body = _label_body(text, "usb_ep0_dispatch_standard_setup_request", ["usb_ep0_prepare_get_status_reply"])
 
     _assert_ordered(
         helper,
         "movlw       0x01",
-        "movwf       stock_0C8_b0, BANKED",
-        "movf        stock_0D3_b0, W, BANKED",
+        "movwf       usb_ep0_control_response_mode_b0, BANKED",
+        "movf        usb_setup_w_index_lo_b0, W, BANKED",
         "addlw       0xEC",
         "return      0",
     )
     _assert_ordered(
         body,
-        "flow_main_core_service_3682_36c0:",
-        "rcall       usb_stage_0c8_0d3_offset_ec",
-        "movwf       stock_005_acc, ACCESS",
-        "flow_main_core_service_3682_36d2:",
-        "rcall       usb_stage_0c8_0d3_offset_ec",
+        "usb_ep0_dispatch_standard_setup_request__get_interface:",
+        "rcall       usb_ep0_stage_interface_alt_setting_offset",
+        "movwf       length_mask_or_divisor_low_scratch_byte, ACCESS",
+        "usb_ep0_dispatch_standard_setup_request__set_interface:",
+        "rcall       usb_ep0_stage_interface_alt_setting_offset",
         "movwf       FSR2L, ACCESS",
     )
-    assert body.count("rcall       usb_stage_0c8_0d3_offset_ec") == 2
+    assert body.count("rcall       usb_ep0_stage_interface_alt_setting_offset") == 2
 
 
 def test_v34_channel_config_handlers_share_offset_indexed_mirror_dirty_helper() -> None:
@@ -1283,40 +1283,40 @@ def test_v34_channel_config_handlers_share_offset_indexed_mirror_dirty_helper() 
     dispatch = _label_body(
         text,
         "cmd_dispatch_xor_chain",
-        ["flow_main_uart_service_1be6_1e6c"],
+        ["uart_link_parser__handler_return_tail"],
     )
     body = _label_body(
         text,
-        "uart_channel_config_cache_from_00c",
-        ["flow_main_uart_service_1be6_1e02"],
+        "uart_update_channel_config_cache_from_cmd_index",
+        ["uart_link_parser__cmd1d_update_setup_timeout"],
     )
     helper = _label_body(
         text,
-        "uart_update_channel_config_cache_w",
-        ["flow_main_uart_service_1be6_1e02"],
+        "uart_update_channel_config_cache_from_w_index",
+        ["uart_link_parser__cmd1d_update_setup_timeout"],
     )
 
-    assert "movff       current_cmd_data_b0_phys, stock_060_b0_phys" not in body
-    assert "xorwf       stock_0A5_b0, W, BANKED" not in body
+    assert "movff       current_cmd_data_b0_phys, channel_1_source_config_phys" not in body
+    assert "xorwf       channel_1_source_config_shadow_b0, W, BANKED" not in body
     _assert_ordered(
         dispatch,
-        "movf        stock_0A2_b0, W, BANKED",
+        "movf        uart_current_cmd_code_b0, W, BANKED",
         "addlw       0xE9",
-        "movwf       stock_00C_acc, ACCESS",
+        "movwf       uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, ACCESS",
         "sublw       0x05",
-        "bc          uart_channel_config_cache_from_00c",
+        "bc          uart_update_channel_config_cache_from_cmd_index",
     )
     _assert_ordered(
         body,
-        "uart_channel_config_cache_from_00c:",
-        "movf        stock_00C_acc, W, ACCESS",
-        "uart_update_channel_config_cache_w:",
+        "uart_update_channel_config_cache_from_cmd_index:",
+        "movf        uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, W, ACCESS",
+        "uart_update_channel_config_cache_from_w_index:",
     )
-    assert "bra         uart_update_channel_config_cache_w" not in dispatch
+    assert "bra         uart_update_channel_config_cache_from_w_index" not in dispatch
     assert helper.count("cpfseq") == 1
     _assert_ordered(
         helper,
-        "addlw       stock_060_b0_op",
+        "addlw       channel_1_source_config_op",
         "movwf       FSR0L, ACCESS",
         "clrf        FSR0H, ACCESS",
         "movlw       0x45",
@@ -1329,7 +1329,7 @@ def test_v34_channel_config_handlers_share_offset_indexed_mirror_dirty_helper() 
         "cpfseq      INDF1, ACCESS",
         "bsf         event_flags_b0, 4, BANKED",
         "movwf       INDF1, ACCESS",
-        "bra         flow_main_uart_service_1be6_1e6c",
+        "bra         uart_link_parser__handler_return_tail",
     )
 
 
@@ -1337,59 +1337,59 @@ def test_v34_hid_route_cache_compare_uses_shared_z_helper() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     filename = _label_body(
         text,
-        "flow_hid_command_dispatch_12a2",
-        ["flow_hid_command_dispatch_12e0"],
+        "hid_command_dispatch__check_route_trim_dirty",
+        ["hid_command_dispatch__check_channel_setup_dirty"],
     )
     body = _label_body(
         text,
-        "flow_hid_command_dispatch_12e0",
-        ["flow_hid_command_dispatch_1344"],
+        "hid_command_dispatch__check_channel_setup_dirty",
+        ["hid_command_dispatch__snapshot_settings_mirrors"],
     )
     helper = _label_body(
         text,
-        "ram_pair_diff_z",
-        ["main_core_service_15b0"],
+        "compare_fsr0_fsr1_bytes_z",
+        ["hid_out_payload_index_to_fsr2"],
     )
 
-    assert "xorwf       stock_09B_b0, W, BANKED" not in filename
+    assert "xorwf       route_0_volume_trim_b0, W, BANKED" not in filename
     assert filename.count("bsf         filename_dirty_flags_b0, 3, BANKED") == 1
     _assert_ordered(
         filename,
-        "lfsr        FSR0, stock_0AC_b0_phys",
-        "lfsr        FSR1, stock_09B_b0_phys",
+        "lfsr        FSR0, route_0_volume_trim_shadow_phys",
+        "lfsr        FSR1, route_0_volume_trim_phys",
         "movlw       0x04",
-        "rcall       ram_pair_diff_z",
+        "rcall       compare_fsr0_fsr1_bytes_z",
         "btfsc       STATUS, 2, ACCESS",
-        "bra         flow_hid_command_dispatch_12ca",
+        "bra         hid_command_dispatch__check_mute_state_dirty",
         "bsf         event_flags_b0, 3, BANKED",
         "bsf         filename_dirty_flags_b0, 3, BANKED",
     )
-    assert "cpfseq      stock_0A5_b0, BANKED" not in body
-    assert "lfsr        FSR2, stock_061_b0_phys" not in body
+    assert "cpfseq      channel_1_source_config_shadow_b0, BANKED" not in body
+    assert "lfsr        FSR2, channel_2_source_config_phys" not in body
     _assert_ordered(
         body,
-        "movf        stock_0B4_b0, W, BANKED",
-        "xorwf       stock_0B1_b0, W, BANKED",
+        "movf        setup_profile_setting_b0, W, BANKED",
+        "xorwf       setup_profile_shadow_b0, W, BANKED",
         "btfss       STATUS, 2, ACCESS",
         "bsf         dsp_fault_flags_b0, 1, BANKED",
-        "lfsr        FSR0, stock_060_b0_phys",
-        "lfsr        FSR1, stock_0A5_b0_phys",
+        "lfsr        FSR0, channel_1_source_config_phys",
+        "lfsr        FSR1, channel_1_source_config_shadow_phys",
         "movlw       0x06",
-        "rcall       ram_pair_diff_z",
+        "rcall       compare_fsr0_fsr1_bytes_z",
         "btfss       STATUS, 2, ACCESS",
-        "flow_hid_command_dispatch_1324:",
+        "hid_command_dispatch__mark_channel_source_dirty:",
         "bsf         event_flags_b0, 4, BANKED",
     )
     _assert_ordered(
         helper,
-        "movwf       stock_04C_acc, ACCESS",
-        "ram_pair_diff_loop:",
+        "movwf       diff_count_update_compare_or_route_mask_scratch_byte, ACCESS",
+        "ram_pair_diff_z__compare_next_byte:",
         "movf        POSTINC0, W, ACCESS",
         "xorwf       POSTINC1, W, ACCESS",
-        "bnz         ram_pair_diff_ret",
-        "decfsz      stock_04C_acc, F, ACCESS",
-        "bra         ram_pair_diff_loop",
-        "ram_pair_diff_ret:",
+        "bnz         ram_pair_diff_z__return",
+        "decfsz      diff_count_update_compare_or_route_mask_scratch_byte, F, ACCESS",
+        "bra         ram_pair_diff_z__compare_next_byte",
+        "ram_pair_diff_z__return:",
         "return      0",
     )
 
@@ -1398,30 +1398,30 @@ def test_v34_wreg_access_stores_use_single_word_movwf_shape() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     movff_wreg = re.findall(r"(?m)^\s*movff\s+WREG,\s+([^;\s]+)", text)
 
-    assert movff_wreg == ["stock_0FD_b0_phys"]
+    assert movff_wreg == ["cmd_dispatch_hid_mailbox_enable_phys"]
     for target in [
         "i2c_coeff_2_acc",
-        "stock_011_acc",
+        "float_loop_or_tblptr_low_scratch_byte",
         "saved_w_acc",
-        "stock_02D_acc",
-        "stock_037_acc",
-        "stock_003_acc",
-        "stock_017_acc",
-        "stock_006_acc",
-        "stock_01B_acc",
-        "stock_007_acc",
-        "stock_004_acc",
+        "float32_sign_exponent_offset_scratch_acc",
+        "float32_exponent_lo_or_target_offset_scratch_acc",
+        "addr_low_counter_or_payload_scratch_byte",
+        "float_product_or_output_index_scratch_byte",
+        "status_addr_high_or_i2c_payload_scratch_byte",
+        "fw_update_hex_or_float32_quotient_or_uart_block_scratch",
+        "count_flash_page_or_i2c_payload_scratch_byte",
+        "addr_high_table_row_or_checksum_scratch_byte",
     ]:
         assert f"movwf       {target}, ACCESS" in text
 
     for redundant in [
         "movwf       saved_w_acc, ACCESS\n    movff       saved_w_b0_phys, SSPBUF",
-        "movwf       stock_02D_acc, ACCESS\n    movf        stock_02D_acc, W, ACCESS",
-        "movwf       stock_037_acc, ACCESS\n    movf        stock_037_acc, W, ACCESS",
-        "movwf       stock_017_acc, ACCESS\n    movff       stock_017_b0_phys, stock_016_b0_phys",
-        "movwf       stock_006_acc, ACCESS\n    movff       stock_006_b0_phys, stock_004_b0_phys",
-        "movwf       stock_011_acc, ACCESS\n    movf        stock_011_acc, W, ACCESS",
-        "movwf       stock_00C_acc, ACCESS\n    movf        stock_00C_acc, W, ACCESS",
+        "movwf       float32_sign_exponent_offset_scratch_acc, ACCESS\n    movf        float32_sign_exponent_offset_scratch_acc, W, ACCESS",
+        "movwf       float32_exponent_lo_or_target_offset_scratch_acc, ACCESS\n    movf        float32_exponent_lo_or_target_offset_scratch_acc, W, ACCESS",
+        "movwf       float_product_or_output_index_scratch_byte, ACCESS\n    movff       float_product_or_output_index_scratch_bank0_phys, flash_addr_shadow_upper_or_preset_job_index_or_init_copy_end_phys",
+        "movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS\n    movff       status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys, addr_high_table_row_or_checksum_scratch_phys",
+        "movwf       float_loop_or_tblptr_low_scratch_byte, ACCESS\n    movf        float_loop_or_tblptr_low_scratch_byte, W, ACCESS",
+        "movwf       uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, ACCESS\n    movf        uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, W, ACCESS",
     ]:
         assert redundant not in text
 
@@ -1429,7 +1429,7 @@ def test_v34_wreg_access_stores_use_single_word_movwf_shape() -> None:
 def test_v34_redundant_local_movlb_zero_assertions_stay_removed() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
 
-    assert "flow_main_usb_service_2f4e_2f9c:\n    movlb       0x0" not in text
+    assert "usb_sie_endpoint_pump__select_ep0_out_bd:\n    movlb       0x0" not in text
     assert (
         "movff       stock_079_b0_phys, FSR2H\n"
         "    movlb       0x0\n"
@@ -1450,39 +1450,39 @@ def test_v34_redundant_local_movlb_zero_assertions_stay_removed() -> None:
     assert (
         "clrf        src4382_loss_debounce_b2, BANKED\n"
         "    movlb       0x0\n"
-        "    bra         flow_main_i2c_service_27f0_295c"
+        "    bra         poll_src4382_route_monitor__finalize_pending_route"
     ) not in text
-    assert "flow_main_i2c_service_27f0_ad_monitor_timeout:\n    movlb       0x0" not in text
+    assert "poll_src4382_route_monitor__join_after_monitor_or_timeout:\n    movlb       0x0" not in text
 
 
 def test_v34_usb_service_endpoint_dispatch_uses_compact_common_tails() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "main_usb_service_2f4e", ["main_core_service_301a"])
+    body = _label_body(text, "usb_sie_endpoint_pump", ["float32_to_int32_in_place"])
     nonzero_ep = _label_body(
         text,
-        "flow_main_usb_service_2f4e_2ffe",
-        ["flow_main_usb_service_2f4e_300e"],
+        "usb_sie_endpoint_pump__service_ep0_in_token_if_selected",
+        ["usb_sie_endpoint_pump__advance_transaction_scan"],
     )
 
     assert "flow_main_usb_service_2f4e_2f96:" not in body
     assert "flow_main_usb_service_2f4e_300c:" not in body
-    assert body.count("movwf       stock_07B_b0, BANKED") == 1
+    assert body.count("movwf       usb_selected_bdt_entry_ptr_hi_b0, BANKED") == 1
     _assert_ordered(
         body,
         "movlw       0x04\n"
-        "    movwf       stock_07B_b0, BANKED\n"
+        "    movwf       usb_selected_bdt_entry_ptr_hi_b0, BANKED\n"
         "    btfss       USTAT, 1, ACCESS\n"
         "    movlw       0x00\n"
-        "flow_main_usb_service_2f4e_2f9c:\n"
-        "    movwf       stock_07A_b0, BANKED",
+        "usb_sie_endpoint_pump__select_ep0_out_bd:\n"
+        "    movwf       usb_selected_bdt_entry_ptr_lo_b0, BANKED",
     )
     _assert_ordered(
         nonzero_ep,
         "movf        USTAT, W, ACCESS",
         "xorlw       0x04",
         "bcf         UIR, 3, ACCESS",
-        "bnz         flow_main_usb_service_2f4e_300e",
-        "call        main_usb_service_4412, 0x0",
+        "bnz         usb_sie_endpoint_pump__advance_transaction_scan",
+        "call        usb_ep0_service_in_transaction, 0x0",
     )
     assert nonzero_ep.count("bcf         UIR, 3, ACCESS") == 1
 
@@ -1493,22 +1493,22 @@ def test_v34_redundant_immediate_fallthrough_branches_stay_removed() -> None:
     for redundant in (
         "flow_main_uart_service_1be6_1df0:\n"
         "    movlw       0x05\n"
-        "    bra         uart_update_channel_config_cache_w\n"
-        "uart_update_channel_config_cache_w:",
-        "call        main_usb_service_4412, 0x0\n"
-        "    bra         flow_main_usb_service_2f4e_300e\n"
-        "flow_main_usb_service_2f4e_300e:",
-        "movwf       stock_005_acc, ACCESS\n"
-        "    bra         main_core_service_3fd0\n"
+        "    bra         uart_update_channel_config_cache_from_w_index\n"
+        "uart_update_channel_config_cache_from_w_index:",
+        "call        usb_ep0_service_in_transaction, 0x0\n"
+        "    bra         usb_sie_endpoint_pump__advance_transaction_scan\n"
+        "usb_sie_endpoint_pump__advance_transaction_scan:",
+        "movwf       length_mask_or_divisor_low_scratch_byte, ACCESS\n"
+        "    bra         usb_ep1_in_copy_scratch_buffer_to_bdt\n"
         "\n"
-        "main_core_service_3fd0:",
-        "lfsr        FSR0, stock_410_b4_phys\n"
-        "    bra         usb_endpoint_mark_done_fsr0\n"
+        "usb_ep1_in_copy_scratch_buffer_to_bdt:",
+        "lfsr        FSR0, usb_ep1_in_bd_status_phys\n"
+        "    bra         usb_endpoint_mark_state_done\n"
         "\n"
         "; Shared USB endpoint completion-marker tail",
         "mssp_hard_reset_smp_master:\n"
         "    movlw       0x80\n"
-        "    movwf       stock_003_acc, ACCESS\n"
+        "    movwf       addr_low_counter_or_payload_scratch_byte, ACCESS\n"
         "    movlw       0x08\n"
         "    bra         mssp_hard_reset\n"
         "\n"
@@ -1518,15 +1518,15 @@ def test_v34_redundant_immediate_fallthrough_branches_stay_removed() -> None:
 
     _assert_ordered(
         text,
-        "uart_channel_config_cache_from_00c:\n"
-        "    movf        stock_00C_acc, W, ACCESS\n"
-        "uart_update_channel_config_cache_w:",
-        "call        main_usb_service_4412, 0x0\n"
-        "flow_main_usb_service_2f4e_300e:",
-        "movwf       stock_005_acc, ACCESS\n"
+        "uart_update_channel_config_cache_from_cmd_index:\n"
+        "    movf        uart_channel_index_or_flash_addr_low_or_float32_rx_scratch, W, ACCESS\n"
+        "uart_update_channel_config_cache_from_w_index:",
+        "call        usb_ep0_service_in_transaction, 0x0\n"
+        "usb_sie_endpoint_pump__advance_transaction_scan:",
+        "movwf       length_mask_or_divisor_low_scratch_byte, ACCESS\n"
         "\n"
-        "main_core_service_3fd0:",
-        "lfsr        FSR0, stock_410_b4_phys\n"
+        "usb_ep1_in_copy_scratch_buffer_to_bdt:",
+        "lfsr        FSR0, usb_ep1_in_bd_status_phys\n"
         "\n"
         "; Shared USB endpoint completion-marker tail",
         "mssp_hard_reset_smp_master:\n"
@@ -1539,101 +1539,101 @@ def test_v34_in_range_branch_inversions_stay_collapsed() -> None:
 
     replacements = [
         (
-            "bnz         flow_hid_command_dispatch_1504\n"
-            "    bra         flow_hid_command_dispatch_13ca\n"
-            "flow_hid_command_dispatch_1504:",
-            "bz          flow_hid_command_dispatch_13ca\n"
-            "flow_hid_command_dispatch_1504:",
+            "bnz         fw_update_init_sequence__run_relay_session\n"
+            "    bra         hid_command_dispatch__emit_opcode_status\n"
+            "fw_update_init_sequence__run_relay_session:",
+            "bz          hid_command_dispatch__emit_opcode_status\n"
+            "fw_update_init_sequence__run_relay_session:",
         ),
         (
-            "bnz         flow_fw_update_relay_1662\n"
-            "    bra         flow_fw_update_relay_179c\n"
-            "flow_fw_update_relay_1662:",
-            "bz          flow_fw_update_relay_179c\n"
-            "flow_fw_update_relay_1662:",
+            "bnz         fw_update_relay__emit_saved_addr_checksum\n"
+            "    bra         fw_update_relay__clear_retry_delay_counter\n"
+            "fw_update_relay__emit_saved_addr_checksum:",
+            "bz          fw_update_relay__clear_retry_delay_counter\n"
+            "fw_update_relay__emit_saved_addr_checksum:",
         ),
         (
-            "bnz         flow_main_uart_service_1be6_1d6c\n"
-            "    bra         flow_main_uart_service_1be6_1e6c\n"
-            "flow_main_uart_service_1be6_1d6c:",
-            "bz          flow_main_uart_service_1be6_1e6c\n"
-            "flow_main_uart_service_1be6_1d6c:",
+            "bnz         uart_link_parser__volume_mark_dirty\n"
+            "    bra         uart_link_parser__handler_return_tail\n"
+            "uart_link_parser__volume_mark_dirty:",
+            "bz          uart_link_parser__handler_return_tail\n"
+            "uart_link_parser__volume_mark_dirty:",
         ),
         (
-            "bz          flow_main_uart_service_1be6_1d8a_report\n"
-            "    bra         flow_main_uart_service_1be6_1e6c\n"
-            "flow_main_uart_service_1be6_1d8a_report:",
-            "bnz         flow_main_uart_service_1be6_1e6c\n"
-            "flow_main_uart_service_1be6_1d8a_report:",
+            "bz          uart_link_parser__cmd10_emit_cmd29_status\n"
+            "    bra         uart_link_parser__handler_return_tail\n"
+            "uart_link_parser__cmd10_emit_cmd29_status:",
+            "bnz         uart_link_parser__handler_return_tail\n"
+            "uart_link_parser__cmd10_emit_cmd29_status:",
         ),
         (
-            "bnz         flow_main_uart_service_1be6_1e3c\n"
+            "bnz         uart_link_parser__dispatch_check_cmd06_input_select\n"
             "    bra         cmd04_status_response\n"
-            "flow_main_uart_service_1be6_1e3c:",
+            "uart_link_parser__dispatch_check_cmd06_input_select:",
             "bz          cmd04_status_response\n"
-            "flow_main_uart_service_1be6_1e3c:",
+            "uart_link_parser__dispatch_check_cmd06_input_select:",
         ),
         (
-            "bnz         flow_main_uart_service_1be6_1e42\n"
+            "bnz         uart_link_parser__dispatch_check_cmd07_volume\n"
             "    bra         cmd06_input_select_handler\n"
-            "flow_main_uart_service_1be6_1e42:",
+            "uart_link_parser__dispatch_check_cmd07_volume:",
             "bz          cmd06_input_select_handler\n"
-            "flow_main_uart_service_1be6_1e42:",
+            "uart_link_parser__dispatch_check_cmd07_volume:",
         ),
         (
-            "bnz         flow_main_uart_service_1be6_1e48\n"
+            "bnz         uart_link_parser__dispatch_check_cmd10_and_extended\n"
             "    bra         volume_cmd_handler\n"
-            "flow_main_uart_service_1be6_1e48:",
+            "uart_link_parser__dispatch_check_cmd10_and_extended:",
             "bz          volume_cmd_handler\n"
-            "flow_main_uart_service_1be6_1e48:",
+            "uart_link_parser__dispatch_check_cmd10_and_extended:",
         ),
         (
-            "bnz         flow_main_core_service_2328_2482\n"
-            "    bra         flow_main_core_service_2328_234a\n"
-            "flow_main_core_service_2328_2482:",
-            "bz          flow_main_core_service_2328_234a\n"
-            "flow_main_core_service_2328_2482:",
+            "bnz         stage_hid_ep1_in_report_from_selector__check_selector5\n"
+            "    bra         stage_hid_ep1_in_report_from_selector__stage_selector4_opcode04_reply\n"
+            "stage_hid_ep1_in_report_from_selector__check_selector5:",
+            "bz          stage_hid_ep1_in_report_from_selector__stage_selector4_opcode04_reply\n"
+            "stage_hid_ep1_in_report_from_selector__check_selector5:",
         ),
         (
-            "bnz         flow_main_core_service_2328_2488\n"
-            "    bra         flow_main_core_service_2328_2380\n"
-            "flow_main_core_service_2328_2488:",
-            "bz          flow_main_core_service_2328_2380\n"
-            "flow_main_core_service_2328_2488:",
+            "bnz         stage_hid_ep1_in_report_from_selector__check_selector6_or_echo_range\n"
+            "    bra         stage_hid_ep1_in_report_from_selector__stage_selector5_status_snapshot\n"
+            "stage_hid_ep1_in_report_from_selector__check_selector6_or_echo_range:",
+            "bz          stage_hid_ep1_in_report_from_selector__stage_selector5_status_snapshot\n"
+            "stage_hid_ep1_in_report_from_selector__check_selector6_or_echo_range:",
         ),
         (
-            "bnc         flow_main_core_service_3398_33e8\n"
-            "    bra         flow_main_core_service_3398_3430\n"
-            "flow_main_core_service_3398_33e8:",
-            "bc          flow_main_core_service_3398_3430\n"
-            "flow_main_core_service_3398_33e8:",
+            "bnc         truncate_float32_to_integral_float_in_place__convert_through_int32\n"
+            "    bra         truncate_float32_to_integral_float_in_place__return\n"
+            "truncate_float32_to_integral_float_in_place__convert_through_int32:",
+            "bc          truncate_float32_to_integral_float_in_place__return\n"
+            "truncate_float32_to_integral_float_in_place__convert_through_int32:",
         ),
     ]
     for old, new in replacements:
         assert old not in text
         assert new in text
 
-    fw_update = _label_body(text, "flow_fw_update_relay_1634", ["flow_fw_update_relay_1662"])
+    fw_update = _label_body(text, "fw_update_relay__check_minimum_flash_addr", ["fw_update_relay__emit_saved_addr_checksum"])
     assert (
-        "bc          flow_fw_update_relay_1640\n"
-        "    bra         flow_fw_update_relay_18d0\n"
-        "flow_fw_update_relay_1640:"
+        "bc          fw_update_relay__check_crc_region_limit\n"
+        "    bra         fw_update_relay__advance_payload_cursor\n"
+        "fw_update_relay__check_crc_region_limit:"
     ) not in fw_update
     assert (
-        "bnc         flow_fw_update_relay_164c\n"
-        "    bra         flow_fw_update_relay_18d0\n"
-        "flow_fw_update_relay_164c:"
+        "bnc         fw_update_relay__check_address_alignment\n"
+        "    bra         fw_update_relay__advance_payload_cursor\n"
+        "fw_update_relay__check_address_alignment:"
     ) not in fw_update
     _assert_ordered(
         fw_update,
-        "bnc         fw_update_relay_to_18d0",
-        "flow_fw_update_relay_1640:",
-        "bc          fw_update_relay_to_18d0",
-        "flow_fw_update_relay_164c:",
-        "bra         flow_fw_update_relay_182e",
-        "fw_update_relay_to_18d0:",
-        "bra         flow_fw_update_relay_18d0",
-        "flow_fw_update_relay_165a:",
+        "bnc         fw_update_relay__advance_cursor_trampoline",
+        "fw_update_relay__check_crc_region_limit:",
+        "bc          fw_update_relay__advance_cursor_trampoline",
+        "fw_update_relay__check_address_alignment:",
+        "bra         fw_update_relay__forward_payload_byte",
+        "fw_update_relay__advance_cursor_trampoline:",
+        "bra         fw_update_relay__advance_payload_cursor",
+        "fw_update_relay__check_saved_status_addr:",
     )
 
 
@@ -1660,8 +1660,8 @@ def test_v34_hid_upload_family_uses_compact_range_dispatch() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     body = _label_body(
         text,
-        "flow_hid_command_dispatch_1574",
-        ["flow_hid_command_dispatch_1598"],
+        "hid_command_dispatch__probe_upload_opcode_range",
+        ["hid_command_dispatch__probe_fw_boot_opcode_40"],
     )
 
     _assert_ordered(
@@ -1669,13 +1669,13 @@ def test_v34_hid_upload_family_uses_compact_range_dispatch() -> None:
         "movf        i2c_coeff_2_acc, W, ACCESS",
         "addlw       0xF9",
         "sublw       0x04",
-        "bnc         flow_hid_command_dispatch_157c_not_upload",
-        "bra         flow_hid_command_dispatch_13a2",
-        "flow_hid_command_dispatch_157c_not_upload:",
+        "bnc         hid_command_dispatch__probe_opcode_0c",
+        "bra         hid_command_dispatch__stage_upload_payload",
+        "hid_command_dispatch__probe_opcode_0c:",
         "movf        i2c_coeff_2_acc, W, ACCESS",
         "xorlw       0x0C",
-        "bnz         flow_hid_command_dispatch_1598",
-        "bra         flow_hid_command_dispatch_1398",
+        "bnz         hid_command_dispatch__probe_fw_boot_opcode_40",
+        "bra         hid_command_dispatch__handle_opcode_0c",
     )
     assert "flow_hid_command_dispatch_157a:" not in text
     assert "flow_hid_command_dispatch_1580:" not in text
@@ -1686,7 +1686,7 @@ def test_v34_hid_upload_family_uses_compact_range_dispatch() -> None:
 
 def test_v34_uart_terminal_recovery_branches_directly_to_hard_reset() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "uart_tx_timeout", ["main_timer_service_48a6"])
+    body = _label_body(text, "uart_tx_timeout", ["timer0_rearm_50ms_heartbeat"])
 
     assert "v31_hard_reset_jump2:" not in text
     assert "bc          hard_reset" in body
@@ -1699,35 +1699,35 @@ def test_v34_local_branch_trampolines_stay_collapsed() -> None:
     assert "flow_hid_command_dispatch_15a8b:" not in text
     assert "flow_main_core_service_3188_31f4:" not in text
     assert "flow_main_core_service_3188_31fa:" not in text
-    assert "bnz         flow_hid_command_dispatch_154c" in text
-    assert text.count("bz          flow_main_core_service_3188_324a") >= 2
+    assert "bnz         hid_command_dispatch__unsupported_opcode" in text
+    assert text.count("bz          usb_ep0_dispatch_hid_setup_request__return") >= 2
 
 
 def test_v34_src_nonpcm_read_uses_random_read_zero_flag_directly() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     body = _label_body(
         text,
-        "flow_main_i2c_service_27f0_2924",
-        ["flow_main_i2c_service_27f0_nonpcm_mute"],
+        "poll_src4382_route_monitor__check_scan_index3",
+        ["poll_src4382_route_monitor__assert_nonpcm_mute"],
     )
 
-    assert "movwf       stock_0BF_b0, BANKED\n    movf        stock_0BF_b0, W, BANKED" not in body
-    assert "movf        stock_0B6_b0, W, BANKED\n    xorlw       0x03" not in body
+    assert "movwf       src4382_audio_format_latch_b0, BANKED\n    movf        src4382_audio_format_latch_b0, W, BANKED" not in body
+    assert "movf        src4382_autodetect_scan_index_b0, W, BANKED\n    xorlw       0x03" not in body
     _assert_ordered(
         body,
-        "flow_main_i2c_service_27f0_2924:",
+        "poll_src4382_route_monitor__check_scan_index3:",
         "xorlw       0x01",
-        "bnz         flow_main_i2c_service_27f0_292e",
+        "bnz         poll_src4382_route_monitor__read_audio_format",
         "movlw       0x04",
-        "movwf       stock_093_b0, BANKED",
+        "movwf       pending_route_request_b0, BANKED",
     )
     _assert_ordered(
         body,
-        "rcall       i2c_secondary_dev_random_read_window",
-        "bc          flow_main_i2c_service_27f0_ad_monitor",
+        "rcall       i2c_secondary_dev_random_read_call_range_trampoline",
+        "bc          poll_src4382_route_monitor__reload_source_monitor_countdown",
         "movlb       0x0",
-        "movwf       stock_0BF_b0, BANKED",
-        "bnz         flow_main_i2c_service_27f0_nonpcm_mute",
+        "movwf       src4382_audio_format_latch_b0, BANKED",
+        "bnz         poll_src4382_route_monitor__assert_nonpcm_mute",
     )
 
 
@@ -1736,16 +1736,16 @@ def test_v34_i2c_timeout_final_actions_are_tail_branches() -> None:
 
     assert "preset_job_apply_i2c_recover:" not in text
     expected = {
-        "main_i2c_service_381c_timeout": (
-            ["main_i2c_service_381c_pen_timeout"],
+        "preset_table_apply_entry_legacy__timeout_recover": (
+            ["preset_table_apply_entry_legacy__pen_timeout_recover"],
             "goto        i2c_timeout_recover_advertise",
         ),
-        "main_i2c_service_381c_pen_timeout": (
+        "preset_table_apply_entry_legacy__pen_timeout_recover": (
             ["preset_table_apply_entry_core"],
             "goto        i2c_pen_timeout_recover_advertise",
         ),
-        "flow_i2c_byte_tx_timeout": (
-            ["chain_copy_mid_window"],
+        "i2c_byte_tx__timeout_recover": (
+            ["chain_copy_call_range_trampoline_mid"],
             "goto        i2c_timeout_recover_advertise",
         ),
         "i2c_reg1f_timeout": (
@@ -1753,7 +1753,7 @@ def test_v34_i2c_timeout_final_actions_are_tail_branches() -> None:
             "bra         i2c_timeout_recover_advertise",
         ),
         "i2c_reg1f_pen_timeout": (
-            ["i2c_send_stock006_stop"],
+            ["i2c_send_staged_data_byte_and_stop"],
             "bra         i2c_pen_timeout_recover_advertise",
         ),
         "coeff_write_timeout": (
@@ -1761,7 +1761,7 @@ def test_v34_i2c_timeout_final_actions_are_tail_branches() -> None:
             "bra         i2c_timeout_recover_advertise",
         ),
         "coeff_write_pen_timeout": (
-            ["main_core_service_4516"],
+            ["drive_audio_route_select_latches"],
             "bra         i2c_pen_timeout_recover_advertise",
         ),
         "i2c_secondary_timeout": (
@@ -1769,15 +1769,15 @@ def test_v34_i2c_timeout_final_actions_are_tail_branches() -> None:
             "bra         i2c_timeout_recover_advertise",
         ),
         "i2c_secondary_pen_timeout": (
-            ["main_flash_service_46de"],
+            ["eeprom_write_byte_if_changed"],
             "bra         i2c_pen_timeout_recover_advertise",
         ),
         "preset_job_apply_i2c_timeout": (
             ["preset_select_handler"],
             "bra         i2c_timeout_recover_advertise",
         ),
-        "main_i2c_service_464c_timeout": (
-            ["main_core_service_4672"],
+        "i2c_receive_sspbuf_bounded__timeout": (
+            ["fw_update_emit_zero_status_lines"],
             "bra         i2c_secondary_dev_random_timeout",
         ),
     }
@@ -1792,17 +1792,17 @@ def test_v34_i2c_timeout_final_actions_are_tail_branches() -> None:
 
     reg1f = _label_body(text, "i2c_tas3108_reg1f_write", ["i2c_byte_tx_zero"])
     secondary = _label_body(text, "i2c_secondary_dev_write", ["i2c_secondary_timeout"])
-    stop_helper = _label_body(text, "i2c_send_stock006_stop", ["i2c_byte_tx_zero"])
+    stop_helper = _label_body(text, "i2c_send_staged_data_byte_and_stop", ["i2c_byte_tx_zero"])
     _assert_ordered(
         stop_helper,
-        "movf        stock_006_acc, W, ACCESS",
+        "movf        status_addr_high_or_i2c_payload_scratch_byte, W, ACCESS",
         "rcall       i2c_byte_tx",
         "bsf         SSPCON2, 2, ACCESS",
         "bra         wait_pen_bounded",
     )
     assert "rcall       wait_pen_bounded" not in stop_helper
-    _assert_ordered(reg1f, "rcall       i2c_send_stock006_stop", "bc          i2c_reg1f_pen_timeout")
-    _assert_ordered(secondary, "rcall       i2c_send_stock006_stop", "bc          i2c_secondary_pen_timeout")
+    _assert_ordered(reg1f, "rcall       i2c_send_staged_data_byte_and_stop", "bc          i2c_reg1f_pen_timeout")
+    _assert_ordered(secondary, "rcall       i2c_send_staged_data_byte_and_stop", "bc          i2c_secondary_pen_timeout")
 
 
 def test_v34_newly_reachable_far_helpers_use_rcall_only_where_in_range() -> None:
@@ -1810,7 +1810,7 @@ def test_v34_newly_reachable_far_helpers_use_rcall_only_where_in_range() -> None
     random_read_pen = _label_body(
         text,
         "i2c_secondary_dev_random_pen_timeout",
-        ["main_core_service_427a"],
+        ["adc_remainder_staged_words"],
     )
     volume_retry = _label_body(text, "vol_write_nacked", ["vol_diag_d_skip"])
 
@@ -1836,60 +1836,60 @@ def test_v34_usb_filename_compare_and_page1_setup_use_compact_forms() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     filename_tail = _label_body(
         text,
-        "flow_hid_command_dispatch_111a",
-        ["flow_hid_command_dispatch_1126"],
+        "hid_command_dispatch__stage_opcode03_status",
+        ["hid_command_dispatch__arm_timer0_after_update"],
     )
     filename_subcommand_tail = _label_body(
         text,
-        "flow_hid_command_dispatch_11c0",
-        ["flow_hid_command_dispatch_11ce"],
+        "hid_command_dispatch__check_opcode04_quick_status_modes",
+        ["hid_command_dispatch__apply_settings_payload"],
     )
     settings_diff = _label_body(
         text,
-        "flow_hid_command_dispatch_12ca",
-        ["flow_hid_command_dispatch_12e0"],
+        "hid_command_dispatch__check_mute_state_dirty",
+        ["hid_command_dispatch__check_channel_setup_dirty"],
     )
     preset_erase = _label_body(
         text,
-        "flow_hid_command_dispatch_11a4",
-        ["flow_hid_command_dispatch_11b2"],
+        "hid_command_dispatch__fill_opcode04_payload_byte_ff",
+        ["hid_command_dispatch__advance_opcode04_payload_index"],
     )
 
     _assert_ordered(
         filename_tail,
-        "movf        stock_097_b0, W, BANKED",
+        "movf        hid_opcode03_subcommand_b0, W, BANKED",
         "xorlw       0x09",
-        "bz          flow_hid_command_dispatch_111a_dirty",
+        "bz          hid_command_dispatch__mark_filename_ram_dirty",
         "xorlw       0x03",
-        "bnz         flow_hid_command_dispatch_1126",
+        "bnz         hid_command_dispatch__arm_timer0_after_update",
     )
-    assert "movf        stock_097_b0, W, BANKED\n    xorlw       0x0A" not in filename_tail
+    assert "movf        hid_opcode03_subcommand_b0, W, BANKED\n    xorlw       0x0A" not in filename_tail
     _assert_ordered(
         filename_subcommand_tail,
-        "movf        stock_0B5_b0, W, BANKED",
+        "movf        hid_opcode04_payload_mode_b0, W, BANKED",
         "andlw       0xFD",
         "xorlw       0x05",
-        "bz          flow_hid_command_dispatch_112a",
-        "bra         flow_hid_command_dispatch_15aa",
+        "bz          hid_command_dispatch__delay_before_status_response",
+        "bra         hid_command_dispatch__clear_opcode_and_return",
     )
-    assert "movf        stock_0B5_b0, W, BANKED\n    xorlw       0x07" not in filename_subcommand_tail
+    assert "movf        hid_opcode04_payload_mode_b0, W, BANKED\n    xorlw       0x07" not in filename_subcommand_tail
     assert "xorlw       0x02" not in filename_subcommand_tail
     _assert_ordered(
         settings_diff,
-        "clrf        stock_04C_acc, ACCESS",
+        "clrf        diff_count_update_compare_or_route_mask_scratch_byte, ACCESS",
         "btfsc       active_flags_acc, 4, ACCESS",
-        "incf        stock_04C_acc, F, ACCESS",
+        "incf        diff_count_update_compare_or_route_mask_scratch_byte, F, ACCESS",
         "btfsc       active_flags_acc, 5, ACCESS",
-        "btg         stock_04C_acc, 0, ACCESS",
-        "movf        stock_04C_acc, F, ACCESS",
+        "btg         diff_count_update_compare_or_route_mask_scratch_byte, 0, ACCESS",
+        "movf        diff_count_update_compare_or_route_mask_scratch_byte, F, ACCESS",
     )
     _assert_ordered(
         preset_erase,
         "addwf       i2c_coeff_3_acc, W, ACCESS",
-        "rcall       setup_fsr2_page_1",
+        "rcall       setup_fsr2_page1_from_w",
         "setf        INDF2, ACCESS",
     )
-    assert "call        setup_fsr2_page_1, 0x0" not in preset_erase
+    assert "call        setup_fsr2_page1_from_w, 0x0" not in preset_erase
 
 
 def test_v34_unconditional_call_return_tails_are_direct_branches() -> None:
@@ -1901,47 +1901,47 @@ def test_v34_unconditional_call_return_tails_are_direct_branches() -> None:
             "goto        send_dsp_fault_status",
             "call        send_dsp_fault_status",
         ),
-        "flow_cmd_dispatch_gated_1990": (
-            ["flow_cmd_dispatch_gated_volume_unmuted"],
-            "bra         main_timer_service_48a6_low_window",
-            "call        main_timer_service_48a6",
+        "cmd_dispatch_gated__input_route_write_complete": (
+            ["cmd_dispatch_gated__apply_unmuted_volume_dirty"],
+            "bra         timer0_rearm_50ms_low_window_trampoline",
+            "call        timer0_rearm_50ms_heartbeat",
         ),
         "cmd_dispatch_route_sync_if_dirty": (
-            ["usb_mailbox_service_05"],
-            "bra         main_timer_service_48a6_low_window",
-            "call        main_timer_service_48a6",
+            ["usb_hid_mailbox_stage_selector5_if_enabled"],
+            "bra         timer0_rearm_50ms_low_window_trampoline",
+            "call        timer0_rearm_50ms_heartbeat",
         ),
-        "flow_cmd_dispatch_gated_1bd6": (
+        "cmd_dispatch_gated__check_setup_profile_eeprom_dirty": (
             ["cmd_dispatch_route_sync_if_dirty"],
-            "bra         main_timer_service_48a6_low_window",
-            "call        main_timer_service_48a6",
+            "bra         timer0_rearm_50ms_low_window_trampoline",
+            "call        timer0_rearm_50ms_heartbeat",
         ),
-        "usb_mailbox_service_05": (
-            ["setup_fsr2_page_1_or_2"],
-            "goto        main_usb_service_45a2",
-            "call        main_usb_service_45a2",
+        "usb_hid_mailbox_stage_selector5_if_enabled": (
+            ["setup_fsr2_page1_or_page2_from_w_carry"],
+            "goto        usb_hid_mailbox_send_reply_if_ready",
+            "call        usb_hid_mailbox_send_reply_if_ready",
         ),
-        "main_core_service_4574_final": (
-            ["main_usb_service_45a2"],
+        "preset_replay_selected_table_blocking__apply_final_entry": (
+            ["usb_hid_mailbox_send_reply_if_ready"],
             "bra         preset_job_apply_i2c_from_job_cursor",
             "rcall       preset_job_apply_i2c_from_job_cursor",
         ),
-        "main_usb_service_45a2": (
-            ["main_core_service_45ce"],
-            "bra         usb_stage_5a40_and_service_3fd0",
-            "rcall       usb_stage_5a40_and_service_3fd0",
+        "usb_hid_mailbox_send_reply_if_ready": (
+            ["uint8_to_float32_and_save"],
+            "bra         usb_ep1_in_send_hid_reply_buffer",
+            "rcall       usb_ep1_in_send_hid_reply_buffer",
         ),
-        "main_flash_service_46de": (
-            ["main_core_service_48fe"],
+        "eeprom_write_byte_if_changed": (
+            ["usb_ep1_configure_if_enabled"],
             "bra         eeprom_write_blocking",
             "rcall       eeprom_write_blocking",
         ),
-        "main_core_service_48fe": (
-            ["main_timer_service_48a6"],
-            "bra         main_usb_service_4624",
-            "rcall       main_usb_service_4624",
+        "usb_ep1_configure_if_enabled": (
+            ["timer0_rearm_50ms_heartbeat"],
+            "bra         usb_ep1_configure_hid_buffers",
+            "rcall       usb_ep1_configure_hid_buffers",
         ),
-        "i2c_send_stock006_stop": (
+        "i2c_send_staged_data_byte_and_stop": (
             ["i2c_byte_tx_zero"],
             "bra         wait_pen_bounded",
             "rcall       wait_pen_bounded",
@@ -1958,13 +1958,13 @@ def test_v34_branch_only_alias_labels_share_target_addresses() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
 
     aliases = {
-        "flow_cmd_dispatch_gated_reapply_wait_name": "flow_cmd_dispatch_gated_1a9c",
-        "flow_main_i2c_service_27f0_ad_monitor_timeout": "flow_main_i2c_service_27f0_295c",
-        "repeat_w_main_core_service_30cc": "repeat_w_main_core_service_30cc_check",
-        "main_usb_service_4812": "flow_main_usb_service_4812_481e",
-        "main_uart_service_4860": "flow_main_uart_service_4860_4866",
+        "cmd_dispatch_gated__defer_reapply_until_filename_ready": "cmd_dispatch_gated__check_mute_dirty",
+        "poll_src4382_route_monitor__join_after_monitor_or_timeout": "poll_src4382_route_monitor__finalize_pending_route",
+        "shift_029_02c_right_w_minus_one": "shift_029_02c_right_w_minus_one__check_remaining",
+        "usb_delay_countdown_with_clrwdt": "usb_delay_countdown_with_clrwdt__check_remaining",
+        "uart_rx_ring_drain_all": "uart_rx_ring_drain_all__check_more",
         "preset_job_commit_rearm": "preset_job_pending_timer",
-        "preset_job_commit_idle": "preset_job_cancel_done",
+        "preset_job_commit_idle": "preset_job_service__clear_state_and_return",
     }
     for alias, target in aliases.items():
         body = _label_body(text, alias, [target])
@@ -1977,24 +1977,24 @@ def test_v34_dead_w_zero_tests_use_tstfsz_skip_shape() -> None:
 
     expected = [
         "tstfsz      input_select_b0, BANKED\n    bsf         event_flags_b0, 3, BANKED",
-        "tstfsz      stock_0FD_b0, BANKED\n    goto        main_usb_service_45a2",
+        "tstfsz      cmd_dispatch_hid_mailbox_enable_b0, BANKED\n    goto        usb_hid_mailbox_send_reply_if_ready",
         "tstfsz      rx_frame_position_b0, BANKED\n    incf        rx_frame_position_b0, F, BANKED",
-        "tstfsz      stock_009_acc, ACCESS\n    return      0",
-        "tstfsz      stock_008_acc, ACCESS\n    bsf         stock_006_acc, 7, ACCESS",
-        "tstfsz      stock_0FE_b0, BANKED\n    call        flash_write_with_gie_off, 0x0",
-        "tstfsz      stock_00B_acc, ACCESS\n    bsf         INTCON, 7, ACCESS",
+        "tstfsz      flash_src_low_or_rx_length_scratch_byte, ACCESS\n    return      0",
+        "tstfsz      flash_end_high_or_loop_mask_scratch_byte, ACCESS\n    bsf         status_addr_high_or_i2c_payload_scratch_byte, 7, ACCESS",
+        "tstfsz      boot_config_marker_valid_b0, BANKED\n    call        flash_write_with_gie_off, 0x0",
+        "tstfsz      eeprom_gate_flash_gie_or_uart_timeout_scratch_byte, ACCESS\n    bsf         INTCON, 7, ACCESS",
     ]
     for snippet in expected:
         assert snippet in text
 
     removed = [
         "movf        input_select_b0, W, BANKED\n    btfss       STATUS, 2, ACCESS",
-        "movf        stock_0FD_b0, W, BANKED\n    btfss       STATUS, 2, ACCESS",
+        "movf        cmd_dispatch_hid_mailbox_enable_b0, W, BANKED\n    btfss       STATUS, 2, ACCESS",
         "movf        rx_frame_position_b0, W, BANKED\n    btfss       STATUS, 2, ACCESS",
-        "movf        stock_009_acc, W, ACCESS\n    btfss       STATUS, 2, ACCESS",
-        "movf        stock_008_acc, W, ACCESS\n    btfss       STATUS, 2, ACCESS",
-        "movf        stock_0FE_b0, W, BANKED\n    btfss       STATUS, 2, ACCESS",
-        "movf        stock_00B_acc, W, ACCESS\n    btfss       STATUS, 2, ACCESS",
+        "movf        flash_src_low_or_rx_length_scratch_byte, W, ACCESS\n    btfss       STATUS, 2, ACCESS",
+        "movf        flash_end_high_or_loop_mask_scratch_byte, W, ACCESS\n    btfss       STATUS, 2, ACCESS",
+        "movf        boot_config_marker_valid_b0, W, BANKED\n    btfss       STATUS, 2, ACCESS",
+        "movf        eeprom_gate_flash_gie_or_uart_timeout_scratch_byte, W, ACCESS\n    btfss       STATUS, 2, ACCESS",
     ]
     for snippet in removed:
         assert snippet not in text
@@ -2002,8 +2002,8 @@ def test_v34_dead_w_zero_tests_use_tstfsz_skip_shape() -> None:
 
 def test_v34_math_result_helpers_share_fsr2_rewind_tail() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    first = _label_body(text, "math_result_fsr2_rewind2", ["main_core_service_3f1e"])
-    second = _label_body(text, "main_core_service_3f1e", ["intel_hex_checksum_update"])
+    first = _label_body(text, "rewind_fsr2_after_four_byte_math_result_store", ["float32_add_staged_operand_to_ram_window_in_place"])
+    second = _label_body(text, "float32_add_staged_operand_to_ram_window_in_place", ["intel_hex_checksum_update"])
 
     _assert_ordered(
         first,
@@ -2014,48 +2014,48 @@ def test_v34_math_result_helpers_share_fsr2_rewind_tail() -> None:
     assert first.count("decf        FSR2L, F, ACCESS") == 2
     _assert_ordered(
         second,
-        "lfsr        FSR0, stock_033_b0_phys",
-        "rcall       copy4_postinc0_to_postinc2_rewind2",
-        "bra         math_result_fsr2_rewind2",
+        "lfsr        FSR0, math_temp_result_buffer_phys",
+        "rcall       copy_four_bytes_fsr0_to_fsr2_rewind2",
+        "bra         rewind_fsr2_after_four_byte_math_result_store",
     )
-    assert "movff       stock_036_b0_phys, POSTDEC2\n    decf        FSR2L, F, ACCESS" not in second
+    assert "movff       math_temp_result_byte3_b0_phys, POSTDEC2\n    decf        FSR2L, F, ACCESS" not in second
 
 
 def test_v34_volume_dsp_path_uses_chain_copy_for_four_byte_stage_runs() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "flow_cmd_dispatch_gated_19e6", ["flow_cmd_dispatch_gated_volume_done"])
+    body = _label_body(text, "cmd_dispatch_gated__stage_volume_coefficients", ["cmd_dispatch_gated__volume_write_complete"])
 
     for old_copy in (
-        "movff       stock_00D_b0_phys, stock_012_b0_phys",
-        "movff       stock_00E_b0_phys, stock_013_b0_phys",
-        "movff       stock_00F_b0_phys, stock_014_b0_phys",
-        "movff       stock_010_b0_phys, stock_015_b0_phys",
-        "movff       stock_02F_b0_phys, i2c_coeff_0_b0_phys",
-        "movff       stock_030_b0_phys, i2c_coeff_1_b0_phys",
-        "movff       stock_031_b0_phys, i2c_coeff_2_b0_phys",
-        "movff       stock_032_b0_phys, i2c_coeff_3_b0_phys",
+        "movff       flash_saved_tblptrh_phys, fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys",
+        "movff       flash_addr_high_or_adc_loop_or_bsr_save_scratch_phys, eeprom_record_count_or_flash_addr_upper_or_preset_addr_low_phys",
+        "movff       adc_loop_value_or_uart_rx_byte_or_flash_read_tblptrl_save_phys, flash_addr_shadow_low_or_preset_table_addr_hi_phys",
+        "movff       float32_sign_or_uart_digit_or_flash_read_tblptrh_save_phys, float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys",
+        "movff       float32_preset_fw_update_scratch_byte0_b0_phys, i2c_coeff_0_b0_phys",
+        "movff       preset_payload_index_or_float32_shadow_byte1_b0_phys, i2c_coeff_1_b0_phys",
+        "movff       preset_table_row_len_phys, i2c_coeff_2_b0_phys",
+        "movff       float32_transform_shadow_byte3_b0_phys, i2c_coeff_3_b0_phys",
     ):
         assert old_copy not in body
 
     _assert_ordered(
         body,
-        "call        main_core_service_3e0a, 0x0",
-        "rcall       chain_copy_low_window",
-        "db          0x00, 0x00, stock_00D_acc_op, stock_012_acc_op, 0x04, 0xFF",
+        "call        int32_to_float32_and_save, 0x0",
+        "rcall       chain_copy_call_range_trampoline_low",
+        "db          0x00, 0x00, float32_coeff_or_volume_work_operand_op, float32_i2c_coeff_or_volume_work_operand_op, 0x04, 0xFF",
         "movlw       0x47",
-        "call        main_core_service_2abc, 0x0",
+        "call        float32_multiply_primary_by_secondary_in_place, 0x0",
         "call        chain_copy, 0x0",
-        "db          0x00, 0x00, stock_012_acc_op, stock_0ED_b0_op, 0x04, stock_0ED_b0_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF",
-        "call        main_core_service_297e, 0x0",
-        "rcall       chain_copy_low_window",
-        "db          0x00, 0x00, stock_02F_acc_op, i2c_coeff_0_acc_op, 0x04, 0xFF",
+        "db          0x00, 0x00, float32_i2c_coeff_or_volume_work_operand_op, volume_dsp_coeff_input_shadow_byte0_op, 0x04, volume_dsp_coeff_input_shadow_byte0_op, float32_transform_shadow_dword_op, 0x04, 0xFF, 0xFF",
+        "call        float32_exp_limit1024_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_low",
+        "db          0x00, 0x00, float32_transform_shadow_dword_op, i2c_coeff_0_acc_op, 0x04, 0xFF",
         "call        volume_dsp_write, 0x0",
     )
 
 
 def test_v34_core_38a2_and_volume_mirror_use_chain_copy_stage_runs() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    core = _label_body(text, "main_i2c_service_39a6", ["signed_hi_bias80_compare_prelude"])
+    core = _label_body(text, "i2c_emit_tas3108_coeff_from_staged_float", ["signed_hi_bias80_compare_prelude"])
     mirror = _label_body(
         text,
         "copy_computed_volume_to_logical_volume",
@@ -2063,18 +2063,18 @@ def test_v34_core_38a2_and_volume_mirror_use_chain_copy_stage_runs() -> None:
     )
 
     for old_copy in (
-        "movff       stock_02F_b0_phys, stock_03D_b0_phys",
-        "movff       stock_030_b0_phys, stock_03E_b0_phys",
-        "movff       stock_031_b0_phys, stock_03F_b0_phys",
-        "movff       stock_032_b0_phys, stock_040_b0_phys",
-        "movff       stock_041_b0_phys, stock_02F_b0_phys",
-        "movff       stock_042_b0_phys, stock_030_b0_phys",
-        "movff       stock_043_b0_phys, stock_031_b0_phys",
-        "movff       stock_044_b0_phys, stock_032_b0_phys",
-        "movff       stock_02F_b0_phys, stock_041_b0_phys",
-        "movff       stock_030_b0_phys, stock_042_b0_phys",
-        "movff       stock_031_b0_phys, stock_043_b0_phys",
-        "movff       stock_032_b0_phys, stock_044_b0_phys",
+        "movff       float32_preset_fw_update_scratch_byte0_b0_phys, tas3108_coeff_result_byte0_b0_phys",
+        "movff       preset_payload_index_or_float32_shadow_byte1_b0_phys, tas3108_coeff_result_byte1_b0_phys",
+        "movff       preset_table_row_len_phys, tas3108_coeff_result_byte2_b0_phys",
+        "movff       float32_transform_shadow_byte3_b0_phys, tas3108_coeff_result_sign_byte_b0_phys",
+        "movff       tas3108_coeff_transform_work_byte0_b0_phys, float32_preset_fw_update_scratch_byte0_b0_phys",
+        "movff       tas3108_coeff_transform_work_byte1_b0_phys, preset_payload_index_or_float32_shadow_byte1_b0_phys",
+        "movff       fw_update_line_checksum_ok_b0_phys, preset_table_row_len_phys",
+        "movff       fw_update_crc_feedback_scratch_b0_phys, float32_transform_shadow_byte3_b0_phys",
+        "movff       float32_preset_fw_update_scratch_byte0_b0_phys, tas3108_coeff_transform_work_byte0_b0_phys",
+        "movff       preset_payload_index_or_float32_shadow_byte1_b0_phys, tas3108_coeff_transform_work_byte1_b0_phys",
+        "movff       preset_table_row_len_phys, fw_update_line_checksum_ok_b0_phys",
+        "movff       float32_transform_shadow_byte3_b0_phys, fw_update_crc_feedback_scratch_b0_phys",
     ):
         assert old_copy not in core
     for old_copy in (
@@ -2087,17 +2087,17 @@ def test_v34_core_38a2_and_volume_mirror_use_chain_copy_stage_runs() -> None:
 
     _assert_ordered(
         core,
-        "db          0x00, 0x00, stock_041_acc_op, stock_039_acc_op, 0x04, stock_041_acc_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF",
-        "rcall       main_core_service_3398",
-        "db          0x00, 0x00, stock_02F_acc_op, stock_03D_acc_op, 0x04, 0xFF",
-        "call        main_core_service_24c2, 0x0",
-        "db          0x00, 0x00, stock_020_acc_op, stock_039_acc_op, 0x04, 0xFF",
-        "db          0x00, 0x00, stock_039_acc_op, stock_045_acc_op, 0x04, stock_045_acc_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF",
+        "db          0x00, 0x00, tas3108_coeff_transform_work_dword_op, tas3108_coeff_work_accum_dword_op, 0x04, tas3108_coeff_transform_work_dword_op, float32_transform_shadow_dword_op, 0x04, 0xFF, 0xFF",
+        "rcall       truncate_float32_to_integral_float_in_place",
+        "db          0x00, 0x00, float32_transform_shadow_dword_op, tas3108_coeff_result_dword_op, 0x04, 0xFF",
+        "call        float32_add_secondary_to_primary_in_place, 0x0",
+        "db          0x00, 0x00, float32_accum_work_byte0_op, tas3108_coeff_work_accum_dword_op, 0x04, 0xFF",
+        "db          0x00, 0x00, tas3108_coeff_work_accum_dword_op, tas3108_coeff_secondary_work_dword_op, 0x04, tas3108_coeff_secondary_work_dword_op, float32_transform_shadow_dword_op, 0x04, 0xFF, 0xFF",
         "movlw       0x41",
-        "rcall       main_core_service_3f1e",
-        "db          0x00, 0x00, stock_041_acc_op, stock_02F_acc_op, 0x04, 0xFF",
-        "rcall       main_core_service_3398",
-        "db          0x00, 0x00, stock_02F_acc_op, stock_041_acc_op, 0x04, 0xFF",
+        "rcall       float32_add_staged_operand_to_ram_window_in_place",
+        "db          0x00, 0x00, tas3108_coeff_transform_work_dword_op, float32_transform_shadow_dword_op, 0x04, 0xFF",
+        "rcall       truncate_float32_to_integral_float_in_place",
+        "db          0x00, 0x00, float32_transform_shadow_dword_op, tas3108_coeff_transform_work_dword_op, 0x04, 0xFF",
         "bra         i2c_byte_tx",
     )
     _assert_ordered(
@@ -2110,7 +2110,7 @@ def test_v34_core_38a2_and_volume_mirror_use_chain_copy_stage_runs() -> None:
 
 def test_v34_chain_copy_eeprom_mode_keeps_pseudo_page_out_of_fsr0h() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "chain_copy", ["s3_math_stage_025"])
+    body = _label_body(text, "chain_copy", ["copy_transform_shadow_to_math_operand"])
 
     assert "movf        FSR0H, W, ACCESS" not in body
     assert "movff       chain_copy_srch, FSR0H" not in body
@@ -2118,10 +2118,10 @@ def test_v34_chain_copy_eeprom_mode_keeps_pseudo_page_out_of_fsr0h() -> None:
         body,
         "movf        chain_copy_srch_b3, W, BANKED",
         "xorlw       0xEE",
-        "bnz         chain_copy_ram_read",
+        "bnz         chain_copy__read_ram_source_byte",
         "movf        chain_copy_srcl_b3, W, BANKED",
-        "call        eeprom_read_byte_W, 0x0",
-        "chain_copy_ram_read:",
+        "call        eeprom_read_byte_at_w, 0x0",
+        "chain_copy__read_ram_source_byte:",
         "movff       chain_copy_srcl_b3_phys, FSR0L",
         "movff       chain_copy_srch_b3_phys, FSR0H",
     )
@@ -2156,87 +2156,87 @@ def test_v34_chain_copy_descriptors_are_well_formed_and_eeprom_only_where_expect
 
     assert len(eeprom_descriptors) == 2
     assert any("computed_volume_3_b0_op" in descriptor for descriptor in eeprom_descriptors)
-    assert any("stock_09B_b0_op" in descriptor for descriptor in eeprom_descriptors)
+    assert any("route_0_volume_trim_op" in descriptor for descriptor in eeprom_descriptors)
 
 
 def test_v34_chain_copy_windows_use_local_tos_trampolines() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    low_wrapper = _label_body(text, "chain_copy_low_window", ["cmd_dispatch_gated"])
-    mid_wrapper = _label_body(text, "chain_copy_mid_window", ["main_core_service_3ec4"])
+    low_wrapper = _label_body(text, "chain_copy_call_range_trampoline_low", ["cmd_dispatch_gated"])
+    mid_wrapper = _label_body(text, "chain_copy_call_range_trampoline_mid", ["float32_multiply_ram_window_by_staged_operand_in_place"])
 
-    _assert_ordered(low_wrapper, "chain_copy_low_window:", "goto        chain_copy")
-    _assert_ordered(mid_wrapper, "chain_copy_mid_window:", "goto        chain_copy")
+    _assert_ordered(low_wrapper, "chain_copy_call_range_trampoline_low:", "goto        chain_copy")
+    _assert_ordered(mid_wrapper, "chain_copy_call_range_trampoline_mid:", "goto        chain_copy")
 
     low_bodies = {
-        "flow_hid_command_dispatch_124e": (_label_body(text, "flow_hid_command_dispatch_124e", ["flow_hid_command_dispatch_129c"]), 1),
-        "flow_hid_command_dispatch_1344": (_label_body(text, "flow_hid_command_dispatch_1344", ["flow_hid_command_dispatch_1374"]), 1),
-        "flow_cmd_dispatch_gated_19e6": (_label_body(text, "flow_cmd_dispatch_gated_19e6", ["flow_cmd_dispatch_gated_volume_done"]), 2),
-        "main_core_service_1e88": (_label_body(text, "main_core_service_1e88", ["main_core_service_2328"]), 4),
+        "hid_command_dispatch__compare_settings_mirrors": (_label_body(text, "hid_command_dispatch__compare_settings_mirrors", ["hid_command_dispatch__mark_volume_dirty_if_changed"]), 1),
+        "hid_command_dispatch__snapshot_settings_mirrors": (_label_body(text, "hid_command_dispatch__snapshot_settings_mirrors", ["hid_command_dispatch__stage_status_05"]), 1),
+        "cmd_dispatch_gated__stage_volume_coefficients": (_label_body(text, "cmd_dispatch_gated__stage_volume_coefficients", ["cmd_dispatch_gated__volume_write_complete"]), 2),
+        "restore_eeprom_settings_on_boot": (_label_body(text, "restore_eeprom_settings_on_boot", ["stage_hid_ep1_in_report_from_selector"]), 4),
     }
     for label, (body, expected) in low_bodies.items():
-        assert body.count("rcall       chain_copy_low_window") == expected, label
-        if label == "flow_cmd_dispatch_gated_19e6":
+        assert body.count("rcall       chain_copy_call_range_trampoline_low") == expected, label
+        if label == "cmd_dispatch_gated__stage_volume_coefficients":
             assert body.count("call        chain_copy, 0x0") == 1, label
         else:
             assert "call        chain_copy, 0x0" not in body, label
 
     mid_bodies = {
-        "s3_coeff_stage_049": (_label_body(text, "s3_coeff_stage_049", ["main_i2c_service_39a6"]), 1),
-        "main_i2c_service_39a6": (_label_body(text, "main_i2c_service_39a6", ["signed_hi_bias80_compare_prelude"]), 11),
-        "main_core_service_3e0a": (_label_body(text, "main_core_service_3e0a", ["sspcon1_masked_w"]), 1),
-        "main_core_service_3ec4": (_label_body(text, "main_core_service_3ec4", ["main_core_service_3f1e"]), 2),
-        "main_core_service_3f1e": (_label_body(text, "main_core_service_3f1e", ["intel_hex_checksum_update"]), 2),
-        "main_flash_service_46de": (_label_body(text, "main_flash_service_46de", ["main_core_service_48fe"]), 1),
+        "stage_tas3108_coeff_input_scratch": (_label_body(text, "stage_tas3108_coeff_input_scratch", ["i2c_emit_tas3108_coeff_from_staged_float"]), 1),
+        "i2c_emit_tas3108_coeff_from_staged_float": (_label_body(text, "i2c_emit_tas3108_coeff_from_staged_float", ["signed_hi_bias80_compare_prelude"]), 11),
+        "int32_to_float32_and_save": (_label_body(text, "int32_to_float32_and_save", ["sspcon1_masked_w"]), 1),
+        "float32_multiply_ram_window_by_staged_operand_in_place": (_label_body(text, "float32_multiply_ram_window_by_staged_operand_in_place", ["float32_add_staged_operand_to_ram_window_in_place"]), 2),
+        "float32_add_staged_operand_to_ram_window_in_place": (_label_body(text, "float32_add_staged_operand_to_ram_window_in_place", ["intel_hex_checksum_update"]), 2),
+        "eeprom_write_byte_if_changed": (_label_body(text, "eeprom_write_byte_if_changed", ["usb_ep1_configure_if_enabled"]), 1),
     }
     for label, (body, expected) in mid_bodies.items():
-        assert body.count("rcall       chain_copy_mid_window") == expected, label
+        assert body.count("rcall       chain_copy_call_range_trampoline_mid") == expected, label
         assert "call        chain_copy, 0x0" not in body, label
 
 
 def test_v34_i2c_service_39a6_uses_chain_copy_for_four_byte_stage_runs() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "main_i2c_service_39a6", ["signed_hi_bias80_compare_prelude"])
+    body = _label_body(text, "i2c_emit_tas3108_coeff_from_staged_float", ["signed_hi_bias80_compare_prelude"])
 
-    assert "movff       stock_049_b0_phys, stock_012_b0_phys" not in body
-    assert "movff       stock_012_b0_phys, stock_041_b0_phys" not in body
-    assert "movff       stock_025_b0_phys, stock_051_b0_phys" not in body
+    assert "movff       fw_update_relay_page_index_bank0_phys, fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys" not in body
+    assert "movff       fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys, tas3108_coeff_transform_work_byte0_b0_phys" not in body
+    assert "movff       float32_math_operand_byte0_b0_phys, tas3108_coeff_tx_byte3_b0_phys" not in body
     assert "call        chain_copy, 0x0" not in body
-    assert body.count("rcall       chain_copy_mid_window") == 11
+    assert body.count("rcall       chain_copy_call_range_trampoline_mid") == 11
     _assert_ordered(
         body,
-        "movwf       stock_019_acc, ACCESS",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_049_acc_op, stock_012_acc_op, 0x04, 0xFF",
-        "call        main_core_service_2abc, 0x0",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_012_acc_op, stock_041_acc_op, 0x04, 0xFF",
-        "db          0x00, 0x00, stock_041_acc_op, stock_039_acc_op, 0x04, stock_041_acc_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF",
-        "rcall       main_core_service_3398",
+        "movwf       float32_product_or_uart_base_high_scratch_byte, ACCESS",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, tas3108_coeff_staged_input_dword_op, float32_i2c_coeff_or_volume_work_operand_op, 0x04, 0xFF",
+        "call        float32_multiply_primary_by_secondary_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, float32_i2c_coeff_or_volume_work_operand_op, tas3108_coeff_transform_work_dword_op, 0x04, 0xFF",
+        "db          0x00, 0x00, tas3108_coeff_transform_work_dword_op, tas3108_coeff_work_accum_dword_op, 0x04, tas3108_coeff_transform_work_dword_op, float32_transform_shadow_dword_op, 0x04, 0xFF, 0xFF",
+        "rcall       truncate_float32_to_integral_float_in_place",
     )
     _assert_ordered(
         body,
-        "call        main_core_service_301a, 0x0",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_025_acc_op, stock_051_acc_op, 0x04, 0xFF",
-        "movf        stock_054_acc, W, ACCESS",
+        "call        float32_to_int32_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, float32_math_operand_byte0_op, tas3108_coeff_tx_byte3_op, 0x04, 0xFF",
+        "movf        tas3108_coeff_tx_byte0_acc, W, ACCESS",
     )
 
 
 def test_v34_filename_reply_state_machine_keeps_compact_branch_shape() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     query = _label_body(text, "cmd26_filename_query_handler", ["filename_read_source_at_w"])
-    reader = _label_body(text, "filename_read_source_at_w", ["filename_reply_job_service"])
+    reader = _label_body(text, "filename_read_source_at_w", ["filename_reply_emit_next_frame_if_ready"])
     arm = _label_body(text, "cmd26_filename_arm", ["cmd26_filename_compare_prefix16"])
-    service = _label_body(text, "filename_reply_job_service", ["diag_send_burst_xx"])
+    service = _label_body(text, "filename_reply_emit_next_frame_if_ready", ["diag_low_nibble_reply_burst"])
 
     assert query.count("btfsc       filename_rev_b2, 0, BANKED") == 2
-    assert "movf        filename_rev_b2, W, BANKED\n    andlw       0x01\n    bnz         cmd26_filename_query_done" not in query
+    assert "movf        filename_rev_b2, W, BANKED\n    andlw       0x01\n    bnz         cmd26_filename_query_handler__suppress_ack_and_return" not in query
     _assert_ordered(
         query,
         "movwf       fn_job_src_kind_b2, BANKED",
         "btfsc       active_flags_acc, 2, ACCESS",
         "xorlw       0x01",
-        "bz          cmd26_filename_source_ram",
+        "bz          cmd26_filename_query_handler__select_active_ram_source",
         "movlw       preset_filename_eeprom_a",
         "btfsc       fn_job_src_kind_b2, 0, BANKED",
         "movlw       preset_filename_eeprom_b",
@@ -2259,7 +2259,7 @@ def test_v34_filename_reply_state_machine_keeps_compact_branch_shape() -> None:
     assert "cmd26_filename_source_eep_a:" not in query
     _assert_ordered(
         query,
-        "cmd26_filename_len_loop:",
+        "cmd26_filename_query_handler__scan_printable_length:",
         "movf        fn_job_len_b2, W, BANKED",
         "xorlw       preset_filename_len",
         "bz          cmd26_filename_arm",
@@ -2274,7 +2274,7 @@ def test_v34_filename_reply_state_machine_keeps_compact_branch_shape() -> None:
         reader,
         "movwf       fn_job_tmp_b2, BANKED",
         "movf        fn_job_src_kind_b2, W, BANKED",
-        "bz          filename_read_source_ram",
+        "bz          filename_read_source_at_w__read_active_ram_slot",
     )
     assert "movlw       0x20\n    cpfslt      fn_job_tmp_b2, BANKED" not in query
     _assert_ordered(
@@ -2283,15 +2283,15 @@ def test_v34_filename_reply_state_machine_keeps_compact_branch_shape() -> None:
         "movwf       fn_job_start_cmd_b2, BANKED",
         "movlw       0x10",
         "cpfsgt      fn_job_len_b2, BANKED",
-        "bra         cmd26_filename_arm_rev_check",
+        "bra         cmd26_filename_query_handler__verify_rev_and_arm_job",
     )
     assert "movlw       0x11" not in arm
     _assert_ordered(
         service,
         "decf        fname_tx_gap_hi_b2, F, BANKED",
-        "filename_reply_dec_gap_lo:",
+        "filename_reply_job_service__decrement_gap_low:",
         "decf        fname_tx_gap_lo_b2, F, BANKED",
-        "bra         filename_reply_job_ret",
+        "bra         filename_reply_job_service__return",
     )
     send_start = _label_body(service, "filename_reply_send_start", ["filename_reply_send_len"])
     send_len = _label_body(service, "filename_reply_send_len", ["filename_reply_send_char_or_end"])
@@ -2343,268 +2343,270 @@ def test_v34_math_counted_call_loops_use_shared_repeat_helpers() -> None:
         assert old_label not in text
 
     fixed_helpers = {
-        "repeat_18_main_core_service_2650": (
-            "stock_02B_acc",
-            "stock_02A_acc",
-            "stock_029_acc",
-            "stock_028_acc",
+        "shift_028_02b_right_23_clear_c": (
+            "float32_secondary_work_byte2_acc",
+            "float32_secondary_work_byte1_acc",
+            "float32_secondary_work_byte0_acc",
+            "float32_math_operand_byte3_acc",
         ),
-        "repeat_18_main_core_service_2bac": (
-            "stock_01D_acc",
-            "stock_01C_acc",
-            "stock_01B_acc",
-            "stock_01A_acc",
+        "shift_01a_01d_right_23_clear_c": (
+            "float32_extract_or_divide_counter_acc",
+            "fw_update_checksum_or_float32_quotient_top_scratch",
+            "fw_update_hex_or_float32_quotient_or_uart_block_scratch",
+            "float32_extract_or_quotient_or_preset_uart_index",
         ),
-        "repeat_18_main_core_service_2d80": (
-            "stock_018_acc",
-            "stock_017_acc",
-            "stock_016_acc",
-            "stock_015_acc",
+        "shift_015_018_right_23_clear_c": (
+            "float32_product_or_uart_base_scratch_byte",
+            "float_product_or_output_index_scratch_byte",
+            "float_product_flash_addr_or_preset_index_scratch_byte",
+            "float_shift_flash_addr_or_preset_index_scratch_byte",
         ),
     }
     for helper, regs in fixed_helpers.items():
-        body = _label_body(text, helper, [f"{helper}_loop"])
-        full_body = _label_body(text, helper, ["main_core_service_24c2", "main_core_service_2abc", "main_core_service_2ca8"])
+        loop_label = f"{helper}__rotate_next_bit"
+        check_label = f"{helper}__check_remaining"
+        body = _label_body(text, helper, [loop_label])
+        full_body = _label_body(text, helper, ["float32_add_secondary_to_primary_in_place", "float32_multiply_primary_by_secondary_in_place", "float32_divide_primary_by_secondary_in_place"])
         _assert_ordered(
             full_body,
             "movlw       0x18",
-            f"bra         {helper}_check",
-            f"{helper}_loop:",
+            f"bra         {check_label}",
+            f"{loop_label}:",
             "bcf         STATUS, 0, ACCESS",
             f"rrcf        {regs[0]}, F, ACCESS",
             f"rrcf        {regs[1]}, F, ACCESS",
             f"rrcf        {regs[2]}, F, ACCESS",
             f"rrcf        {regs[3]}, F, ACCESS",
-            f"{helper}_check:",
+            f"{check_label}:",
             "decfsz      WREG, F, ACCESS",
-            f"bra         {helper}_loop",
+            f"bra         {loop_label}",
             "return      0",
         )
         assert "movlw       0x18" in body
         assert text.count(f"rcall       {helper}") == 2
 
-    variable_helper = _label_body(text, "repeat_w_main_core_service_30cc", ["main_core_service_301a"])
-    variable_loop = _label_body(text, "repeat_w_main_core_service_30cc_loop", ["main_core_service_301a"])
+    variable_helper = _label_body(text, "shift_029_02c_right_w_minus_one", ["float32_to_int32_in_place"])
+    variable_loop = _label_body(text, "shift_029_02c_right_w_minus_one__rotate_next_bit", ["float32_to_int32_in_place"])
     assert "movlw       0x18" not in variable_helper
     assert "movlw       0x20" not in variable_helper
-    assert "bra         repeat_w_main_core_service_30cc_check" not in variable_helper
+    assert "bra         shift_029_02c_right_w_minus_one__check_remaining" not in variable_helper
     _assert_ordered(
         variable_loop,
-        "repeat_w_main_core_service_30cc_loop:",
+        "shift_029_02c_right_w_minus_one__rotate_next_bit:",
         "bcf         STATUS, 0, ACCESS",
-        "rrcf        stock_02C_acc, F, ACCESS",
-        "rrcf        stock_02B_acc, F, ACCESS",
-        "rrcf        stock_02A_acc, F, ACCESS",
-        "rrcf        stock_029_acc, F, ACCESS",
-        "repeat_w_main_core_service_30cc:",
-        "repeat_w_main_core_service_30cc_check:",
+        "rrcf        float32_secondary_work_byte3_acc, F, ACCESS",
+        "rrcf        float32_secondary_work_byte2_acc, F, ACCESS",
+        "rrcf        float32_secondary_work_byte1_acc, F, ACCESS",
+        "rrcf        float32_secondary_work_byte0_acc, F, ACCESS",
+        "shift_029_02c_right_w_minus_one:",
+        "shift_029_02c_right_w_minus_one__check_remaining:",
         "decfsz      WREG, F, ACCESS",
-        "bra         repeat_w_main_core_service_30cc_loop",
+        "bra         shift_029_02c_right_w_minus_one__rotate_next_bit",
         "return      0",
     )
 
-    caller = _label_body(text, "main_core_service_301a", ["main_core_service_30cc"])
+    caller = _label_body(text, "float32_to_int32_in_place", ["main_core_service_30cc"])
     _assert_ordered(
         caller,
         "movlw       0x18",
-        "rcall       repeat_w_main_core_service_30cc",
-        "movf        stock_029_acc, W, ACCESS",
+        "rcall       shift_029_02c_right_w_minus_one",
+        "movf        float32_secondary_work_byte0_acc, W, ACCESS",
         "movlw       0x20",
-        "rcall       repeat_w_main_core_service_30cc",
+        "rcall       shift_029_02c_right_w_minus_one",
     )
-    assert caller.count("rcall       repeat_w_main_core_service_30cc") == 2
+    assert caller.count("rcall       shift_029_02c_right_w_minus_one") == 2
 
 
 def test_v34_math_operand_stage_runs_use_near_chain_copy_descriptors() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     bodies = {
-        "main_core_service_24c2": _label_body(text, "main_core_service_24c2", ["main_core_service_263e"]),
-        "main_core_service_2abc": _label_body(text, "main_core_service_2abc", ["main_core_service_2b8e"]),
-        "main_core_service_2ca8": _label_body(text, "main_core_service_2ca8", ["flash_write_stock"]),
+        "float32_add_secondary_to_primary_in_place": _label_body(text, "float32_add_secondary_to_primary_in_place", ["twos_complement_024_027_after_low_byte_complement"]),
+        "float32_multiply_primary_by_secondary_in_place": _label_body(text, "float32_multiply_primary_by_secondary_in_place", ["add_shifted_multiplicand_to_product_accumulator"]),
+        "float32_divide_primary_by_secondary_in_place": _label_body(text, "float32_divide_primary_by_secondary_in_place", ["flash_write_without_preset_remap"]),
     }
 
     for old_copy in (
-        "movff       stock_020_b0_phys, stock_028_b0_phys",
-        "movff       stock_021_b0_phys, stock_029_b0_phys",
-        "movff       stock_022_b0_phys, stock_02A_b0_phys",
-        "movff       stock_023_b0_phys, stock_02B_b0_phys",
-        "movff       stock_024_b0_phys, stock_020_b0_phys",
-        "movff       stock_025_b0_phys, stock_021_b0_phys",
-        "movff       stock_026_b0_phys, stock_022_b0_phys",
-        "movff       stock_027_b0_phys, stock_023_b0_phys",
-        "movff       stock_003_b0_phys, stock_020_b0_phys",
-        "movff       stock_004_b0_phys, stock_021_b0_phys",
-        "movff       saved_w_b0_phys, stock_022_b0_phys",
-        "movff       stock_006_b0_phys, stock_023_b0_phys",
+        "movff       float32_accum_work_byte0_b0_phys, float32_math_operand_byte3_b0_phys",
+        "movff       float32_accum_work_byte1_b0_phys, float32_secondary_work_byte0_b0_phys",
+        "movff       float32_accum_work_byte2_b0_phys, float32_secondary_work_byte1_b0_phys",
+        "movff       float32_accum_work_byte3_b0_phys, float32_secondary_work_byte2_b0_phys",
+        "movff       float32_aux_work_byte0_b0_phys, float32_accum_work_byte0_b0_phys",
+        "movff       float32_math_operand_byte0_b0_phys, float32_accum_work_byte1_b0_phys",
+        "movff       float32_math_operand_byte1_b0_phys, float32_accum_work_byte2_b0_phys",
+        "movff       float32_math_operand_byte2_b0_phys, float32_accum_work_byte3_b0_phys",
+        "movff       addr_low_counter_or_payload_scratch_phys, float32_accum_work_byte0_b0_phys",
+        "movff       addr_high_table_row_or_checksum_scratch_phys, float32_accum_work_byte1_b0_phys",
+        "movff       saved_w_b0_phys, float32_accum_work_byte2_b0_phys",
+        "movff       status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys, float32_accum_work_byte3_b0_phys",
     ):
-        assert old_copy not in bodies["main_core_service_24c2"]
+        assert old_copy not in bodies["float32_add_secondary_to_primary_in_place"]
     for old_copy in (
-        "movff       stock_012_b0_phys, stock_01A_b0_phys",
-        "movff       stock_013_b0_phys, stock_01B_b0_phys",
-        "movff       stock_014_b0_phys, stock_01C_b0_phys",
-        "movff       stock_015_b0_phys, stock_01D_b0_phys",
-        "movff       stock_016_b0_phys, stock_01A_b0_phys",
-        "movff       stock_017_b0_phys, stock_01B_b0_phys",
-        "movff       stock_018_b0_phys, stock_01C_b0_phys",
-        "movff       stock_019_b0_phys, stock_01D_b0_phys",
+        "movff       fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys, float32_extract_or_quotient_or_preset_uart_index_bank0_phys",
+        "movff       eeprom_record_count_or_flash_addr_upper_or_preset_addr_low_phys, fw_update_hex_byte_or_uart_block_base_low_scratch_phys",
+        "movff       flash_addr_shadow_low_or_preset_table_addr_hi_phys, hex_byte_save_or_uart_status_block_buffer_phys",
+        "movff       float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys, fw_update_relay_header_buffer_phys",
+        "movff       flash_addr_shadow_upper_or_preset_job_index_or_init_copy_end_phys, float32_extract_or_quotient_or_preset_uart_index_bank0_phys",
+        "movff       float_product_or_output_index_scratch_bank0_phys, fw_update_hex_byte_or_uart_block_base_low_scratch_phys",
+        "movff       preset_header_tas_reg_or_uart_block_base_low_scratch_phys, hex_byte_save_or_uart_status_block_buffer_phys",
+        "movff       preset_table_header_len_source_phys, fw_update_relay_header_buffer_phys",
     ):
-        assert old_copy not in bodies["main_core_service_2abc"]
+        assert old_copy not in bodies["float32_multiply_primary_by_secondary_in_place"]
     for old_copy in (
-        "movff       stock_00D_b0_phys, stock_015_b0_phys",
-        "movff       stock_00E_b0_phys, stock_016_b0_phys",
-        "movff       stock_00F_b0_phys, stock_017_b0_phys",
-        "movff       stock_010_b0_phys, stock_018_b0_phys",
-        "movff       stock_011_b0_phys, stock_015_b0_phys",
-        "movff       stock_012_b0_phys, stock_016_b0_phys",
-        "movff       stock_013_b0_phys, stock_017_b0_phys",
-        "movff       stock_014_b0_phys, stock_018_b0_phys",
+        "movff       flash_saved_tblptrh_phys, float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys",
+        "movff       flash_addr_high_or_adc_loop_or_bsr_save_scratch_phys, flash_addr_shadow_upper_or_preset_job_index_or_init_copy_end_phys",
+        "movff       adc_loop_value_or_uart_rx_byte_or_flash_read_tblptrl_save_phys, float_product_or_output_index_scratch_bank0_phys",
+        "movff       float32_sign_or_uart_digit_or_flash_read_tblptrh_save_phys, preset_header_tas_reg_or_uart_block_base_low_scratch_phys",
+        "movff       flash_addr_low_or_float32_scale_or_flash_read_tblptru_save_phys, float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys",
+        "movff       fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys, flash_addr_shadow_upper_or_preset_job_index_or_init_copy_end_phys",
+        "movff       eeprom_record_count_or_flash_addr_upper_or_preset_addr_low_phys, float_product_or_output_index_scratch_bank0_phys",
+        "movff       flash_addr_shadow_low_or_preset_table_addr_hi_phys, preset_header_tas_reg_or_uart_block_base_low_scratch_phys",
     ):
-        assert old_copy not in bodies["main_core_service_2ca8"]
+        assert old_copy not in bodies["float32_divide_primary_by_secondary_in_place"]
 
     _assert_ordered(
-        bodies["main_core_service_24c2"],
-        "db          0x00, 0x00, stock_020_acc_op, stock_028_acc_op, 0x04, 0xFF",
-        "rcall       repeat_18_main_core_service_2650",
-        "db          0x00, 0x00, stock_024_acc_op, stock_020_acc_op, 0x04, 0xFF",
-        "bra         flow_main_core_service_24c2_263c",
-        "db          0x00, 0x00, stock_003_acc_op, stock_020_acc_op, 0x04, 0xFF",
-        "flow_main_core_service_24c2_263c:",
+        bodies["float32_add_secondary_to_primary_in_place"],
+        "db          0x00, 0x00, float32_accum_work_byte0_op, float32_math_operand_byte3_op, 0x04, 0xFF",
+        "rcall       shift_028_02b_right_23_clear_c",
+        "db          0x00, 0x00, float32_aux_work_byte0_op, float32_accum_work_byte0_op, 0x04, 0xFF",
+        "bra         float32_add_secondary_to_primary_in_place__return",
+        "db          0x00, 0x00, addr_low_counter_or_payload_scratch_operand, float32_accum_work_byte0_op, 0x04, 0xFF",
+        "float32_add_secondary_to_primary_in_place__return:",
     )
     helper_24c2 = _label_body(
-        bodies["main_core_service_24c2"],
-        "main_core_service_24c2_dec_mask_02c",
-        ["flow_main_core_service_24c2_2588"],
+        bodies["float32_add_secondary_to_primary_in_place"],
+        "float32_add_secondary_to_primary_in_place__decrement_alignment_guard_mod8",
+        ["float32_add_secondary_to_primary_in_place__right_shift_primary_to_match_secondary"],
     )
-    assert bodies["main_core_service_24c2"].count("rcall       main_core_service_24c2_dec_mask_02c") == 2
+    assert bodies["float32_add_secondary_to_primary_in_place"].count("rcall       float32_add_secondary_to_primary_in_place__decrement_alignment_guard_mod8") == 2
     _assert_ordered(
         helper_24c2,
-        "decf        stock_02C_acc, F, ACCESS",
-        "movff       stock_02C_b0_phys, stock_028_b0_phys",
+        "decf        float32_secondary_work_byte3_acc, F, ACCESS",
+        "movff       float32_secondary_work_byte3_b0_phys, float32_math_operand_byte3_b0_phys",
         "movlw       0x07",
-        "andwf       stock_028_acc, F, ACCESS",
+        "andwf       float32_math_operand_byte3_acc, F, ACCESS",
         "return      0",
     )
     _assert_ordered(
-        bodies["main_core_service_2abc"],
-        "db          0x00, 0x00, stock_012_acc_op, stock_01A_acc_op, 0x04, 0xFF",
-        "rcall       repeat_18_main_core_service_2bac",
-        "db          0x00, 0x00, stock_016_acc_op, stock_01A_acc_op, 0x04, 0xFF",
-        "rcall       repeat_18_main_core_service_2bac",
+        bodies["float32_multiply_primary_by_secondary_in_place"],
+        "db          0x00, 0x00, float32_i2c_coeff_or_volume_work_operand_op, float32_multiply_extract_window_dword_op, 0x04, 0xFF",
+        "rcall       shift_01a_01d_right_23_clear_c",
+        "db          0x00, 0x00, float32_multiply_secondary_operand_dword_op, float32_multiply_extract_window_dword_op, 0x04, 0xFF",
+        "rcall       shift_01a_01d_right_23_clear_c",
     )
     _assert_ordered(
-        bodies["main_core_service_2ca8"],
-        "db          0x00, 0x00, stock_00D_acc_op, stock_015_acc_op, 0x04, 0xFF",
-        "rcall       repeat_18_main_core_service_2d80",
-        "db          0x00, 0x00, stock_011_acc_op, stock_015_acc_op, 0x04, 0xFF",
-        "rcall       repeat_18_main_core_service_2d80",
+        bodies["float32_divide_primary_by_secondary_in_place"],
+        "db          0x00, 0x00, float32_coeff_or_volume_work_operand_op, float32_divide_extract_window_dword_op, 0x04, 0xFF",
+        "rcall       shift_015_018_right_23_clear_c",
+        "db          0x00, 0x00, float32_divide_divisor_dword_op, float32_divide_extract_window_dword_op, 0x04, 0xFF",
+        "rcall       shift_015_018_right_23_clear_c",
     )
 
 
 def test_v34_core_297e_uses_near_chain_copy_for_stage_runs() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "main_core_service_297e", ["flow_main_core_service_2abc_2b52"])
+    body = _label_body(text, "float32_exp_limit1024_in_place", ["float32_multiply_primary_by_secondary_in_place__shift_multiplier_and_product"])
 
     for old_copy in (
-        "movff       stock_02F_b0_phys, stock_00D_b0_phys",
-        "movff       stock_030_b0_phys, stock_00E_b0_phys",
-        "movff       stock_031_b0_phys, stock_00F_b0_phys",
-        "movff       stock_032_b0_phys, stock_010_b0_phys",
-        "movff       stock_00D_b0_phys, stock_020_b0_phys",
-        "movff       stock_00E_b0_phys, stock_021_b0_phys",
-        "movff       stock_00F_b0_phys, stock_022_b0_phys",
-        "movff       stock_010_b0_phys, stock_023_b0_phys",
-        "movff       stock_020_b0_phys, stock_02F_b0_phys",
-        "movff       stock_021_b0_phys, stock_030_b0_phys",
-        "movff       stock_022_b0_phys, stock_031_b0_phys",
-        "movff       stock_023_b0_phys, stock_032_b0_phys",
+        "movff       float32_preset_fw_update_scratch_byte0_b0_phys, flash_saved_tblptrh_phys",
+        "movff       preset_payload_index_or_float32_shadow_byte1_b0_phys, flash_addr_high_or_adc_loop_or_bsr_save_scratch_phys",
+        "movff       preset_table_row_len_phys, adc_loop_value_or_uart_rx_byte_or_flash_read_tblptrl_save_phys",
+        "movff       float32_transform_shadow_byte3_b0_phys, float32_sign_or_uart_digit_or_flash_read_tblptrh_save_phys",
+        "movff       flash_saved_tblptrh_phys, float32_accum_work_byte0_b0_phys",
+        "movff       flash_addr_high_or_adc_loop_or_bsr_save_scratch_phys, float32_accum_work_byte1_b0_phys",
+        "movff       adc_loop_value_or_uart_rx_byte_or_flash_read_tblptrl_save_phys, float32_accum_work_byte2_b0_phys",
+        "movff       float32_sign_or_uart_digit_or_flash_read_tblptrh_save_phys, float32_accum_work_byte3_b0_phys",
+        "movff       float32_accum_work_byte0_b0_phys, float32_preset_fw_update_scratch_byte0_b0_phys",
+        "movff       float32_accum_work_byte1_b0_phys, preset_payload_index_or_float32_shadow_byte1_b0_phys",
+        "movff       float32_accum_work_byte2_b0_phys, preset_table_row_len_phys",
+        "movff       float32_accum_work_byte3_b0_phys, float32_transform_shadow_byte3_b0_phys",
     ):
         assert old_copy not in body
 
     _assert_ordered(
         body,
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_02F_acc_op, stock_00D_acc_op, 0x04, 0xFF",
-        "rcall       main_core_service_2ca8",
+        "db          0x00, 0x00, float32_transform_shadow_dword_op, float32_coeff_or_volume_work_operand_op, 0x04, 0xFF",
+        "rcall       float32_divide_primary_by_secondary_in_place",
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_00D_acc_op, stock_020_acc_op, 0x04, 0xFF",
-        "rcall       main_core_service_24c2",
+        "db          0x00, 0x00, float32_coeff_or_volume_work_operand_op, float32_accum_work_byte0_op, 0x04, 0xFF",
+        "rcall       float32_add_secondary_to_primary_in_place",
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_020_acc_op, stock_02F_acc_op, 0x04, 0xFF",
+        "db          0x00, 0x00, float32_accum_work_byte0_op, float32_transform_shadow_dword_op, 0x04, 0xFF",
         "movlw       0x0A",
     )
 
 
 def test_v34_core_2abc_final_save_uses_chain_copy_descriptor() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "main_core_service_2abc", ["main_core_service_2b8e"])
-    volume_caller = _label_body(text, "flow_cmd_dispatch_gated_19e6", ["flow_cmd_dispatch_gated_volume_done"])
-    i2c_caller = _label_body(text, "main_i2c_service_39a6", ["signed_hi_bias80_compare_prelude"])
-    math_caller = _label_body(text, "main_core_service_3ec4", ["main_core_service_3f1e"])
+    body = _label_body(text, "float32_multiply_primary_by_secondary_in_place", ["add_shifted_multiplicand_to_product_accumulator"])
+    volume_caller = _label_body(text, "cmd_dispatch_gated__stage_volume_coefficients", ["cmd_dispatch_gated__volume_write_complete"])
+    i2c_caller = _label_body(text, "i2c_emit_tas3108_coeff_from_staged_float", ["signed_hi_bias80_compare_prelude"])
+    math_caller = _label_body(text, "float32_multiply_ram_window_by_staged_operand_in_place", ["float32_add_staged_operand_to_ram_window_in_place"])
 
     for old_copy in (
-        "movff       stock_003_b0_phys, stock_012_b0_phys",
-        "movff       stock_004_b0_phys, stock_013_b0_phys",
-        "movff       saved_w_b0_phys, stock_014_b0_phys",
-        "movff       stock_006_b0_phys, stock_015_b0_phys",
+        "movff       addr_low_counter_or_payload_scratch_phys, fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys",
+        "movff       addr_high_table_row_or_checksum_scratch_phys, eeprom_record_count_or_flash_addr_upper_or_preset_addr_low_phys",
+        "movff       saved_w_b0_phys, flash_addr_shadow_low_or_preset_table_addr_hi_phys",
+        "movff       status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys, float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys",
     ):
         assert old_copy not in body
 
     _assert_ordered(
         body,
-        "rcall       main_core_service_30d8",
+        "rcall       float32_pack_mantissa_exponent_sign",
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_003_acc_op, stock_012_acc_op, 0x04, 0xFF",
-        "flow_main_core_service_2abc_2b8c:",
+        "db          0x00, 0x00, addr_low_counter_or_payload_scratch_operand, float32_i2c_coeff_or_volume_work_operand_op, 0x04, 0xFF",
+        "float32_multiply_primary_by_secondary_in_place__return:",
         "return      0",
     )
     _assert_ordered(
         volume_caller,
-        "call        main_core_service_2abc, 0x0",
-        "rcall       chain_copy_low_window",
+        "call        float32_multiply_primary_by_secondary_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_low",
     )
     _assert_ordered(
         i2c_caller,
-        "call        main_core_service_2abc, 0x0",
-        "rcall       chain_copy_mid_window",
+        "call        float32_multiply_primary_by_secondary_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_mid",
     )
     _assert_ordered(
         math_caller,
-        "call        main_core_service_2abc, 0x0",
-        "rcall       chain_copy_mid_window",
+        "call        float32_multiply_primary_by_secondary_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_mid",
     )
 
 
 def test_v34_math_result_helpers_use_chain_copy_stage_runs() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    core_3ec4 = _label_body(text, "main_core_service_3ec4", ["main_core_service_3f1e"])
-    core_3f1e = _label_body(text, "main_core_service_3f1e", ["intel_hex_checksum_update"])
-    caller_39a6 = _label_body(text, "main_i2c_service_39a6", ["signed_hi_bias80_compare_prelude"])
+    core_3ec4 = _label_body(text, "float32_multiply_ram_window_by_staged_operand_in_place", ["float32_add_staged_operand_to_ram_window_in_place"])
+    core_3f1e = _label_body(text, "float32_add_staged_operand_to_ram_window_in_place", ["intel_hex_checksum_update"])
+    caller_39a6 = _label_body(text, "i2c_emit_tas3108_coeff_from_staged_float", ["signed_hi_bias80_compare_prelude"])
 
     for body, old_copies in (
         (
             core_3ec4,
             (
-                "movff       stock_025_b0_phys, stock_016_b0_phys",
-                "movff       stock_026_b0_phys, stock_017_b0_phys",
-                "movff       stock_027_b0_phys, stock_018_b0_phys",
-                "movff       stock_028_b0_phys, stock_019_b0_phys",
-                "movff       stock_012_b0_phys, stock_029_b0_phys",
-                "movff       stock_013_b0_phys, stock_02A_b0_phys",
-                "movff       stock_014_b0_phys, stock_02B_b0_phys",
-                "movff       stock_015_b0_phys, stock_02C_b0_phys",
+                "movff       float32_math_operand_byte0_b0_phys, flash_addr_shadow_upper_or_preset_job_index_or_init_copy_end_phys",
+                "movff       float32_math_operand_byte1_b0_phys, float_product_or_output_index_scratch_bank0_phys",
+                "movff       float32_math_operand_byte2_b0_phys, preset_header_tas_reg_or_uart_block_base_low_scratch_phys",
+                "movff       float32_math_operand_byte3_b0_phys, preset_table_header_len_source_phys",
+                "movff       fw_update_byte_or_flash_addr_mid_or_float_operand_base_phys, float32_secondary_work_byte0_b0_phys",
+                "movff       eeprom_record_count_or_flash_addr_upper_or_preset_addr_low_phys, float32_secondary_work_byte1_b0_phys",
+                "movff       flash_addr_shadow_low_or_preset_table_addr_hi_phys, float32_secondary_work_byte2_b0_phys",
+                "movff       float32_operand_or_flash_addr_shadow_mid_or_preset_job_index_phys, float32_secondary_work_byte3_b0_phys",
             ),
         ),
         (
             core_3f1e,
             (
-                "movff       stock_02F_b0_phys, stock_024_b0_phys",
-                "movff       stock_030_b0_phys, stock_025_b0_phys",
-                "movff       stock_031_b0_phys, stock_026_b0_phys",
-                "movff       stock_032_b0_phys, stock_027_b0_phys",
-                "movff       stock_020_b0_phys, stock_033_b0_phys",
-                "movff       stock_021_b0_phys, stock_034_b0_phys",
-                "movff       stock_022_b0_phys, stock_035_b0_phys",
-                "movff       stock_023_b0_phys, stock_036_b0_phys",
+                "movff       float32_preset_fw_update_scratch_byte0_b0_phys, float32_aux_work_byte0_b0_phys",
+                "movff       preset_payload_index_or_float32_shadow_byte1_b0_phys, float32_math_operand_byte0_b0_phys",
+                "movff       preset_table_row_len_phys, float32_math_operand_byte1_b0_phys",
+                "movff       float32_transform_shadow_byte3_b0_phys, float32_math_operand_byte2_b0_phys",
+                "movff       float32_accum_work_byte0_b0_phys, math_temp_result_buffer_phys",
+                "movff       float32_accum_work_byte1_b0_phys, math_temp_result_byte1_b0_phys",
+                "movff       float32_accum_work_byte2_b0_phys, math_temp_result_byte2_b0_phys",
+                "movff       float32_accum_work_byte3_b0_phys, math_temp_result_byte3_b0_phys",
             ),
         ),
     ):
@@ -2613,71 +2615,71 @@ def test_v34_math_result_helpers_use_chain_copy_stage_runs() -> None:
 
     _assert_ordered(
         core_3ec4,
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_025_acc_op, stock_016_acc_op, 0x04, 0xFF",
-        "call        main_core_service_2abc, 0x0",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_012_acc_op, stock_029_acc_op, 0x04, 0xFF",
-        "movf        stock_02D_acc, W, ACCESS",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, float32_math_operand_byte0_op, float32_multiply_secondary_operand_dword_op, 0x04, 0xFF",
+        "call        float32_multiply_primary_by_secondary_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, float32_i2c_coeff_or_volume_work_operand_op, float32_secondary_work_byte0_op, 0x04, 0xFF",
+        "movf        float32_sign_exponent_offset_scratch_acc, W, ACCESS",
     )
     _assert_ordered(
         core_3f1e,
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_02F_acc_op, stock_024_acc_op, 0x04, 0xFF",
-        "call        main_core_service_24c2, 0x0",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_020_acc_op, stock_033_acc_op, 0x04, 0xFF",
-        "movf        stock_037_acc, W, ACCESS",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, float32_transform_shadow_dword_op, float32_aux_work_byte0_op, 0x04, 0xFF",
+        "call        float32_add_secondary_to_primary_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, float32_accum_work_byte0_op, math_temp_result_dword_op, 0x04, 0xFF",
+        "movf        float32_exponent_lo_or_target_offset_scratch_acc, W, ACCESS",
     )
     assert "main_core_service_432e:" not in text
     assert "call        main_core_service_432e, 0x0" not in text
     _assert_ordered(
         caller_39a6,
-        "call        main_core_service_24c2, 0x0",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_020_acc_op, stock_039_acc_op, 0x04, 0xFF",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_039_acc_op, stock_045_acc_op, 0x04, stock_045_acc_op, stock_02F_acc_op, 0x04, 0xFF, 0xFF",
+        "call        float32_add_secondary_to_primary_in_place, 0x0",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, float32_accum_work_byte0_op, tas3108_coeff_work_accum_dword_op, 0x04, 0xFF",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, tas3108_coeff_work_accum_dword_op, tas3108_coeff_secondary_work_dword_op, 0x04, tas3108_coeff_secondary_work_dword_op, float32_transform_shadow_dword_op, 0x04, 0xFF, 0xFF",
     )
 
 
 def test_v34_settings_load_reuses_clamp_literal_across_adjacent_source_clamps() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "main_core_service_1e88", ["flow_main_core_service_1e88_2088"])
-    clamp_body = _label_body(text, "flow_main_core_service_1e88_1f6a", ["flow_main_core_service_1e88_1fbc"])
-    trim_clamps = _label_body(text, "flow_main_core_service_1e88_2030", ["flow_main_core_service_1e88_2088"])
+    body = _label_body(text, "restore_eeprom_settings_on_boot", ["restore_eeprom_settings_on_boot__mirror_route_trim_shadows"])
+    clamp_body = _label_body(text, "restore_eeprom_settings_on_boot__validate_channel1_source", ["restore_eeprom_settings_on_boot__validate_link_address"])
+    trim_clamps = _label_body(text, "restore_eeprom_settings_on_boot__read_route_trim_eeprom", ["restore_eeprom_settings_on_boot__mirror_route_trim_shadows"])
     volume_guard = body[
         body.index("movf        computed_volume_3_b0, W, BANKED") :
-        body.index("flow_main_core_service_1e88_1f54:")
+        body.index("restore_eeprom_settings_on_boot__clamp_volume_minimum:")
     ]
 
     _assert_ordered(
         volume_guard,
         "xorlw       0x80",
         "addlw       0x80",
-        "bnz         flow_main_core_service_1e88_1f54",
+        "bnz         restore_eeprom_settings_on_boot__clamp_volume_minimum",
         "subwf       computed_volume_2_b0, W, BANKED",
-        "bnz         flow_main_core_service_1e88_1f54",
+        "bnz         restore_eeprom_settings_on_boot__clamp_volume_minimum",
         "subwf       computed_volume_1_b0, W, BANKED",
     )
     assert "movlw       0x00" not in volume_guard
 
     _assert_ordered(
         body,
-        "flow_main_core_service_1e88_1f6a:",
+        "restore_eeprom_settings_on_boot__validate_channel1_source:",
         "movlw       0x03",
-        "cpfsgt      stock_060_b0, BANKED",
-        "flow_main_core_service_1e88_1f72:",
-        "lfsr        FSR2, stock_061_b0_phys",
+        "cpfsgt      channel_1_source_config_b0, BANKED",
+        "restore_eeprom_settings_on_boot__validate_channel2_source:",
+        "lfsr        FSR2, channel_2_source_config_phys",
         "cpfsgt      INDF2, ACCESS",
-        "flow_main_core_service_1e88_1f7e:",
-        "lfsr        FSR2, stock_062_b0_phys",
+        "restore_eeprom_settings_on_boot__validate_channel3_source:",
+        "lfsr        FSR2, channel_3_source_config_phys",
         "cpfsgt      INDF2, ACCESS",
-        "flow_main_core_service_1e88_1f8a:",
-        "lfsr        FSR2, stock_063_b0_phys",
+        "restore_eeprom_settings_on_boot__validate_channel4_source:",
+        "lfsr        FSR2, channel_4_source_config_phys",
         "cpfsgt      INDF2, ACCESS",
-        "flow_main_core_service_1e88_1f98:",
-        "lfsr        FSR2, stock_064_b0_phys",
+        "restore_eeprom_settings_on_boot__validate_channel5_source:",
+        "lfsr        FSR2, channel_5_source_config_phys",
         "movlw       0x03",
         "cpfsgt      INDF2, ACCESS",
     )
@@ -2685,53 +2687,53 @@ def test_v34_settings_load_reuses_clamp_literal_across_adjacent_source_clamps() 
     _assert_ordered(
         trim_clamps,
         "movlw       0x12",
-        "cpfsgt      stock_09B_b0, BANKED",
-        "flow_main_core_service_1e88_2070:",
-        "cpfsgt      stock_09C_b0, BANKED",
-        "flow_main_core_service_1e88_2078:",
-        "cpfsgt      stock_09D_b0, BANKED",
-        "flow_main_core_service_1e88_2080:",
-        "cpfsgt      stock_09E_b0, BANKED",
+        "cpfsgt      route_0_volume_trim_b0, BANKED",
+        "restore_eeprom_settings_on_boot__validate_route5_trim:",
+        "cpfsgt      route_5_volume_trim_b0, BANKED",
+        "restore_eeprom_settings_on_boot__validate_route6_trim:",
+        "cpfsgt      route_6_volume_trim_b0, BANKED",
+        "restore_eeprom_settings_on_boot__validate_route7_trim:",
+        "cpfsgt      route_7_volume_trim_b0, BANKED",
     )
     assert trim_clamps.count("movlw       0x12") == 1
 
 
 def test_v34_trim_mirrors_and_core_3398_use_chain_copy_stage_runs() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    trims_load = _label_body(text, "flow_main_core_service_1e88_2088", ["flow_main_core_service_1e88_209c"])
-    response = _label_body(text, "flow_main_core_service_2328_240c", ["flow_main_core_service_2328_2460"])
-    core_3398 = _label_body(text, "main_core_service_3398", ["main_core_service_3432"])
+    trims_load = _label_body(text, "restore_eeprom_settings_on_boot__mirror_route_trim_shadows", ["restore_eeprom_settings_on_boot__read_filter_window"])
+    response = _label_body(text, "stage_hid_ep1_in_report_from_selector__stage_selector6_version_setup", ["stage_hid_ep1_in_report_from_selector__stage_selector7_to_12_echo"])
+    core_3398 = _label_body(text, "truncate_float32_to_integral_float_in_place", ["usb_ep0_apply_clear_set_feature_request"])
 
     for body, old_copies in (
         (
             trims_load,
             (
-                "movff       stock_09B_b0_phys, stock_0AC_b0_phys",
-                "movff       stock_09C_b0_phys, stock_0AD_b0_phys",
-                "movff       stock_09D_b0_phys, stock_0AE_b0_phys",
-                "movff       stock_09E_b0_phys, stock_0AF_b0_phys",
+                "movff       route_0_volume_trim_phys, route_0_volume_trim_shadow_phys",
+                "movff       route_5_volume_trim_phys, route_5_volume_trim_shadow_phys",
+                "movff       route_6_volume_trim_phys, route_6_volume_trim_shadow_phys",
+                "movff       route_7_volume_trim_phys, route_7_volume_trim_shadow_phys",
             ),
         ),
         (
             response,
             (
-                "movff       stock_09B_b0_phys, stock_173_b1_phys",
-                "movff       stock_09C_b0_phys, stock_174_b1_phys",
-                "movff       stock_09D_b0_phys, stock_175_b1_phys",
-                "movff       stock_09E_b0_phys, stock_176_b1_phys",
+                "movff       route_0_volume_trim_phys, usb_hid_ep1_in_report_payload_byte22_phys",
+                "movff       route_5_volume_trim_phys, usb_hid_ep1_in_report_payload_byte23_phys",
+                "movff       route_6_volume_trim_phys, usb_hid_ep1_in_report_payload_byte24_phys",
+                "movff       route_7_volume_trim_phys, usb_hid_ep1_in_report_payload_byte25_phys",
             ),
         ),
         (
             core_3398,
             (
-                "movff       stock_02F_b0_phys, stock_003_b0_phys",
-                "movff       stock_030_b0_phys, stock_004_b0_phys",
-                "movff       stock_031_b0_phys, saved_w_b0_phys",
-                "movff       stock_032_b0_phys, stock_006_b0_phys",
-                "movff       stock_025_b0_phys, stock_00D_b0_phys",
-                "movff       stock_026_b0_phys, stock_00E_b0_phys",
-                "movff       stock_027_b0_phys, stock_00F_b0_phys",
-                "movff       stock_028_b0_phys, stock_010_b0_phys",
+                "movff       float32_preset_fw_update_scratch_byte0_b0_phys, addr_low_counter_or_payload_scratch_phys",
+                "movff       preset_payload_index_or_float32_shadow_byte1_b0_phys, addr_high_table_row_or_checksum_scratch_phys",
+                "movff       preset_table_row_len_phys, saved_w_b0_phys",
+                "movff       float32_transform_shadow_byte3_b0_phys, status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys",
+                "movff       float32_math_operand_byte0_b0_phys, flash_saved_tblptrh_phys",
+                "movff       float32_math_operand_byte1_b0_phys, flash_addr_high_or_adc_loop_or_bsr_save_scratch_phys",
+                "movff       float32_math_operand_byte2_b0_phys, adc_loop_value_or_uart_rx_byte_or_flash_read_tblptrl_save_phys",
+                "movff       float32_math_operand_byte3_b0_phys, float32_sign_or_uart_digit_or_flash_read_tblptrh_save_phys",
             ),
         ),
     ):
@@ -2740,106 +2742,106 @@ def test_v34_trim_mirrors_and_core_3398_use_chain_copy_stage_runs() -> None:
 
     _assert_ordered(
         trims_load,
-        "rcall       chain_copy_low_window",
-        "db          0x00, 0x00, stock_09B_b0_op, stock_0AC_b0_op, 0x04, 0xFF",
+        "rcall       chain_copy_call_range_trampoline_low",
+        "db          0x00, 0x00, route_0_volume_trim_op, route_0_volume_trim_shadow_op, 0x04, 0xFF",
         "movlw       0x50",
     )
     _assert_ordered(
         response,
         "movlw       0x03",
-        "movwf       stock_15B_b1, BANKED",
-        "movwf       stock_15C_b1, BANKED",
+        "movwf       usb_hid_ep1_in_report_byte1_b1, BANKED",
+        "movwf       usb_hid_ep1_in_report_byte2_b1, BANKED",
         "movlw       0x04",
-        "movwf       stock_15D_b1, BANKED",
+        "movwf       usb_hid_ep1_in_report_byte3_b1, BANKED",
         "rcall       chain_copy",
-        "db          0x00, 0x01, stock_09B_b0_op, stock_173_b1_op, 0x04, 0xFF",
-        "bra         flow_main_core_service_2328_24a6",
+        "db          0x00, 0x01, route_0_volume_trim_op, usb_hid_ep1_in_report_payload_byte22_op, 0x04, 0xFF",
+        "bra         stage_hid_ep1_in_report_from_selector__clear_selector_and_return",
     )
     assert response.count("movlw       0x03") == 1
     _assert_ordered(
         core_3398,
-        "main_core_service_3398:",
+        "truncate_float32_to_integral_float_in_place:",
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_02F_acc_op, stock_003_acc_op, 0x04, 0xFF",
+        "db          0x00, 0x00, float32_transform_shadow_dword_op, addr_low_counter_or_payload_scratch_operand, 0x04, 0xFF",
         "movlw       0x37",
-        "flow_main_core_service_3398_33e8:",
-        "rcall       s3_math_stage_025",
-        "rcall       main_core_service_301a",
+        "truncate_float32_to_integral_float_in_place__convert_through_int32:",
+        "rcall       copy_transform_shadow_to_math_operand",
+        "rcall       float32_to_int32_in_place",
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_025_acc_op, stock_00D_acc_op, 0x04, 0xFF",
-        "call        main_core_service_3e0a, 0x0",
+        "db          0x00, 0x00, float32_math_operand_byte0_op, float32_coeff_or_volume_work_operand_op, 0x04, 0xFF",
+        "call        int32_to_float32_and_save, 0x0",
     )
 
 
 def test_v34_core_3e0a_and_eeprom_writeback_use_chain_copy_stage_runs() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    core_3e0a = _label_body(text, "main_core_service_3e0a", ["i2c_tas3108_reg1f_write"])
-    eeprom_writeback = _label_body(text, "main_flash_service_46de", ["main_core_service_48fe"])
+    core_3e0a = _label_body(text, "int32_to_float32_and_save", ["i2c_tas3108_reg1f_write"])
+    eeprom_writeback = _label_body(text, "eeprom_write_byte_if_changed", ["usb_ep1_configure_if_enabled"])
 
     for old_copy in (
-        "movff       stock_00D_b0_phys, stock_003_b0_phys",
-        "movff       stock_00E_b0_phys, stock_004_b0_phys",
-        "movff       stock_00F_b0_phys, saved_w_b0_phys",
-        "movff       stock_010_b0_phys, stock_006_b0_phys",
+        "movff       flash_saved_tblptrh_phys, addr_low_counter_or_payload_scratch_phys",
+        "movff       flash_addr_high_or_adc_loop_or_bsr_save_scratch_phys, addr_high_table_row_or_checksum_scratch_phys",
+        "movff       adc_loop_value_or_uart_rx_byte_or_flash_read_tblptrl_save_phys, saved_w_b0_phys",
+        "movff       float32_sign_or_uart_digit_or_flash_read_tblptrh_save_phys, status_fanout_or_usb_ptr_or_i2c_uart_scratch_phys",
     ):
         assert old_copy not in core_3e0a
-    writeback_tail = eeprom_writeback[eeprom_writeback.index("bz          flow_main_flash_service_46de_46fe") :]
+    writeback_tail = eeprom_writeback[eeprom_writeback.index("bz          eeprom_write_byte_if_changed__return_unchanged") :]
     for old_copy in (
-        "movff       stock_007_b0_phys, stock_003_b0_phys",
-        "movff       stock_008_b0_phys, stock_004_b0_phys",
-        "movff       stock_009_b0_phys, saved_w_b0_phys",
+        "movff       computed_volume_or_flash_count_eeprom_addr_adc_usb_ptr_scratch_phys, addr_low_counter_or_payload_scratch_phys",
+        "movff       computed_volume_or_i2c_payload_or_float32_scale_or_adc_eeprom_hi_phys, addr_high_table_row_or_checksum_scratch_phys",
+        "movff       eeprom_or_filename_data_or_flash_buffer_ptr_low_or_signature_low_phys, saved_w_b0_phys",
     ):
         assert old_copy not in writeback_tail
 
     _assert_ordered(
         core_3e0a,
-        "flow_main_core_service_3e0a_3e3a:",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_00D_acc_op, stock_003_acc_op, 0x04, 0xFF",
+        "int32_to_float32_and_save__pack_result:",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, float32_coeff_or_volume_work_operand_op, addr_low_counter_or_payload_scratch_operand, 0x04, 0xFF",
         "movlw       0x96",
-        "goto        main_core_service_30d8_with_save",
+        "goto        float32_pack_mantissa_exponent_sign_and_save",
     )
     _assert_ordered(
         eeprom_writeback,
-        "xorwf       stock_009_acc, W, ACCESS",
-        "bz          flow_main_flash_service_46de_46fe",
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, stock_007_acc_op, stock_003_acc_op, 0x03, 0xFF",
+        "xorwf       flash_src_low_or_rx_length_scratch_byte, W, ACCESS",
+        "bz          eeprom_write_byte_if_changed__return_unchanged",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, eeprom_addr_or_float32_pack_tail_operand_op, addr_low_counter_or_payload_scratch_operand, 0x03, 0xFF",
         "bra         eeprom_write_blocking",
     )
 
 
 def test_v34_coeff_stage_runs_use_chain_copy_descriptors() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    apply_body = _label_body(text, "flow_main_i2c_service_2100_22de", ["flow_main_i2c_service_2100_22fc"])
-    helper = _label_body(text, "s3_coeff_stage_049", ["main_i2c_service_39a6"])
+    apply_body = _label_body(text, "i2c_apply_channel_route_sync_burst__compute_source_coefficients", ["i2c_apply_channel_route_sync_burst__write_staged_coefficients"])
+    helper = _label_body(text, "stage_tas3108_coeff_input_scratch", ["i2c_emit_tas3108_coeff_from_staged_float"])
 
     for old_copy in (
-        "movff       stock_00D_b0_phys, i2c_coeff_0_b0_phys",
-        "movff       stock_00E_b0_phys, i2c_coeff_1_b0_phys",
-        "movff       stock_00F_b0_phys, i2c_coeff_2_b0_phys",
-        "movff       stock_010_b0_phys, i2c_coeff_3_b0_phys",
+        "movff       flash_saved_tblptrh_phys, i2c_coeff_0_b0_phys",
+        "movff       flash_addr_high_or_adc_loop_or_bsr_save_scratch_phys, i2c_coeff_1_b0_phys",
+        "movff       adc_loop_value_or_uart_rx_byte_or_flash_read_tblptrl_save_phys, i2c_coeff_2_b0_phys",
+        "movff       float32_sign_or_uart_digit_or_flash_read_tblptrh_save_phys, i2c_coeff_3_b0_phys",
     ):
         assert old_copy not in apply_body
     for old_copy in (
-        "movff       i2c_coeff_0_b0_phys, stock_049_b0_phys",
-        "movff       i2c_coeff_1_b0_phys, stock_04A_b0_phys",
-        "movff       i2c_coeff_2_b0_phys, stock_04B_b0_phys",
-        "movff       i2c_coeff_3_b0_phys, stock_04C_b0_phys",
+        "movff       i2c_coeff_0_b0_phys, fw_update_relay_page_index_bank0_phys",
+        "movff       i2c_coeff_1_b0_phys, fw_update_relay_current_byte_phys",
+        "movff       i2c_coeff_2_b0_phys, fw_update_offset_or_channel_enable_row_base_scratch_bank0_phys",
+        "movff       i2c_coeff_3_b0_phys, channel_enable_route_shift_mask_phys",
     ):
         assert old_copy not in helper
 
     _assert_ordered(
         apply_body,
-        "call        main_core_service_45ce, 0x0",
+        "call        uint8_to_float32_and_save, 0x0",
         "rcall       chain_copy",
-        "db          0x00, 0x00, stock_00D_acc_op, i2c_coeff_0_acc_op, 0x04, 0xFF",
+        "db          0x00, 0x00, float32_coeff_or_volume_work_operand_op, i2c_coeff_0_acc_op, 0x04, 0xFF",
     )
-    assert "flow_main_i2c_service_2100_22fc:" not in apply_body
+    assert "i2c_apply_channel_route_sync_burst__write_staged_coefficients:" not in apply_body
     _assert_ordered(
         helper,
-        "rcall       chain_copy_mid_window",
-        "db          0x00, 0x00, i2c_coeff_0_acc_op, stock_049_acc_op, 0x04, 0xFF",
+        "rcall       chain_copy_call_range_trampoline_mid",
+        "db          0x00, 0x00, i2c_coeff_0_acc_op, tas3108_coeff_staged_input_dword_op, 0x04, 0xFF",
         "return      0",
     )
 
@@ -2871,13 +2873,13 @@ def test_v34_preset_apply_is_transaction_checked_and_physical_source_owned() -> 
     )
     _assert_ordered(
         cursor_entry,
-        "movff       preset_job_tbl_lo_b2_phys, stock_013_b0_phys",
-        "movff       preset_job_tbl_hi_b2_phys, stock_014_b0_phys",
+        "movff       preset_job_tbl_lo_b2_phys, eeprom_record_count_or_flash_addr_upper_or_preset_addr_low_phys",
+        "movff       preset_job_tbl_hi_b2_phys, flash_addr_shadow_low_or_preset_table_addr_hi_phys",
         "bra         preset_job_apply_i2c_entry",
     )
     advance = _label_body(
         text,
-        "preset_job_advance_cursor_0x18",
+        "preset_job_advance_cursor_to_next_table_row",
         ["preset_job_apply_i2c_entry"],
     )
     _assert_ordered(
@@ -2894,12 +2896,12 @@ def test_v34_preset_apply_is_transaction_checked_and_physical_source_owned() -> 
     i2c_entry = _label_body(
         text,
         "preset_job_apply_i2c_entry",
-        ["preset_job_apply_i2c_done", "preset_job_apply_i2c_timeout"],
+        ["preset_job_apply_i2c_entry__return_success", "preset_job_apply_i2c_timeout"],
     )
     _assert_ordered(
         i2c_entry,
         "call        preset_table_apply_entry_core_async, 0x0",
-        "bcf         stock_012_acc, 0, ACCESS",
+        "bcf         float_divisor_or_preset_flag_scratch_byte, 0, ACCESS",
         "bc          preset_job_apply_i2c_timeout",
     )
 
@@ -2917,12 +2919,12 @@ def test_v34_preset_apply_is_transaction_checked_and_physical_source_owned() -> 
         "bnz         preset_job_commit_rearm",
         "rcall       preset_job_apply_i2c_from_job_cursor",
         "bc          preset_job_apply_retry",
-        "bra         preset_job_advance_cursor_0x18",
+        "bra         preset_job_advance_cursor_to_next_table_row",
     )
 
     final = _label_body(text, "preset_job_apply_final", ["preset_job_commit"])
     assert "movlw       0x5F" not in final
-    assert "call        preset_b_remap_start_addr" not in final
+    assert "call        flash_remap_preset_b_start_address_if_active" not in final
     _assert_ordered(
         final,
         "rcall       preset_job_apply_i2c_from_job_cursor",
@@ -2936,14 +2938,14 @@ def test_v34_preset_apply_is_transaction_checked_and_physical_source_owned() -> 
     )
     _assert_ordered(
         async_core,
-        "bsf         stock_012_acc, 0, ACCESS",
-        "rcall       flash_read_stock_fsr2_0017",
-        "movff       stock_018_b0_phys, stock_02F_b0_phys",
-        "movff       stock_019_b0_phys, stock_031_b0_phys",
+        "bsf         float_divisor_or_preset_flag_scratch_byte, 0, ACCESS",
+        "rcall       flash_read_without_preset_remap_to_scratch_buffer",
+        "movff       preset_header_tas_reg_or_uart_block_base_low_scratch_phys, float32_preset_fw_update_scratch_byte0_b0_phys",
+        "movff       preset_table_header_len_source_phys, preset_table_row_len_phys",
         "rcall       preset_table_validate_async_header",
         "bc          preset_table_apply_entry_timeout",
     )
-    assert "flash_read_fsr2_0017" not in async_core
+    assert "flash_read_to_scratch_buffer" not in async_core
 
     legacy_core = _label_body(
         text,
@@ -2952,30 +2954,30 @@ def test_v34_preset_apply_is_transaction_checked_and_physical_source_owned() -> 
     )
     _assert_ordered(
         legacy_core,
-        "rcall       flash_read_fsr2_0017",
-        "rcall       flash_read_stock_fsr2_0017",
-        "rcall       flash_read_fsr2_0017",
+        "rcall       flash_read_to_scratch_buffer",
+        "rcall       flash_read_without_preset_remap_to_scratch_buffer",
+        "rcall       flash_read_to_scratch_buffer",
         "call        wait_sen_bounded, 0x0",
     )
 
     validator = _label_body(
         text,
         "preset_table_validate_async_header",
-        ["preset_table_apply_entry_loop"],
+        ["preset_table_apply_entry_core__send_payload_byte_loop"],
     )
     for token in (
         "xorlw       0x01",
         "movlw       0x60",
         "movlw       0xD4",
         "addlw       0xC8",
-        "addwf       stock_016_acc, W, ACCESS",
+        "addwf       float_product_flash_addr_or_preset_index_scratch_byte, W, ACCESS",
         "xorlw       0x14",
-        "bcf         stock_00D_acc, 0, ACCESS",
+        "bcf         i2c_flag_or_flash_math_uart_cmd_scratch_byte, 0, ACCESS",
         "bsf         STATUS, 0, ACCESS",
     ):
         assert token in validator
 
-    cancel = _label_body(text, "preset_job_cancel", ["preset_job_cancel_done"])
+    cancel = _label_body(text, "preset_job_cancel", ["preset_job_service__clear_state_and_return"])
     assert "bcf         active_flags_acc, 4" not in cancel
     assert "bcf         active_flags_acc, 5" not in cancel
 
@@ -2992,12 +2994,12 @@ def test_v34_preset_target_compare_uses_shared_bsr2_helper() -> None:
         "return      0",
     )
     expected_calls = {
-        "adc_boot_gate_barrier_done": (
-            ["adc_boot_gate_no_preset_rearm"],
+        "adc_boot_gate__resume_uart_and_rebroadcast_wake": (
+            ["adc_boot_gate__skip_pending_preset_rearm"],
             "call        preset_target_compare_active_bsr2, 0x0",
         ),
         "preset_select_handler": (
-            ["preset_select_handler_done"],
+            ["preset_select_handler__return_to_parser"],
             "rcall       preset_target_compare_active_bsr2",
         ),
         "preset_job_holding": (
@@ -3021,37 +3023,37 @@ def test_v34_preset_target_compare_uses_shared_bsr2_helper() -> None:
 def test_v34_field6_lifecycle_reassert_uses_validated_writer_and_route_drain() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
 
-    main_core = _label_body(text, "main_core_service_4574", ["main_usb_service_45a2"])
-    assert "main_i2c_service_381c" not in main_core
+    main_core = _label_body(text, "preset_replay_selected_table_blocking", ["usb_hid_mailbox_send_reply_if_ready"])
+    assert "preset_table_apply_entry_legacy_blocking" not in main_core
     _assert_ordered(
         main_core,
         "rcall       preset_job_init_cursor_from_active",
         "rcall       preset_job_apply_i2c_from_job_cursor",
-        "bc          main_core_service_4574_fail",
-        "rcall       preset_job_advance_cursor_0x18",
+        "bc          preset_replay_selected_table_blocking__return_failure",
+        "rcall       preset_job_advance_cursor_to_next_table_row",
     )
     assert "bra         preset_job_apply_i2c_from_job_cursor" in main_core
     assert main_core.count("rcall       preset_job_apply_i2c_from_job_cursor") == 1
-    assert main_core.count("rcall       preset_job_advance_cursor_0x18") == 1
+    assert main_core.count("rcall       preset_job_advance_cursor_to_next_table_row") == 1
 
     reconnect = _label_body(
         text,
-        "flow_cmd_dispatch_gated_1a76",
-        ["flow_cmd_dispatch_gated_1a9c"],
+        "cmd_dispatch_gated__check_reconnect_reapply",
+        ["cmd_dispatch_gated__check_mute_dirty"],
     )
     _assert_ordered(
         reconnect,
-        "rcall       clrf_i2c_coeff_0123_and_write_mid_window",
+        "rcall       tas3108_write_zero_volume_coeff_mid_window",
         "rcall       cmd_dispatch_route_sync_if_dirty",
         "bcf         event_flags_b0, 6, BANKED",
-        "call        main_core_service_4574",
-        "bc          flow_cmd_dispatch_gated_reapply_failed",
+        "call        preset_replay_selected_table_blocking",
+        "bc          cmd_dispatch_gated__reapply_failed_fault_mute",
     )
     assert "cmd_dispatch_input_route_if_dirty" not in reconnect
     _assert_ordered(
         reconnect,
         "btfss       INTCON, 7, ACCESS",
-        "bra         flow_cmd_dispatch_gated_reapply_skip_name",
+        "bra         cmd_dispatch_gated__finish_reapply_without_filename_reload",
         "bcf         INTCON, 7, ACCESS",
         "call        preset_load_filename",
         "bsf         INTCON, 7, ACCESS",
@@ -3060,13 +3062,13 @@ def test_v34_field6_lifecycle_reassert_uses_validated_writer_and_route_drain() -
     volume_entry = _label_body(
         text,
         "cmd_dispatch_gated",
-        ["flow_cmd_dispatch_gated_volume_unmuted"],
+        ["cmd_dispatch_gated__apply_unmuted_volume_dirty"],
     )
     pre_late = volume_entry[: volume_entry.index("cmd_dispatch_late_bit1_entry:")]
     _assert_ordered(
         pre_late,
         "btfsc       active_flags_acc, 7, ACCESS",
-        "bra         flow_cmd_dispatch_gated_19a8",
+        "bra         cmd_dispatch_gated__check_reconnect_and_volume_dirty",
     )
     assert "cmd_dispatch_input_route_if_dirty" not in pre_late
     assert volume_entry.index("cmd_dispatch_late_bit1_entry:") < volume_entry.index(
@@ -3074,13 +3076,13 @@ def test_v34_field6_lifecycle_reassert_uses_validated_writer_and_route_drain() -
     )
     flow_entry = _label_body(
         text,
-        "flow_cmd_dispatch_gated_19a8",
-        ["flow_cmd_dispatch_gated_volume_unmuted"],
+        "cmd_dispatch_gated__check_reconnect_and_volume_dirty",
+        ["cmd_dispatch_gated__apply_unmuted_volume_dirty"],
     )
     _assert_ordered(
         flow_entry,
         "btfsc       active_flags_acc, 7, ACCESS",
-        "bra         flow_cmd_dispatch_gated_1a76",
+        "bra         cmd_dispatch_gated__check_reconnect_reapply",
         "btfss       event_flags_b0, 3, BANKED",
     )
 
@@ -3089,13 +3091,13 @@ def test_v34_channel_route_bit_fanout_uses_addlw_selector_shape() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
     body = _label_body(
         text,
-        "flow_cmd_dispatch_gated_1aca",
-        ["flow_cmd_dispatch_gated_1b8c"],
+        "cmd_dispatch_gated__check_channel_enable_dirty",
+        ["cmd_dispatch_gated__channel_enable_write_complete"],
     )
     helper_region = _label_body(
         text,
-        "usb_mailbox_service_05",
-        ["setup_fsr2_page_1_or_2"],
+        "usb_hid_mailbox_stage_selector5_if_enabled",
+        ["setup_fsr2_page1_or_page2_from_w_carry"],
     )
 
     for stale_label in [
@@ -3115,62 +3117,62 @@ def test_v34_channel_route_bit_fanout_uses_addlw_selector_shape() -> None:
     assert "i2c_381c_with_w_bank0:" not in helper_region
     assert "rcall       i2c_381c_with_w_bank0" not in body
     assert body.count("addlw       0xEC") == 1
-    assert body.count("call        main_i2c_service_381c, 0x0") == 1
+    assert body.count("call        preset_table_apply_entry_legacy_blocking, 0x0") == 1
     _assert_ordered(
         body,
         "movlw       0x5F",
-        "movwf       stock_014_acc, ACCESS",
+        "movwf       route_base_or_flash_addr_low_scratch_byte, ACCESS",
         "movlw       0x1C",
-        "movwf       stock_04B_acc, ACCESS",
-        "movff       stock_0A4_b0_phys, stock_04C_b0_phys",
-        "flow_cmd_dispatch_gated_route_bit_loop:",
-        "rrcf        stock_04C_acc, F, ACCESS",
-        "movf        stock_04B_acc, W, ACCESS",
+        "movwf       fw_update_offset_or_channel_enable_row_base_scratch, ACCESS",
+        "movff       channel_enable_mask_phys, channel_enable_route_shift_mask_phys",
+        "cmd_dispatch_gated__write_next_channel_enable_bit:",
+        "rrcf        diff_count_update_compare_or_route_mask_scratch_byte, F, ACCESS",
+        "movf        fw_update_offset_or_channel_enable_row_base_scratch, W, ACCESS",
         "btfsc       STATUS, 0, ACCESS",
         "addlw       0xEC",
-        "movwf       stock_013_acc, ACCESS",
-        "call        main_i2c_service_381c, 0x0",
+        "movwf       route_bit_or_tblptr_upper_scratch_byte, ACCESS",
+        "call        preset_table_apply_entry_legacy_blocking, 0x0",
         "movlw       0x28",
-        "addwf       stock_04B_acc, F, ACCESS",
-        "bnc         flow_cmd_dispatch_gated_route_bit_loop",
+        "addwf       fw_update_offset_or_channel_enable_row_base_scratch, F, ACCESS",
+        "bnc         cmd_dispatch_gated__write_next_channel_enable_bit",
     )
 
 
 def test_v34_field6_wake_route_sync_precedes_final_reassert() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    wake = _label_body(text, "adc_boot_gate_exit", ["preset_b_remap_start_addr"])
+    wake = _label_body(text, "adc_boot_gate__start_dsp_cold_init", ["flash_remap_preset_b_start_address_if_active"])
 
     _assert_ordered(
         wake,
-        "rcall       clrf_i2c_coeff_0123_and_write_mid_window",
+        "rcall       tas3108_write_zero_volume_coeff_mid_window",
         "bsf         event_flags_b0, 4, BANKED",
         "bsf         active_flags_acc, 7, ACCESS",
         "call        cmd_dispatch_gated",
-        "adc_boot_gate_reassert_ok:",
+        "adc_boot_gate__enable_amp_and_probe_i2c:",
         "rcall       wake_i2c_barrier_attempt",
-        "bc          adc_boot_gate_barrier_pending",
+        "bc          adc_boot_gate__mark_i2c_barrier_pending",
         "bsf         event_flags_b0, 1, BANKED",
         "bsf         event_flags_b0, 3, BANKED",
         "call        cmd_dispatch_gated",
     )
-    pre_lifecycle = wake[: wake.index("adc_boot_gate_reassert_ok:")]
-    assert "call        main_core_service_4574" not in pre_lifecycle
+    pre_lifecycle = wake[: wake.index("adc_boot_gate__enable_amp_and_probe_i2c:")]
+    assert "call        preset_replay_selected_table_blocking" not in pre_lifecycle
     assert "call        cmd_dispatch_input_route_if_dirty" not in pre_lifecycle
     assert "call        cmd_dispatch_route_sync_if_dirty" not in pre_lifecycle
     assert "event_flags_b0, 1" not in pre_lifecycle
 
     barrier = wake[
-        wake.index("adc_boot_gate_reassert_ok:") : wake.index("bsf         event_flags_b0, 1, BANKED")
+        wake.index("adc_boot_gate__enable_amp_and_probe_i2c:") : wake.index("bsf         event_flags_b0, 1, BANKED")
     ]
     assert "call        cmd_dispatch_gated" not in barrier
     assert "event_flags_b0, 3" not in barrier
-    assert "stock_094_b0, 7" not in barrier
-    assert "bsf         stock_094_b0, 6, BANKED" in wake
+    assert "main_runtime_latch_flags_b0, 7" not in barrier
+    assert "bsf         main_runtime_latch_flags_b0, 6, BANKED" in wake
     _assert_ordered(
         wake,
-        "adc_boot_gate_barrier_pending:",
+        "adc_boot_gate__mark_i2c_barrier_pending:",
         "call        field10_mark_fault_mute, 0x0",
-        "bsf         stock_094_b0, 6, BANKED",
+        "bsf         main_runtime_latch_flags_b0, 6, BANKED",
     )
     fault_mute = _label_body(text, "field10_mark_fault_mute", ["wake_barrier_retry"])
     _assert_ordered(
@@ -3183,12 +3185,12 @@ def test_v34_field6_wake_route_sync_precedes_final_reassert() -> None:
         "return      0",
     )
 
-    dispatch = _label_body(text, "cmd_dispatch_late_bit1_entry", ["flow_cmd_dispatch_gated_19a8"])
+    dispatch = _label_body(text, "cmd_dispatch_late_bit1_entry", ["cmd_dispatch_gated__check_reconnect_and_volume_dirty"])
     _assert_ordered(
         dispatch,
-        "bcf         stock_094_b0, 7, BANKED",
+        "bcf         main_runtime_latch_flags_b0, 7, BANKED",
         "btfsc       event_flags_b0, 1, BANKED",
-        "bsf         stock_094_b0, 7, BANKED",
+        "bsf         main_runtime_latch_flags_b0, 7, BANKED",
         "bcf         dsp_fault_flags_b0, 2, BANKED",
         "rcall       cmd_dispatch_input_route_if_dirty",
         "btfsc       dsp_fault_flags_b0, 2, BANKED",
@@ -3201,25 +3203,25 @@ def test_v34_field6_route_sync_tail_has_single_code_owner() -> None:
     input_helper = _label_body(
         text,
         "cmd_dispatch_input_route_if_dirty",
-        ["flow_cmd_dispatch_gated_18fe"],
+        ["cmd_dispatch_gated__route_code_1_i2c_pair"],
     )
-    helper = _label_body(text, "cmd_dispatch_route_sync_if_dirty", ["usb_mailbox_service_05"])
-    normal_tail = _label_body(text, "flow_cmd_dispatch_gated_1baa", ["flow_cmd_dispatch_gated_1bc8"])
+    helper = _label_body(text, "cmd_dispatch_route_sync_if_dirty", ["usb_hid_mailbox_stage_selector5_if_enabled"])
+    normal_tail = _label_body(text, "cmd_dispatch_gated__check_route_sync_dirty", ["cmd_dispatch_gated__check_shared_setup_eeprom_dirty"])
 
     assert "return      0" in input_helper
     assert "event_flags_b0, 3" in input_helper
     assert "call        cmd_dispatch_gated" not in input_helper
-    assert len(re.findall(r"(?m)^\s+rcall\s+main_i2c_service_2100\b", text)) == 1
-    assert "rcall       main_i2c_service_2100" in helper
+    assert len(re.findall(r"(?m)^\s+rcall\s+i2c_apply_channel_route_sync_burst\b", text)) == 1
+    assert "rcall       i2c_apply_channel_route_sync_burst" in helper
     _assert_ordered(
         helper,
         "bsf         filename_dirty_flags_b0, 1, BANKED",
-        "rcall       usb_mailbox_service_05",
-        "bra         main_timer_service_48a6_low_window",
+        "rcall       usb_hid_mailbox_stage_selector5_if_enabled",
+        "bra         timer0_rearm_50ms_low_window_trampoline",
     )
-    assert "call        main_usb_service_45a2, 0x0" not in helper
+    assert "call        usb_hid_mailbox_send_reply_if_ready, 0x0" not in helper
     assert "rcall       cmd_dispatch_route_sync_if_dirty" in normal_tail
-    assert "main_i2c_service_2100" not in normal_tail
+    assert "i2c_apply_channel_route_sync_burst" not in normal_tail
 
 
 def test_v34_field6_repros_are_no_longer_marked_xfail() -> None:
@@ -3239,7 +3241,7 @@ def test_v34_field6_repros_are_no_longer_marked_xfail() -> None:
 )
 def test_v34_chain_copy_call_sites_are_pre_gie_or_helper_masks_tos_rewrite() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    chain_copy = _label_body(text, "chain_copy", ["s3_math_stage_025"])
+    chain_copy = _label_body(text, "chain_copy", ["copy_transform_shadow_to_math_operand"])
     tos_rewrite = chain_copy[
         chain_copy.index("movf        TBLPTRL, W, ACCESS") :
         chain_copy.index("return      0")
@@ -3249,19 +3251,19 @@ def test_v34_chain_copy_call_sites_are_pre_gie_or_helper_masks_tos_rewrite() -> 
         return
 
     runtime_post_gie_bodies = {
-        "flow_hid_command_dispatch_124e": ["flow_hid_command_dispatch_129c"],
-        "flow_hid_command_dispatch_1344": ["flow_hid_command_dispatch_1374"],
-        "main_core_service_1e88": ["main_core_service_2328"],
-        "main_core_service_3398": ["main_core_service_3432"],
-        "main_i2c_service_39a6": ["main_core_service_3c82"],
+        "hid_command_dispatch__compare_settings_mirrors": ["hid_command_dispatch__mark_volume_dirty_if_changed"],
+        "hid_command_dispatch__snapshot_settings_mirrors": ["hid_command_dispatch__stage_status_05"],
+        "restore_eeprom_settings_on_boot": ["stage_hid_ep1_in_report_from_selector"],
+        "truncate_float32_to_integral_float_in_place": ["usb_ep0_apply_clear_set_feature_request"],
+        "i2c_emit_tas3108_coeff_from_staged_float": ["usb_ep1_out_copy_packet_if_ready"],
     }
     unsafe = [
         label
         for label, next_labels in runtime_post_gie_bodies.items()
         if (
             "call        chain_copy" in _label_body(text, label, next_labels)
-            or "rcall       chain_copy_low_window" in _label_body(text, label, next_labels)
-            or "rcall       chain_copy_mid_window" in _label_body(text, label, next_labels)
+            or "rcall       chain_copy_call_range_trampoline_low" in _label_body(text, label, next_labels)
+            or "rcall       chain_copy_call_range_trampoline_mid" in _label_body(text, label, next_labels)
         )
     ]
     assert not unsafe, "chain_copy call sites reachable after GIE without TOS mask: " + ", ".join(unsafe)
@@ -3269,7 +3271,7 @@ def test_v34_chain_copy_call_sites_are_pre_gie_or_helper_masks_tos_rewrite() -> 
 
 def test_v34_cold_init_clears_all_upper_bank_runtime_lifecycle_cells() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "flow_main_flash_service_3ce8_3d4e", ["diag_rcon_rearm"])
+    body = _label_body(text, "boot_cold_init__clear_ram_and_runtime_state", ["diag_rcon_rearm"])
     lifecycle_cells = [
         "preset_job_state_b2",
         "preset_job_target_b2",
@@ -3328,33 +3330,33 @@ def test_v34_cold_init_clears_all_upper_bank_runtime_lifecycle_cells() -> None:
 
 def test_v34_parser_forwarded_bytes_mark_chain_tx_emitted_before_uart_tx() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    route_body = _label_body(text, "parser_route_phase_handler", ["flow_main_uart_service_1be6_1c42"])
-    data_body = _label_body(text, "flow_main_uart_service_1be6_1c42", ["flow_main_uart_service_1be6_1c52"])
+    route_body = _label_body(text, "parser_route_phase_handler", ["uart_link_parser__payload_forward_gate"])
+    data_body = _label_body(text, "uart_link_parser__payload_forward_gate", ["uart_link_parser__advance_payload_position"])
     for body in (route_body, data_body):
-        assert "rcall       forward_stock00a_marked" in body
-    helper = _label_body(text, "forward_stock00a_marked", ["main_core_service_1e88"])
+        assert "rcall       uart_link_forward_parser_byte_and_mark_tx" in body
+    helper = _label_body(text, "uart_link_forward_parser_byte_and_mark_tx", ["restore_eeprom_settings_on_boot"])
     _assert_ordered(
         helper,
         "call        mark_chain_tx_emitted_bsr0, 0x0",
-        "movf        stock_00A_acc, W, ACCESS",
-        "bra         uart_tx_byte_blocking_mid_window",
+        "movf        eeprom_mask_or_flash_src_high_scratch_byte, W, ACCESS",
+        "bra         uart_tx_byte_blocking_call_range_trampoline",
     )
 
 
 def test_v34_uart_route_b0_b1_compare_uses_cumulative_xor() -> None:
     text = V34_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "flow_main_uart_service_1be6_1bf4", ["flow_main_uart_service_1be6_1c1c"])
+    body = _label_body(text, "uart_link_parser__read_next_byte", ["uart_link_parser__handle_route_or_status_byte"])
 
     _assert_ordered(
         body,
-        "movf        stock_00A_acc, W, ACCESS",
+        "movf        eeprom_mask_or_flash_src_high_scratch_byte, W, ACCESS",
         "xorlw       0xB0",
-        "bnz         flow_main_uart_service_1be6_1c0e",
-        "flow_main_uart_service_1be6_1c0e:",
+        "bnz         uart_link_parser__check_b1_address_route",
+        "uart_link_parser__check_b1_address_route:",
         "xorlw       0x01",
-        "bnz         flow_main_uart_service_1be6_1c1c",
+        "bnz         uart_link_parser__handle_route_or_status_byte",
     )
-    assert "movf        stock_00A_acc, W, ACCESS\n    xorlw       0xB1" not in body
+    assert "movf        eeprom_mask_or_flash_src_high_scratch_byte, W, ACCESS\n    xorlw       0xB1" not in body
 
 
 def test_v34_reply_helpers_participate_in_chain_tx_emitted_contract() -> None:
@@ -3378,8 +3380,8 @@ def test_v34_reply_helpers_participate_in_chain_tx_emitted_contract() -> None:
         "send_dsp_fault_status": ["cmd21_diag_query_handler"],
         "cmd23_health_query_handler": ["cmd25_identity_query_handler"],
         "cmd25_identity_query_handler": ["cmd 0x26"],
-        "filename_emit_frame": ["diag_send_burst_xx"],
-        "diag_send_burst_xx": ["Volume DSP Write"],
+        "filename_emit_frame": ["diag_low_nibble_reply_burst"],
+        "diag_low_nibble_reply_burst": ["Volume DSP Write"],
     }
     missing = []
     for label, next_labels in required.items():

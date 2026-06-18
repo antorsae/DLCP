@@ -21,7 +21,7 @@ This campaign succeeds the frozen V3.1 campaign documented in
 `W08-R01` source and inherited every W02–W08 accepted optimization
 (dead-code removals, `call` → `rcall` sweep, `send_status_burst`
 preamble/postamble helpers, `cmd_dispatch_gated_i2c_pair` helper,
-counted-loop rewrite in `main_core_service_297e`, `computed_volume ->
+counted-loop rewrite in `float32_exp_limit1024_in_place`, `computed_volume ->
 logical_volume` copy helper, etc.). V3.2 then consumed ~780 bytes of the
 recovered slack on new features: asynchronous preset job state machine,
 bounded START/STOP waits, mute/preset coalescing, standby/reconnect
@@ -98,7 +98,7 @@ observable V3.2 behavior, including:
   START/STOP waits
 - Layer 1 bounded TX / Layer 2 full-sync / Layer 5 Tier-1 diagnostics
   counters and `cmd 0x21` / `cmd 0x22` / `cmd 0x44` semantics
-- no-pop flash entry helper (`flash_entry_quiet_shutdown`) and its
+- no-pop flash entry helper (`flash_entry_mute_and_reset`) and its
   bounded-I2C secondary-device interaction
 - current V3.2 source-level semantics unless a change is proven to be
   dead code removal and explicitly accepted as such
@@ -201,7 +201,7 @@ The review must cover all `; Function:` blocks in
 - HID dispatch and update-relay logic
 - UART, I2C, flash, preset, EEPROM, and recovery helpers
 - V3.2 async preset job state machine (`preset_job_*` labels)
-- V3.2 no-pop flash entry helper (`flash_entry_quiet_shutdown` / related)
+- V3.2 no-pop flash entry helper (`flash_entry_mute_and_reset` / related)
 - V3.2 Layer 5 Tier-1 diagnostics (`diag_*` labels, `cmd 0x21`, `cmd
   0x22`, `cmd 0x44` handlers, `diag_send_burst` helper)
 - Layer 1 bounded TX / Layer 2 full-sync helpers added in V3.2
@@ -492,7 +492,7 @@ Minimum per-experiment fields:
   - `W04-E03..E05` (`movff X, X` self-move sweep) — **0 sites** in
     V3.2 (V3.1's `W05-R01` removed 22 instances).
   - `W04-E06` (shared BF-status helper for `report_cmd29_status` +
-    `factory_reset_status_emit`) — still applicable, small (~2 B net).
+    `fw_update_emit_bf18_status`) — still applicable, small (~2 B net).
   - `W04-E07` (`send_status_burst` Variant A preamble helper) —
     **already landed** in V3.1 `W06-E05` and inherited as
     `send_status_burst_preamble`.

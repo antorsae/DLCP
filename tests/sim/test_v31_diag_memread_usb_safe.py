@@ -42,9 +42,9 @@ def test_diag_memread_builder_rewrite_is_idempotent_on_canonical_v31() -> None:
     text = V31_MAIN_ASM_CANONICAL.read_text(encoding="utf-8", errors="replace")
 
     assert builder._rewrite_source(text) == text
-    assert "hid_cmd_diag_memread:" in text
-    assert text.index("goto        hid_cmd_diag_memread") < text.index("hid_cmd_diag_memread:")
-    assert text.index("hid_cmd_diag_memread:") < text.index(builder._PRESET_TABLE_ANCHOR)
+    assert "hid_diag_memread_dispatch:" in text
+    assert text.index("goto        hid_diag_memread_dispatch") < text.index("hid_diag_memread_dispatch:")
+    assert text.index("hid_diag_memread_dispatch:") < text.index(builder._PRESET_TABLE_ANCHOR)
 
 
 def test_canonical_v31_source_listing_contains_memread_dispatch_and_handler(
@@ -54,11 +54,11 @@ def test_canonical_v31_source_listing_contains_memread_dispatch_and_handler(
     lst_path = _source_listing(tmp_path)
     text = lst_path.read_text(encoding="utf-8", errors="replace")
 
-    assert "hid_cmd_diag_memread_probe" in text
-    assert "goto        hid_cmd_diag_memread" in text
-    assert "hid_cmd_diag_memread:" in text
+    assert "hid_command_dispatch__probe_diag_memread_opcode" in text
+    assert "goto        hid_diag_memread_dispatch" in text
+    assert "hid_diag_memread_dispatch:" in text
     assert "org 0x4C00" in text
-    assert text.index("hid_cmd_diag_memread:") < text.index("org 0x4C00")
+    assert text.index("hid_diag_memread_dispatch:") < text.index("org 0x4C00")
 
 
 def test_diag_memread_usb_safe_hex_only_restores_stock_sparse_gaps() -> None:

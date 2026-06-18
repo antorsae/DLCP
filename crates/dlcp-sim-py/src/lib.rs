@@ -365,7 +365,7 @@ fn build_v17_control_only_chain(control_hex_path: PathBuf) -> Result<V17SingleMa
 /// `v23_seed_hex_path` is the silicon-correct seed (defaults
 /// to V2.3-combined when None).  TAS3108 DSP slave attached
 /// to MAIN's MSSP I²C bus -- without it, V3.x's `dsp_ping`
-/// spin-loops on `wait_bf_clear_loop`.  AN0 ADC = 0x0300
+/// spin-loops on `wait_bf_clear_bounded__poll_until_bf_clear`.  AN0 ADC = 0x0300
 /// (mid-rail mains-detect "high"), matching the gpsim
 /// harness's default `standby_mode="hold"` post-boot ADC.
 ///
@@ -1564,7 +1564,7 @@ impl Chain {
     /// This is intentionally below full USB enumeration fidelity: it
     /// models the host-visible "configured EP1 OUT report has arrived"
     /// boundary by staging the OUT data buffer/BDT cells that the firmware
-    /// consumes, then invokes `main_usb_service_3a26` twice as a firmware
+    /// consumes, then invokes `usb_hid_dispatch_out_report_if_ready` twice as a firmware
     /// subroutine.  The first invocation copies EP1 OUT data from
     /// 0x042C..0x046B into command RAM 0x011A..0x0159; the second invokes
     /// `hid_command_dispatch` and copies the response from 0x015A..0x0199
@@ -1641,7 +1641,7 @@ impl Chain {
             let addr = |raw: u16| dlcp_sim::memory::Address::from_raw(raw);
 
             // Minimum host-configured USB state needed for the firmware
-            // gate at main_usb_service_3a26 to accept an EP1 OUT report.
+            // gate at usb_hid_dispatch_out_report_if_ready to accept an EP1 OUT report.
             mem.write_raw(addr(RAM_USB_STATE), 0x06);
             mem.write_raw(addr(RAM_HID_STAGED), 0x00);
             mem.write_raw(addr(ACTIVE_FLAGS), mem.read_raw(addr(ACTIVE_FLAGS)) | 0x08);
@@ -1649,7 +1649,7 @@ impl Chain {
             mem.write_raw(addr(UCON_ADDR), mem.read_raw(addr(UCON_ADDR)) & !0x02);
             mem.write_raw(addr(UEP1_ADDR), 0x1E);
 
-            // Mirror main_usb_service_4624's EP1 BDT setup, then present a
+            // Mirror usb_ep1_configure_hid_buffers's EP1 BDT setup, then present a
             // host-owned OUT completion by clearing UOWN on EP1 OUT.  The
             // firmware copy helper uses fixed data buffers at 0x042C and
             // 0x046C, but the address/count cells are kept coherent so the
@@ -1709,7 +1709,7 @@ impl Chain {
             }
             chain.cores[core_idx].set_pc(old_pc);
             Err(PyRuntimeError::new_err(format!(
-                "firmware_hid_report: main_usb_service_3a26 did not return within {max_steps} instructions"
+                "firmware_hid_report: usb_hid_dispatch_out_report_if_ready did not return within {max_steps} instructions"
             )))
         }
 
@@ -2361,7 +2361,7 @@ impl Chain {
 
     /// Set the AN0 (rail-sense ADC channel 0) sample for a
     /// specific MAIN core by unit index.  V3.x's
-    /// `adc_boot_gate` (`src/dlcp_fw/asm/dlcp_main_v32.asm:4041`)
+    /// `run_wake_rail_gate_and_dsp_cold_init` (`src/dlcp_fw/asm/dlcp_main_v32.asm:4041`)
     /// busy-waits until the AN0 sample crosses `>= 0x0236`;
     /// runtime hysteresis is `0x0229/0x0228`.  The default
     /// seed for both MAINs is `0x0300` (well above threshold)

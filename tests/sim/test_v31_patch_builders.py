@@ -82,9 +82,9 @@ def test_v31_diag_coeff_structural_detector_distinguishes_old_from_new() -> None
         "    bsf         SSPCON2, 2, ACCESS\n"
         "coeff_write_pen_stock:\n"
         "    btfss       SSPCON2, 2, ACCESS\n"
-        "    bra         coeff_write_pen_done\n"
+        "    bra         i2c_tas3108_coeff_write__return_success\n"
         "    bra         coeff_write_pen_stock\n"
-        "coeff_write_pen_done:\n"
+        "i2c_tas3108_coeff_write__return_success:\n"
         "    return      0\n"
         "\n"
     )

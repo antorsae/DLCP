@@ -1,6 +1,6 @@
 """V3.2 no-pop flash-entry structural tests.
 
-Pins the V3.2 ``flash_entry_quiet_shutdown`` design from
+Pins the V3.2 ``flash_entry_mute_and_reset`` design from
 ``docs/NO_POP_FIRMWARE_FLASH.md`` so a future change cannot silently:
 
 * drop the helper
@@ -8,7 +8,7 @@ Pins the V3.2 ``flash_entry_quiet_shutdown`` design from
 * downgrade the EEPROM marker from ``0x33`` back to ``0x32``
 * slip I2C work into ``hard_reset`` itself (which would turn panic
   callers' broken-state recoveries into hangs)
-* reorder ``main_flash_service_46de`` after the helper (which would
+* reorder ``eeprom_write_byte_if_changed`` after the helper (which would
   break the EEPROM-marker-first ordering that protects abort/recovery)
 
 The actual audio-pop suppression is unverifiable in sim (gpsim does
@@ -61,7 +61,7 @@ HELPER_SEQUENCE = (
     (r"bcf\s+LATA,\s*4,\s*ACCESS",                   "phase 3d: LATA.4 -> 0"),
     (r"bcf\s+LATA,\s*5,\s*ACCESS",                   "phase 3e: LATA.5 -> 0"),
     (r"movlw\s+0x64",                                "phase 4: timer3 low byte = 0x64 (100 ms)"),
-    (r"r?call\s+timer3_blocking_delay(?:_ms_W)?(?:,|\b)", "phase 4: 100 ms settle (inline or via W04-E08 timer3_blocking_delay_ms_W factoring)"),
+    (r"r?call\s+timer3_blocking_delay(?:_ms_W|_ms_from_w)?(?:,|\b)", "phase 4: 100 ms settle (inline or via W04-E08 timer3_blocking_delay_ms_from_w factoring)"),
     (r"bcf\s+LATB,\s*3,\s*ACCESS",                   "phase 5: final amp gate LATB.3 -> 0"),
     (r"(?:goto|bra)\s+hard_reset",                   "phase 6: now do the RESET (tail-jump, goto or bra)"),
 )
@@ -116,9 +116,9 @@ def _strip_comments(asm_body: str) -> str:
 
 
 def test_helper_label_exists() -> None:
-    """`flash_entry_quiet_shutdown:` must be a top-level label."""
+    """`flash_entry_mute_and_reset:` must be a top-level label."""
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    assert _label_offset(text, "flash_entry_quiet_shutdown") >= 0
+    assert _label_offset(text, "flash_entry_mute_and_reset") >= 0
 
 
 def test_helper_sequence_is_in_order() -> None:
@@ -132,7 +132,7 @@ def test_helper_sequence_is_in_order() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
-        text, "flash_entry_quiet_shutdown", "main_core_service_48fe"
+        text, "flash_entry_mute_and_reset", "usb_ep1_configure_if_enabled"
     )
     last_pos = 0
     for pattern, desc in HELPER_SEQUENCE:
@@ -154,7 +154,7 @@ def test_helper_terminates_with_goto_hard_reset() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
-        text, "flash_entry_quiet_shutdown", "main_core_service_48fe"
+        text, "flash_entry_mute_and_reset", "usb_ep1_configure_if_enabled"
     )
     # Strip blank lines and comments to find the LAST executable instruction.
     lines = [
@@ -172,9 +172,9 @@ def test_helper_terminates_with_goto_hard_reset() -> None:
 
 
 def test_dispatch_site_redirects_through_helper() -> None:
-    """flow_hid_command_dispatch_13d0 must invoke
-    flash_entry_quiet_shutdown via ``goto`` AFTER calling
-    main_flash_service_46de (which commits EEPROM[0xFF]=0).
+    """hid_command_dispatch__enter_fw_update_boot_marker must invoke
+    flash_entry_mute_and_reset via ``goto`` AFTER calling
+    eeprom_write_byte_if_changed (which commits EEPROM[0xFF]=0).
 
     The EEPROM-marker-first ordering matters: if the helper aborts
     via a bounded I2C timeout, the EEPROM marker is already in place
@@ -183,28 +183,28 @@ def test_dispatch_site_redirects_through_helper() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
-        text, "flow_hid_command_dispatch_13d0", "fw_update_init_sequence"
+        text, "hid_command_dispatch__enter_fw_update_boot_marker", "fw_update_start_relay_handshake"
     )
-    # main_flash_service_46de must come BEFORE flash_entry_quiet_shutdown.
-    flash_service_pos = body.find("main_flash_service_46de")
-    helper_pos = body.find("flash_entry_quiet_shutdown")
+    # eeprom_write_byte_if_changed must come BEFORE flash_entry_mute_and_reset.
+    flash_service_pos = body.find("eeprom_write_byte_if_changed")
+    helper_pos = body.find("flash_entry_mute_and_reset")
     assert flash_service_pos >= 0, "EEPROM marker write missing from dispatch"
     assert helper_pos >= 0, (
-        "dispatch site does NOT redirect to flash_entry_quiet_shutdown — "
+        "dispatch site does NOT redirect to flash_entry_mute_and_reset — "
         "the no-pop entry path has been silently bypassed (likely a "
         "stale `call hard_reset` was reintroduced)"
     )
     assert flash_service_pos < helper_pos, (
-        "EEPROM marker (main_flash_service_46de) must commit BEFORE "
-        "flash_entry_quiet_shutdown runs; otherwise an abort during "
+        "EEPROM marker (eeprom_write_byte_if_changed) must commit BEFORE "
+        "flash_entry_mute_and_reset runs; otherwise an abort during "
         "the helper's bounded I2C waits could leave the unit in a "
         "non-bootloader state on the next reset."
     )
     # The transfer must be `goto`, not `call` (the spec mandates this
     # to save a stack slot on the way into the bootloader).
     assert re.search(
-        r"goto\s+flash_entry_quiet_shutdown", body
-    ), "dispatch site must use `goto flash_entry_quiet_shutdown`, not `call`"
+        r"goto\s+flash_entry_mute_and_reset", body
+    ), "dispatch site must use `goto flash_entry_mute_and_reset`, not `call`"
 
 
 def test_dispatch_site_does_not_call_hard_reset_directly() -> None:
@@ -215,18 +215,18 @@ def test_dispatch_site_does_not_call_hard_reset_directly() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
-        text, "flow_hid_command_dispatch_13d0", "fw_update_init_sequence"
+        text, "hid_command_dispatch__enter_fw_update_boot_marker", "fw_update_start_relay_handshake"
     )
-    # Stripped pattern: main_flash_service_46de followed (within ~5
+    # Stripped pattern: eeprom_write_byte_if_changed followed (within ~5
     # instructions) by call hard_reset would be the regression.
-    flash_pos = body.find("main_flash_service_46de")
+    flash_pos = body.find("eeprom_write_byte_if_changed")
     if flash_pos < 0:
         pytest.fail("EEPROM marker write missing from dispatch")
     window = body[flash_pos:flash_pos + 400]
     assert not re.search(r"call\s+hard_reset", window), (
         "dispatch site has `call hard_reset` after the EEPROM marker — "
         "the no-pop redirect has been reverted (should be `goto "
-        "flash_entry_quiet_shutdown` instead)"
+        "flash_entry_mute_and_reset` instead)"
     )
 
 
@@ -249,7 +249,7 @@ def test_hard_reset_remains_minimal() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _strip_comments(
-        _label_body(text, "hard_reset", "main_i2c_service_48e2")
+        _label_body(text, "hard_reset", "i2c_tas3108_reg1f_02_clear_source_pins")
     )
     # Forbidden in hard_reset: anything that touches I2C, audio,
     # USB, timer hardware, or other side-effecting work.
@@ -268,7 +268,7 @@ def test_hard_reset_remains_minimal() -> None:
             f"hard_reset contains {label} (pattern {pattern!r}); "
             f"this turns panic-path callers' broken-state recoveries "
             f"into hangs.  All side-effecting work belongs in "
-            f"flash_entry_quiet_shutdown, not hard_reset."
+            f"flash_entry_mute_and_reset, not hard_reset."
         )
     # Sanity: hard_reset must contain the literal `reset` instruction.
     assert re.search(r"^\s+reset\s*$", body, re.MULTILINE), (
@@ -312,7 +312,7 @@ def test_helper_calls_preset_force_mute_not_volume_dsp_write() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
-        text, "flash_entry_quiet_shutdown", "main_core_service_48fe"
+        text, "flash_entry_mute_and_reset", "usb_ep1_configure_if_enabled"
     )
     assert "preset_force_mute" in body, (
         "helper must mute the DSP via preset_force_mute"
@@ -333,7 +333,7 @@ def test_helper_does_not_call_usb_shutdown() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
-        text, "flash_entry_quiet_shutdown", "main_core_service_48fe"
+        text, "flash_entry_mute_and_reset", "usb_ep1_configure_if_enabled"
     )
     assert "usb_shutdown" not in body, (
         "helper must NOT call usb_shutdown — RESET itself disconnects "
@@ -349,7 +349,7 @@ def test_helper_does_not_change_oscillator() -> None:
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
     body = _label_body(
-        text, "flash_entry_quiet_shutdown", "main_core_service_48fe"
+        text, "flash_entry_mute_and_reset", "usb_ep1_configure_if_enabled"
     )
     assert not re.search(r"\bOSCCON\b", body), (
         "helper must NOT touch OSCCON — would break USB clean-disconnect"
@@ -388,7 +388,7 @@ def test_helper_uses_bounded_i2c_via_secondary_write() -> None:
     bounded variants would be caught here.
     """
     text = V32_MAIN_ASM.read_text(encoding="utf-8")
-    sec_body = _label_body(text, "i2c_secondary_dev_write", "main_flash_service_46de")
+    sec_body = _label_body(text, "i2c_secondary_dev_write", "eeprom_write_byte_if_changed")
     coeff_body = _label_body(text, "i2c_tas3108_coeff_write", "i2c_secondary_dev_write")
     for label, body in (
         ("i2c_secondary_dev_write", sec_body),
@@ -434,8 +434,8 @@ def test_helper_label_resolves_in_lst(v32_hex: Path) -> None:
         pytest.skip(f"no .lst alongside {v32_hex.name}")
     text = lst.read_text(encoding="utf-8", errors="replace")
     # Listing format is varied; just check the label appears as a
-    # symbol definition (e.g. "  XXXX flash_entry_quiet_shutdown").
-    assert "flash_entry_quiet_shutdown" in text, (
-        "flash_entry_quiet_shutdown not found in listing — label was "
+    # symbol definition (e.g. "  XXXX flash_entry_mute_and_reset").
+    assert "flash_entry_mute_and_reset" in text, (
+        "flash_entry_mute_and_reset not found in listing — label was "
         "dropped or the build is stale"
     )

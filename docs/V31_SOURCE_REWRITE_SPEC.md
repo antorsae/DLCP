@@ -106,7 +106,7 @@ app_entry:          ; 0x1000 — boot exit target
 isr_high_entry:     ; 0x1008 — HIGH-PRIORITY ISR (all interrupts)
     movff FSR2L, isr_save_fsr2l
     movff FSR2H, isr_save_fsr2h
-    call  main_isr_dispatch, 0x1
+    call  isr_high_priority_dispatch, 0x1
 app_init:           ; 0x1014 — main init (label, shifts freely)
     goto main_flash_service
 isr_low_stub:       ; 0x1018 — LOW-PRIORITY ISR (dead, safety stub)
@@ -286,7 +286,7 @@ overlay entries to `manifests.py` keyed by function name.
 | `uart_tx_byte_blocking` | 0x4896 | TBD | Mailbox TX stub |
 | `i2c_wait_bus_idle` | 0x48B6 | TBD | MSSP idle sim |
 | `timer3_blocking_delay` | 0x447E | TBD | Timer3 shim |
-| `adc_boot_gate` | 0x2D8C | TBD | ADC boot bypass |
+| `run_wake_rail_gate_and_dsp_cold_init` | 0x2D8C | TBD | ADC boot bypass |
 
 These addresses are determined after assembly and extracted from the
 gpasm listing file.

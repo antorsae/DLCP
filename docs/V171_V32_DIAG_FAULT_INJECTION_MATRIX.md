@@ -285,7 +285,7 @@ test_v171_v32_diag_lcd_surfaces_an0_standby_trigger
 Required stimulus:
 
 - Toggle MAIN RA1 through the simulator pin model and let
-  `ra1_edge_monitor` observe it from `periodic_service_loop`.
+  `ra1_edge_monitor` observe it from `run_main_service_pass`.
 
 Implemented caveat:
 

@@ -44,9 +44,9 @@ def _strip_prologue(text: str, entry: str, stock_label: str) -> str:
 
 def build() -> tuple[Path, Path]:
     text = SOURCE_ASM.read_text(encoding="utf-8", errors="replace")
-    text = _strip_prologue(text, "flash_write", "flash_write_stock")
-    text = _strip_prologue(text, "flash_erase", "flash_erase_stock")
-    text = _strip_prologue(text, "flash_read", "flash_read_stock")
+    text = _strip_prologue(text, "flash_write", "flash_write_without_preset_remap")
+    text = _strip_prologue(text, "flash_erase", "flash_erase_without_preset_remap")
+    text = _strip_prologue(text, "flash_read", "flash_read_without_preset_remap")
 
     DIAG_ASM.write_text(text, encoding="utf-8")
     assemble_v30(DIAG_ASM, DIAG_HEX, output_lst=DIAG_LST)

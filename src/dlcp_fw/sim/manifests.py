@@ -480,8 +480,8 @@ def _build_dynamic_mailbox_asm(symbols: dict[str, int]) -> str:
     uart_tx = symbols["uart_tx_byte_blocking"]
     i2c_wait = symbols["i2c_wait_bus_idle"]
     timer3 = symbols["timer3_blocking_delay"]
-    adc_gate = symbols["adc_boot_gate"]
-    adc_exit = symbols["adc_boot_gate_exit"]
+    adc_gate = symbols["run_wake_rail_gate_and_dsp_cold_init"]
+    adc_exit = symbols["adc_boot_gate__start_dsp_cold_init"]
     # sim_function_111 is placed after the 18-byte ADC hook (adc_gate + 0x12)
     tx_body = adc_gate + 0x12
     # sim_function_113 is placed after the 20-byte Timer3 shim (timer3 + 0x14)
@@ -620,7 +620,7 @@ def main_serial_mailbox_hooks_dynamic(
         patch_mem = parse_intel_hex(out_hex)
 
     # Precondition bytes are the same instruction encodings at shifted addrs
-    adc = symbols["adc_boot_gate"]
+    adc = symbols["run_wake_rail_gate_and_dsp_cold_init"]
     t3 = symbols["timer3_blocking_delay"]
     rx = symbols["rx_ring_read"]
     rxd = symbols["rx_ring_has_data"]
@@ -662,8 +662,8 @@ def main_serial_mailbox_hooks_for_main_hex(
         "uart_tx_byte_blocking",
         "i2c_wait_bus_idle",
         "timer3_blocking_delay",
-        "adc_boot_gate",
-        "adc_boot_gate_exit",
+        "run_wake_rail_gate_and_dsp_cold_init",
+        "adc_boot_gate__start_dsp_cold_init",
     }
     if symbols is None or not required.issubset(symbols):
         return main_serial_mailbox_hooks(gpasm=gpasm)
@@ -675,7 +675,7 @@ def _build_dynamic_mailbox_uart_only_asm(symbols: dict[str, int]) -> str:
     rx_ring_read = symbols["rx_ring_read"]
     rx_ring_has_data = symbols["rx_ring_has_data"]
     uart_tx = symbols["uart_tx_byte_blocking"]
-    adc_gate = symbols["adc_boot_gate"]
+    adc_gate = symbols["run_wake_rail_gate_and_dsp_cold_init"]
     tx_body = adc_gate + 0x12
 
     return f"""\
@@ -899,7 +899,7 @@ def main_serial_mailbox_hooks_uart_only_for_main_hex(
         "rx_ring_read",
         "rx_ring_has_data",
         "uart_tx_byte_blocking",
-        "adc_boot_gate",
+        "run_wake_rail_gate_and_dsp_cold_init",
     }
     if symbols is None or not required.issubset(symbols):
         return main_serial_mailbox_hooks_uart_only(gpasm=gpasm)
@@ -1236,7 +1236,7 @@ def main_external_i2c_bypass_dynamic(symbols: dict[str, int]) -> OverlayManifest
         loops=[
             (symbols["flow_main_i2c_service_2100_2288"], 0xB0, 0x90),
             (symbols["flow_main_i2c_service_381c_3870"], 0xB0, 0x90),
-            (symbols["flow_i2c_byte_tx_sspif"], 0xA6, 0x86),
+            (symbols["i2c_byte_tx__wait_sspif_slave_mode"], 0xA6, 0x86),
             (symbols["flow_i2c_secondary_dev_random_4246"], 0xB0, 0x90),
             (symbols["flow_i2c_secondary_dev_random_4258"], 0xB2, 0x92),
             (symbols["flow_i2c_secondary_dev_random_426c"], 0xB8, 0x98),
@@ -1262,7 +1262,7 @@ def main_external_i2c_bypass_for_main_hex(main_hex: Path) -> OverlayManifest:
         "flow_main_i2c_service_2100_231a",
         "flow_main_i2c_service_381c_3870",
         "flow_main_i2c_service_381c_389c",
-        "flow_i2c_byte_tx_sspif",
+        "i2c_byte_tx__wait_sspif_slave_mode",
         "flow_i2c_secondary_dev_random_4246",
         "flow_i2c_secondary_dev_random_4258",
         "flow_i2c_secondary_dev_random_426c",

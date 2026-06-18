@@ -101,7 +101,7 @@ A single gpasm-compatible PIC18F2455 assembly source file containing:
   with `_CONFIGxY` address symbols and `_OPTION_VALUE_xY` constants.
 - `org` directives placing code and data at their original addresses
 - Semantic label names from `SEMANTIC_FUNCTION_MAP.md` (e.g.,
-  `main_isr_dispatch`, `adc_boot_gate`, `uart_tx_byte_blocking`)
+  `isr_high_priority_dispatch`, `run_wake_rail_gate_and_dsp_cold_init`, `uart_tx_byte_blocking`)
 - Named RAM variable definitions via `equ` or `cblock` (e.g.,
   `active_gate equ 0x05E`, `preset_b_active_bit equ 2`)
 - Properly separated code vs. data sections:
@@ -251,7 +251,7 @@ For each function identified in the semantic map:
    with symbolic names from `p18f2455.inc` (e.g., `0xFAB` → `RCSTA`,
    `0xFC6` → `SSPCON1`).
 3. **Resolve branch targets** — replace numeric destinations with
-   labels (e.g., `goto 0x003B1E` → `goto main_isr_dispatch`).
+   labels (e.g., `goto 0x003B1E` → `goto isr_high_priority_dispatch`).
 4. **Verify round-trip** — assemble the **whole image** (not individual
    functions — PIC18 multi-word instructions and absolute `call`/`goto`
    encodings require full-image context) and compare the output bytes
@@ -448,7 +448,7 @@ app_entry:
 isr_dispatch_stub:
     movff FSR2L, isr_save_fsr2l
     movff FSR2H, isr_save_fsr2h
-    call main_isr_dispatch           ; fast-return ISR
+    call isr_high_priority_dispatch           ; fast-return ISR
 
 ;--- USB descriptors + data tables (0x1018–0x10FF) ---
 ;    The disassembler incorrectly decodes this region as instructions.
@@ -469,7 +469,7 @@ cmd_dispatch_gated:                  ; function_005 @ 0x18F2
     ; ...
 
 ; ---- Boot / standby ----
-adc_boot_gate:                       ; function_024 @ 0x2D8C
+run_wake_rail_gate_and_dsp_cold_init:                       ; function_024 @ 0x2D8C
     ; ...
 
 ; ---- I2C / MSSP ----

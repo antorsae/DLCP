@@ -32,7 +32,7 @@ Result: 14 scenario runs, elapsed wall time 61.16 s.
 | SDA held low | `V32-SIM-INJECT-I2C-SDA-LOW` | Rust MSSP physical SDA-low hold, plus RB0 low readback hold. |
 | power-rail/BOR events | `V32-SIM-INJECT-POWER-RAIL-BOR` | AN0 rail sag, whole-chain BrownOut reboot, rail restore, firmware reconnect. |
 | USB host polling while MAIN is stuck inside a firmware wait | `V32-SIM-INJECT-USB-POLL-WHILE-WAIT` | MAIN0 forced into SEN wait while `SimHidBackend` polls cmd `0x43` through the V3.2 firmware HID dispatcher. |
-| high-rate UART bursts during the wake `GIE=0` window | `V32-SIM-INJECT-UART-BURST-WAKE-GIE0` | Native wake frame starts `adc_boot_gate`; raw MAIN0 EUSART burst is injected after a MAIN0 PC hit inside `adc_boot_gate`. |
+| high-rate UART bursts during the wake `GIE=0` window | `V32-SIM-INJECT-UART-BURST-WAKE-GIE0` | Native wake frame starts `run_wake_rail_gate_and_dsp_cold_init`; raw MAIN0 EUSART burst is injected after a MAIN0 PC hit inside `run_wake_rail_gate_and_dsp_cold_init`. |
 
 ## Findings
 
@@ -49,13 +49,13 @@ Result: 14 scenario runs, elapsed wall time 61.16 s.
   after AN0 restore.
 - USB cmd `0x43` polling returned OK while MAIN0 was held in an SEN wait via
   the firmware HID path: `SimHidBackend` stages a configured EP1 report,
-  executes V3.2 `main_usb_service_3a26` / `hid_command_dispatch`, and reads
+  executes V3.2 `usb_hid_dispatch_out_report_if_ready` / `hid_command_dispatch`, and reads
   the EP1 IN buffer.  Remaining limitation: this is dispatcher-boundary
   injection, not full USB SIE interrupt preemption while the app PC is pinned
   in the wait.
 - Wake-window UART bursts were dropped by the silicon EUSART gate while V3.2
   had RX quiesced (`accepted=0`, `dropped=60` for both 8- and 24-chunk
-  sweeps).  The burst is now anchored to a MAIN0 PC hit in the `adc_boot_gate`
+  sweeps).  The burst is now anchored to a MAIN0 PC hit in the `run_wake_rail_gate_and_dsp_cold_init`
   range (`0x2900..0x2944`), and the post-restore PC pass through the UART
   re-enable range was observed with `RCSTA=0x90`.
 

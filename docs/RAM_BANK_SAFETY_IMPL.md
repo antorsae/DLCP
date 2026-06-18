@@ -446,8 +446,8 @@ Actual files changed:
 
 Real RAM-bank fixes found by the Phase 2 proof:
 
-- MAIN `flow_main_i2c_service_27f0_ad_monitor` could reach a bank-0
-  `stock_0BA_b0` write after an unknown helper-return context; added a local
+- MAIN `poll_src4382_route_monitor__reload_source_monitor_countdown` could reach a bank-0
+  `src4382_autodetect_countdown_b0` write after an unknown helper-return context; added a local
   `movlb 0x0`.
 - MAIN `dsp_ping` had a source-visible path through I2C transmit/STOP wait
   helpers before bank-0 `dsp_fault_flags_b0`; added a local `movlb 0x0` before

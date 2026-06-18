@@ -518,7 +518,7 @@ Top-level docs:
 - `docs/V171_V32_LINK_HEALTH_FRESHNESS_SPEC.md` (V1.71/V3.2 per-MAIN link-health freshness, UI markers, USB diagnostics, and phased implementation plan)
 - `docs/V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` (V1.71/V3.2 Diagnostics counter fault-injection coverage matrix and closure plan)
 - `docs/IMPL_V171_V32_DIAG_FAULT_INJECTION_MATRIX.md` (implementation plan for closing the V1.71/V3.2 Diagnostics counter fault-injection matrix)
-- `docs/NO_POP_FIRMWARE_FLASH.md` (V3.2+ pop-free flash-entry path; implemented as `flash_entry_quiet_shutdown`; operator validation runbook in `docs/HARDWARE_TEST.md` §"Re-flash pop monitoring")
+- `docs/NO_POP_FIRMWARE_FLASH.md` (V3.2+ pop-free flash-entry path; implemented as `flash_entry_mute_and_reset`; operator validation runbook in `docs/HARDWARE_TEST.md` §"Re-flash pop monitoring")
 - `docs/V27_V163B_SPEC.md` (V2.7 MAIN + V1.63b CONTROL specification)
 - `docs/V27_V163B_STATUS.md` (V2.7 + V1.63b implementation status)
 - `docs/V30_SOURCE_REWRITE_SPEC.md` (V3.0 MAIN source-level rewrite specification)
@@ -710,7 +710,7 @@ scripts/flash_control_safe.sh
 - Canonical MAIN release output is always `firmware/patched/releases/DLCP_Firmware_V3.3.hex`.
 - Each canonical `V3.3` build must increment the EEPROM revision byte in `src/dlcp_fw/asm/dlcp_main_v33.asm` at `eeprom_data[0x82]`, update the boot-time runtime identity literal, and update the cmd `0x25` identity revision nibbles; `scripts/build_v33_release.py` is the required path because it keeps all three in sync before assembling.
 - `scripts/dlcp_v33_release_flash.py` is the canonical operator wrapper for V3.3 MAIN flashing. It preserves the V3.2 baked-preset/no-local-captures behavior and forwards to `scripts/dlcp_main_flash.py`.
-- The V3.3 cmd `0x25` handler must stay size-efficient: emit only the `BF/4F/id` START frame explicitly, stage major/minor/rev nibbles, and reuse `diag_send_burst_xx` for `BF/50..BF/53`.
+- The V3.3 cmd `0x25` handler must stay size-efficient: emit only the `BF/4F/id` START frame explicitly, stage major/minor/rev nibbles, and reuse `diag_low_nibble_reply_burst` for `BF/50..BF/53`.
 
 ## V3.4 Release Ceremony
 

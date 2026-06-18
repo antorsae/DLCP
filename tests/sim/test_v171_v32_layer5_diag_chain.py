@@ -2272,7 +2272,7 @@ def test_v171_v32_layer5_chain_diag_page_does_not_cascade_main_counters(
         watchdog -> standby_event_dispatch -> diag_s++.
       * I2C transaction interrupted by cmd 0x21 -> volume_dsp_write
         retry-escalation -> diag_r++.
-      * Wake-after-spurious-standby -> adc_boot_gate -> diag_b++.
+      * Wake-after-spurious-standby -> run_wake_rail_gate_and_dsp_cold_init -> diag_b++.
 
     Both MAINs are checked: PB1's replies tend to surface in CONTROL
     sooner than PB2's in the no-user-events test scenario (the
@@ -2419,7 +2419,7 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
     v32_hex: Path
 ) -> None:
     """REGRESSION: V3.2's cmd 0x21 handler returns to the parser tail at
-    ``flow_main_uart_service_1be6_1e6c`` which (under the cmd-XOR-chain
+    ``uart_link_parser__handler_return_tail`` which (under the cmd-XOR-chain
     dispatch path) emits an EXTRA byte — the cmd-XOR ACK echo (0x21
     for cmd 0x21).  Stock V1.x parsers tolerate this trailing byte, but
     V1.71's diagnostics parser only handles BF/21..27 frames; an
@@ -2428,7 +2428,7 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
 
     This test pins WHAT the V3.2 cmd 0x21 handler emits at the source
     level.  Specifically:
-      1. The handler MUST goto ``flow_main_uart_service_1be6_1e6c``
+      1. The handler MUST goto ``uart_link_parser__handler_return_tail``
          (so it integrates with the standard parser tail).
       2. The handler MUST clear ``active_flags.bit6`` BEFORE returning
          to suppress the cmd-XOR ACK echo (defense in depth — if the
@@ -2452,13 +2452,13 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
     assert body_end > handler_idx, "could not delimit cmd21 handler body"
     body = text[handler_idx:body_end]
     # V3.2 rev 0x37 (Tier-1) refactored cmd 0x21 + cmd 0x22 into a shared
-    # diag_send_burst_xx helper.  cmd21 setup-block now bra's into the
+    # diag_low_nibble_reply_burst helper.  cmd21 setup-block now bra's into the
     # helper; the helper does the bcf active_flags,6 + goto parser tail.
     # We pin the contract by checking either the standalone or the
     # shared form, so the test still passes after the refactor and a
     # future rewrite that re-inlines doesn't silently lose the
     # suppression / parser-tail integration.
-    helper_idx = text.find("\ndiag_send_burst_xx:")
+    helper_idx = text.find("\ndiag_low_nibble_reply_burst:")
     has_helper = helper_idx >= 0
     if has_helper:
         helper_end = text.find("\n; ---", helper_idx + 1)
@@ -2466,30 +2466,30 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
             helper_end = helper_idx + 4000
         helper_body = text[helper_idx:helper_end]
         # cmd 0x21 setup must bra into the shared helper.
-        assert re.search(r"bra\s+diag_send_burst_xx", body), (
-            "cmd21 handler must bra into diag_send_burst_xx (shared "
+        assert re.search(r"bra\s+diag_low_nibble_reply_burst", body), (
+            "cmd21 handler must bra into diag_low_nibble_reply_burst (shared "
             "with cmd 0x22) -- the refactor moved the parser-tail "
             "exit into the helper; the cmd21 entry just seeds it."
         )
-        # The helper itself must goto flow_main_uart_service_1be6_1e6c
+        # The helper itself must goto uart_link_parser__handler_return_tail
         # to keep dispatch/forwarding consistent with stock cmd handlers.
         # Match the actual `goto <label>` instruction (not just substrings),
         # so a refactor that points goto at a different label and merely
         # mentions the parser-tail label in a comment doesn't slip past
         # this gate (codex LOW review against 1d4f3dc).
         assert re.search(
-            r"goto\s+flow_main_uart_service_1be6_1e6c\b",
+            r"goto\s+uart_link_parser__handler_return_tail\b",
             helper_body,
         ), (
-            "diag_send_burst_xx helper must exit via "
-            "`goto flow_main_uart_service_1be6_1e6c` so dispatch/"
+            "diag_low_nibble_reply_burst helper must exit via "
+            "`goto uart_link_parser__handler_return_tail` so dispatch/"
             "forwarding is consistent with stock cmd handlers"
         )
         # And the helper must clear active_flags.bit6 to suppress the
         # cmd-XOR ACK echo.  Suspected contributor to the V1.71 + V3.2
         # Diag-page hang observed on real HW (2026-04-20).
         assert re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", helper_body), (
-            "diag_send_burst_xx must clear active_flags.bit6 BEFORE "
+            "diag_low_nibble_reply_burst must clear active_flags.bit6 BEFORE "
             "the parser-tail goto so the trailing 0x21/0x22 ACK echo "
             "doesn't bleed into V1.71 CONTROL's parser state."
         )
@@ -2499,11 +2499,11 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
         # legacy / pre-Tier-1 source tree.  Same instruction-exact
         # match as the helper-path above.
         assert re.search(
-            r"goto\s+flow_main_uart_service_1be6_1e6c\b",
+            r"goto\s+uart_link_parser__handler_return_tail\b",
             body,
         ), (
             "cmd21 handler must exit via "
-            "`goto flow_main_uart_service_1be6_1e6c` so dispatch/"
+            "`goto uart_link_parser__handler_return_tail` so dispatch/"
             "forwarding is consistent with stock cmd handlers"
         )
         assert re.search(r"bcf\s+active_flags,\s*6,\s*ACCESS", body), (
@@ -2512,5 +2512,5 @@ def test_v32_cmd21_handler_emits_clean_seven_frame_burst(
             "Suspected contributor to the V1.71 + V3.2 Diag-page hang "
             "observed on real HW (2026-04-20).  Fix: insert `bcf "
             "active_flags, 6, ACCESS` before the final "
-            "`goto flow_main_uart_service_1be6_1e6c`."
+            "`goto uart_link_parser__handler_return_tail`."
         )

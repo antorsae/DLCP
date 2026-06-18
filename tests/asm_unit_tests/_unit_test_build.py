@@ -21,11 +21,11 @@ from pathlib import Path
 from dlcp_fw.paths import V32_MAIN_ASM
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
-# The exact line in V32_MAIN_ASM that puts `goto flow_app_entry_1014`
+# The exact line in V32_MAIN_ASM that puts `goto app_entry__jump_to_cold_init`
 # at address 0x1000.  Substituted with `goto unit_test_entry` so the
 # user-reset vector jumps straight into our driver.
 _RESET_LINE_PROD = (
-    "    goto        flow_app_entry_1014                 "
+    "    goto        app_entry__jump_to_cold_init                 "
     "; 0x1000 user reset trampoline"
 )
 _RESET_LINE_TEST = (

@@ -7,7 +7,7 @@ vector has been redirected from the normal cold-init path to a
 hand-written `unit_test_entry` driver.
 
 The rest of the V3.2 image (every production helper, including
-`main_flash_service_46de`, `eeprom_read_byte`, `eeprom_write_blocking`,
+`eeprom_write_byte_if_changed`, `eeprom_read_byte`, `eeprom_write_blocking`,
 etc.) is linked into the test firmware untouched, so the driver exercises
 the real production code — not a stub.  At the same time, cold-init is
 bypassed, so the driver sees deterministic CPU/RAM state and can pre-

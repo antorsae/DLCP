@@ -2390,7 +2390,7 @@ def test_v33_fname_ram_equates_do_not_overlap_diag_recovery_cells() -> None:
 
 def test_v33_an0_hysteresis_monitor_banks_delay_counter_before_uart_ring_alias() -> None:
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
-    body = _label_body(text, "an0_hysteresis_monitor", ["main_core_service_41b6"])
+    body = _label_body(text, "an0_hysteresis_monitor", ["format_int16_decimal_ascii_to_w_pointer"])
     first_delay_touch = body.index("an0_delay_b0")
     prefix = body[:first_delay_touch]
     assert "movlb       0x0" in prefix, (
@@ -2401,17 +2401,17 @@ def test_v33_an0_hysteresis_monitor_banks_delay_counter_before_uart_ring_alias()
 
 def test_v33_filename_chain_tx_emitted_coverage_all_chain_senders() -> None:
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
-    _filename_feature_xfail(text, "filename_reply_job_service")
+    _filename_feature_xfail(text, "filename_reply_emit_next_frame_if_ready")
     required_bodies = {
-        "main_uart_service_1be6": ["send_status_burst"],
+        "uart_link_parser_drain_rx_and_forward": ["send_status_burst"],
         "send_status_burst": ["send_status_burst_preamble"],
         "send_dsp_fault_status": ["cmd21_diag_query_handler"],
         "cmd21_diag_query_handler": ["cmd22_reset_flags_query_handler"],
         "cmd22_reset_flags_query_handler": ["cmd23_health_query_handler"],
         "cmd23_health_query_handler": ["cmd25_identity_query_handler"],
-        "cmd25_identity_query_handler": ["filename_reply_job_service", "org 0x4C00"],
+        "cmd25_identity_query_handler": ["filename_reply_emit_next_frame_if_ready", "org 0x4C00"],
         "report_cmd29_status": ["send_dsp_fault_status"],
-        "filename_reply_job_service": ["org 0x4C00"],
+        "filename_reply_emit_next_frame_if_ready": ["org 0x4C00"],
     }
     missing = []
     for label, next_labels in required_bodies.items():
@@ -2427,7 +2427,7 @@ def test_v33_filename_rev_writer_hooks_cover_all_filename_mutators() -> None:
         pytest.xfail("native MAIN filename_rev equate/hooks are not present yet")
     required_regions = {
         "preset_persist_filename": ["preset_load_filename"],
-        "preset_load_filename": ["preset_job_service"],
+        "preset_load_filename": ["advance_preset_job_state_machine"],
         "preset_job_apply": ["preset_job_done"],
         "btg active_flags": ["preset_job_apply"],
         "hid filename write": ["filename_dirty_flags", "usb_filename_xact_pending"],
@@ -2456,7 +2456,7 @@ def test_v33_native_cmd26_computes_auto_scroll_direction() -> None:
         body,
         [
             "cmd26_filename_compare_prefix16",
-            "cmd26_filename_compare_loop",
+            "cmd26_filename_query_handler__compare_prefix16_next_char",
             "cpfseq      fname_tx_gap_lo",
             "movlw       0x2E",
             "movwf       fn_job_start_cmd",
@@ -2470,10 +2470,10 @@ def test_v33_native_filename_char_emit_stages_cmd_after_source_read() -> None:
     body = _label_body(text, "filename_reply_send_char", ["filename_reply_send_end"])
 
     read_pos = body.index("filename_read_source_at_w")
-    data_stage_pos = body.index("movwf       stock_00E_acc")
+    data_stage_pos = body.index("movwf       flash_upper_or_uart_count_scratch_byte")
     bank_pos = body.index("movlb       0x02", data_stage_pos)
     cmd_base_pos = body.index("movlw       0x30")
-    cmd_stage_pos = body.index("movwf       stock_00D_acc")
+    cmd_stage_pos = body.index("movwf       i2c_flag_or_flash_math_uart_cmd_scratch_byte")
     emit_pos = body.index("filename_emit_frame")
 
     assert read_pos < data_stage_pos < bank_pos < cmd_base_pos < cmd_stage_pos < emit_pos
@@ -2481,7 +2481,7 @@ def test_v33_native_filename_char_emit_stages_cmd_after_source_read() -> None:
 
 def test_v33_reserved_bf_2d_4e_only_filename_emitters() -> None:
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
-    _filename_feature_xfail(text, "filename_reply_job_service")
+    _filename_feature_xfail(text, "filename_reply_emit_next_frame_if_ready")
     label_pattern = re.compile(r"(?m)^([A-Za-z_][A-Za-z0-9_]*):\s*$")
     labels = list(label_pattern.finditer(text))
     literal_bf_frame = re.compile(
@@ -2923,7 +2923,7 @@ def test_v172_v33_native_chain_tail_first_prefix_first_blank_mismatch_cases() ->
         {
             V33_MAIN_ASM: [
                 "cmd26_filename_query_handler",
-                "filename_reply_job_service",
+                "filename_reply_emit_next_frame_if_ready",
             ],
             V172_CONTROL_ASM: [
                 "v172_fname_case_check",
@@ -2941,7 +2941,7 @@ def test_v172_v33_native_chain_mixed_old_new_peers_do_not_finalize() -> None:
         {
             V33_MAIN_ASM: [
                 "cmd26_filename_query_handler",
-                "filename_reply_job_service",
+                "filename_reply_emit_next_frame_if_ready",
             ],
             V172_CONTROL_ASM: [
                 "v172_fname_case_check",
@@ -3010,7 +3010,7 @@ def test_v172_v33_fname_foreground_ir_buttons_standby_while_pending_valid_scroll
         {
             V33_MAIN_ASM: [
                 "cmd26_filename_query_handler",
-                "filename_reply_job_service",
+                "filename_reply_emit_next_frame_if_ready",
             ],
             V172_CONTROL_ASM: [
                 "v172_fname_case_check",
@@ -3191,7 +3191,7 @@ def test_v172_fname_cold_init_clears_filename_state_preserves_diag_identity() ->
 
 def test_v33_fname_cold_entry_clears_job_state_after_software_reset() -> None:
     text = V33_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
-    body = _label_body(text, "flow_main_flash_service_3ce8_3d4e", ["flow_main_flash_service_3ce8_3e34"])
+    body = _label_body(text, "boot_cold_init__clear_ram_and_runtime_state", ["flow_main_flash_service_3ce8_3e34"])
     _assert_contains_all(
         body,
         [

@@ -123,7 +123,7 @@ Per PB, expose these 7 counters:
 | `DSP` | DSP-fault episode count | Increment when `dsp_fault_flags.6` transitions from clear to set, or equivalently when `send_dsp_fault_status` reports a non-zero fault state for a new episode | Separates a real DSP-path failure from a transient retry |
 | `RCV` | Recovery branch count | Increment when `volume_dsp_write` enters the retry-exhausted recovery branch and calls `i2c_bus_clear` / `dsp_ping` | Shows whether self-recovery logic actually fired |
 | `S` | Standby/shutdown dispatch count | Increment when `standby_event_dispatch` calls `hw_standby_shutdown` | Distinguishes true shutdown-style silence from a pure DSP write fault |
-| `B` | Bring-up / wake dispatch count | Increment when `standby_event_dispatch` calls `adc_boot_gate` | Shows whether the PB executed a wake / re-bring-up path after silence |
+| `B` | Bring-up / wake dispatch count | Increment when `standby_event_dispatch` calls `run_wake_rail_gate_and_dsp_cold_init` | Shows whether the PB executed a wake / re-bring-up path after silence |
 | `AN0` | Analog standby-trigger count | Increment when `an0_hysteresis_monitor` clears `active_flags.3` and sets `event_flags.2` because AN0 dropped below threshold | Separates spontaneous analog-triggered standby from commanded standby |
 | `RA1` | RA1 event count | Increment on a new explicit V3.1 RA1 edge/event hook | Requested diagnostic item; useful if the discussed RA1 event is implicated in the glitch |
 
@@ -220,7 +220,7 @@ These map directly to `I2C`, `DSP`, and `RCV`.
   - sets active state and raises the same event
 - `standby_event_dispatch`
   - calls `hw_standby_shutdown` when going down
-  - calls `adc_boot_gate` when coming up
+  - calls `run_wake_rail_gate_and_dsp_cold_init` when coming up
 
 These map directly to `S` and `B`.
 
