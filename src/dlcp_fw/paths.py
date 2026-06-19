@@ -62,6 +62,8 @@ V33_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v33.asm"
 V33_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.3.hex"
 V34_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v34.asm"
 V34_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.4.hex"
+V35_MAIN_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_main_v35.asm"
+V35_MAIN_HEX = FIRMWARE_PATCHED_DIR / "DLCP_Firmware_V3.5.hex"
 V171_CONTROL_ASM = PROJECT_ROOT / "src" / "dlcp_fw" / "asm" / "dlcp_control_v171.asm"
 # Canonical V1.71 release hex.  Lives under firmware/patched/releases/ to
 # match the V3.x convention (V3.0/V3.1/V3.2 source-assembled releases also

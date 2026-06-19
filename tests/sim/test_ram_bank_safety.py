@@ -12,11 +12,12 @@ def _codes(findings: list[rbs.Finding]) -> set[str]:
 
 
 def test_current_targets_pass_ram_bank_safety_checker() -> None:
-    assert rbs.check_targets(["main-v33", "control-v172", "main-v34", "control-v173"]) == []
+    assert rbs.check_targets(["main-v33", "control-v172", "main-v34", "main-v35", "control-v173"]) == []
 
 
 def test_v34_v173_targets_are_registered() -> None:
     assert rbs.TARGET_SPECS["main-v34"].asm_path.name == "dlcp_main_v34.asm"
+    assert rbs.TARGET_SPECS["main-v35"].asm_path.name == "dlcp_main_v35.asm"
     assert rbs.TARGET_SPECS["control-v173"].asm_path.name == "dlcp_control_v173.asm"
 
 

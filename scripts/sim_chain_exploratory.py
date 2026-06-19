@@ -22,7 +22,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
-from dlcp_fw.paths import PROJECT_ROOT, SIM_ARTIFACTS_DIR, V173_CONTROL_HEX, V34_MAIN_HEX
+from dlcp_fw.paths import PROJECT_ROOT, SIM_ARTIFACTS_DIR, V173_CONTROL_HEX, V35_MAIN_HEX
 from dlcp_fw.sim.dlcp_sim_native import Chain
 
 
@@ -1686,7 +1686,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--seed", default="auto", help="integer seed or auto")
     parser.add_argument("--campaign", default="all")
     parser.add_argument("--control-hex", default=str(V173_CONTROL_HEX))
-    parser.add_argument("--main-hex", default=str(V34_MAIN_HEX))
+    parser.add_argument("--main-hex", default=str(V35_MAIN_HEX))
     parser.add_argument("--out-dir", default=str(SIM_ARTIFACTS_DIR / "exploratory"))
     parser.add_argument("--stop-after-high", type=int, default=0, help="reserved for future use")
     parser.add_argument("--max-sessions", type=int, default=0)

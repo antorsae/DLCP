@@ -20,6 +20,7 @@ from dlcp_fw.paths import (
     V173_CONTROL_ASM,
     V33_MAIN_ASM,
     V34_MAIN_ASM,
+    V35_MAIN_ASM,
 )
 
 
@@ -67,6 +68,12 @@ TARGET_SPECS: dict[str, TargetRamSpec] = {
     "main-v34": TargetRamSpec(
         key="main-v34",
         asm_path=V34_MAIN_ASM,
+        inc_path=MAIN_RAM_INC,
+        mcu="pic18f2455",
+    ),
+    "main-v35": TargetRamSpec(
+        key="main-v35",
+        asm_path=V35_MAIN_ASM,
         inc_path=MAIN_RAM_INC,
         mcu="pic18f2455",
     ),
@@ -164,6 +171,25 @@ _EXPLICIT_SOURCE_RAM_NAMES: dict[str, set[str]] = {
         "preset_job_tbl_lo",
         "preset_job_tbl_hi",
     },
+    "main-v35": {
+        "dsp_fault_flags",
+        "i2c_recover_flags",
+        "src4382_loss_debounce",
+        "timeout_lo",
+        "timeout_hi",
+        "saved_w",
+        "current_cmd_data",
+        "filename_dirty_flags",
+        "preset_hold_timer_lo",
+        "preset_hold_timer_hi",
+        "preset_job_state",
+        "preset_job_target",
+        "preset_job_index",
+        "preset_job_delay",
+        "preset_job_flags",
+        "preset_job_tbl_lo",
+        "preset_job_tbl_hi",
+    },
     "control-v172": set(),
     "control-v173": set(),
 }
@@ -180,6 +206,16 @@ _EXPLICIT_STOCK_PHYS: dict[str, set[int]] = {
         0x1C7,
     },
     "main-v34": {
+        0x166,
+        0x167,
+        0x168,
+        0x169,
+        0x1A1,
+        0x1A2,
+        0x1A3,
+        0x1C7,
+    },
+    "main-v35": {
         0x166,
         0x167,
         0x168,

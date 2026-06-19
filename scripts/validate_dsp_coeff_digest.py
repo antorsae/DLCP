@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Sanity-check the DSP preset-coefficient digest oracle.
 
-Boots the V1.73 CONTROL + 2x V3.4 MAIN chain, drives a preset A->B->A sequence
+Boots the V1.73 CONTROL + 2x V3.5 MAIN chain, drives a preset A->B->A sequence
 via the real IR path, and snapshots each MAIN's TAS3108 biquad coefficient image
 (0x37..0x90).  Proves the oracle CAN see actual coefficient state by confirming
 the nominal contract:
@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from dlcp_fw.paths import V173_CONTROL_HEX, V34_MAIN_HEX  # noqa: E402
+from dlcp_fw.paths import V173_CONTROL_HEX, V35_MAIN_HEX  # noqa: E402
 from dlcp_fw.sim.dlcp_sim_native import Chain  # noqa: E402
 
 IR_ADDR = 0x10
@@ -49,7 +49,7 @@ def snapshot(chain: Chain, label: str) -> tuple[str, str]:
 
 def main() -> int:
     chain = Chain.from_v171_v32(
-        control_hex_path=str(V173_CONTROL_HEX), main_hex_path=str(V34_MAIN_HEX)
+        control_hex_path=str(V173_CONTROL_HEX), main_hex_path=str(V35_MAIN_HEX)
     )
     chain.run_until_connected(limit=240)
     print(f"booted; lcd={chain.lcd_lines()}")

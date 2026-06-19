@@ -881,6 +881,12 @@ def _default_roots(target: str, program: _AsmProgram) -> list[tuple[int, BsrStat
             "hid_command_dispatch",
             "isr_high_priority_dispatch",
         ),
+        "main-v35": (
+            # V3.5 inherits the V3.4 control-flow roots.
+            "app_entry__jump_to_cold_init",
+            "hid_command_dispatch",
+            "isr_high_priority_dispatch",
+        ),
         "control-v172": (
             "vector_reset",
             "vector_int_high",

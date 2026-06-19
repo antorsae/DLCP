@@ -26,9 +26,11 @@ from dlcp_fw.paths import (
     V31_MAIN_HEX,
     V33_MAIN_HEX,
     V34_MAIN_HEX,
+    V35_MAIN_HEX,
 )
 from dlcp_fw.patch.build_v33_release import read_v33_release_revision
 from dlcp_fw.patch.build_v34_release import read_v34_release_revision
+from dlcp_fw.patch.build_v35_release import read_v35_release_revision
 
 
 # All tests in this module are backend-agnostic (Python-level
@@ -64,7 +66,7 @@ def _find_hid_version_bytes(hex_path: Path) -> tuple[int, int, int] | None:
         movlw  MINOR → [MINOR, 0x0E]
         movwf  0x5D  → [0x5D, 0x6F]
 
-    V3.4 may use a compact form when FLAG == MAJOR:
+    V3.x may use a compact form when FLAG == MAJOR:
         movlw  FLAG  -> [FLAG, 0x0E]
         movlb  0x1   -> [0x01, 0x01]
         movwf  0x5B  -> [0x5B, 0x6F]
@@ -169,6 +171,18 @@ def test_v34_usb_and_eeprom_version_match_release_identity() -> None:
     eeprom = _read_eeprom_version(V34_MAIN_HEX)
     assert eeprom == (0x03, 0x04, read_v34_release_revision() & 0xFF), (
         f"V3.4 EEPROM identity mismatch: got {eeprom!r}"
+    )
+
+
+def test_v35_usb_and_eeprom_version_match_release_identity() -> None:
+    _skip_missing(V35_MAIN_HEX)
+    hid = _find_hid_version_bytes(V35_MAIN_HEX)
+    assert hid is not None
+    assert hid[1:] == (0x03, 0x05)
+
+    eeprom = _read_eeprom_version(V35_MAIN_HEX)
+    assert eeprom == (0x03, 0x05, read_v35_release_revision() & 0xFF), (
+        f"V3.5 EEPROM identity mismatch: got {eeprom!r}"
     )
 
 

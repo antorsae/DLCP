@@ -14,9 +14,11 @@ from dlcp_fw.paths import (
     V32_MAIN_ASM,
     V33_MAIN_ASM,
     V34_MAIN_ASM,
+    V35_MAIN_ASM,
 )
 from dlcp_fw.patch.build_v33_release import read_v33_release_revision
 from dlcp_fw.patch.build_v34_release import read_v34_release_revision
+from dlcp_fw.patch.build_v35_release import read_v35_release_revision
 from dlcp_fw.sim.v17_symbols import assemble_v17
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
@@ -124,6 +126,14 @@ def v34_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     tmp = tmp_path_factory.mktemp("v173_v34_diag_identity_main")
     hex_out = tmp / "DLCP_Firmware_V3.4.hex"
     assemble_v30(V34_MAIN_ASM, hex_out)
+    return hex_out
+
+
+@pytest.fixture(scope="module")
+def v35_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp = tmp_path_factory.mktemp("v173_v35_diag_identity_main")
+    hex_out = tmp / "DLCP_Firmware_V3.5.hex"
+    assemble_v30(V35_MAIN_ASM, hex_out)
     return hex_out
 
 
@@ -283,6 +293,11 @@ def _expected_v34_diag_title(pb_idx: int) -> str:
     return f"PB{pb_idx + 1} OK v3.4 {rev:04X}"
 
 
+def _expected_v35_diag_title(pb_idx: int) -> str:
+    rev = read_v35_release_revision(V35_MAIN_ASM)
+    return f"PB{pb_idx + 1} OK v3.5 {rev:04X}"
+
+
 def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
     """MAIN space is tight: cmd 0x25 must stay compact, not unroll 5 frames."""
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
@@ -331,6 +346,29 @@ def test_v34_cmd25_identity_handler_emits_16bit_revision_nibbles() -> None:
     assert "V3.4_IDENTITY_REV_LO_LO" in body
     assert "V3.4_IDENTITY_REV_HI_HI" in body
     assert "V3.4_IDENTITY_REV_HI_LO" in body
+
+
+def test_v35_cmd25_identity_handler_emits_16bit_revision_nibbles() -> None:
+    """V3.5 keeps the seven-frame cmd 0x25 identity contract on its own source."""
+    text = V35_MAIN_ASM.read_text(encoding="utf-8")
+    match = re.search(
+        r"cmd25_identity_query_handler:\n(?P<body>.*?)(?:\n; -+\n; cmd 0x26|\n; -+\n; diag_low_nibble_reply_burst)",
+        text,
+        re.DOTALL,
+    )
+    assert match is not None, "cmd25_identity_query_handler block not found"
+    body = match.group("body")
+
+    assert body.count("rcall       uart_tx_byte_blocking") == 2
+    assert "rcall       bf_frame_header_tx" in body
+    assert "lfsr        FSR0, saved_w_b0_phys" in body
+    assert "movlw       0x56" in body
+    assert "movlw       0x50" in body
+    assert "bra         diag_low_nibble_reply_burst" in body
+    assert "V3.5_IDENTITY_REV_LO_HI" in body
+    assert "V3.5_IDENTITY_REV_LO_LO" in body
+    assert "V3.5_IDENTITY_REV_HI_HI" in body
+    assert "V3.5_IDENTITY_REV_HI_LO" in body
 
 
 def test_v172_source_contains_separate_identity_parser_and_scheduler() -> None:
@@ -421,6 +459,27 @@ def test_v173_v34_diag_ok_title_shows_visible_main_identity(
     _navigate_to_diag_page(chain, pb_idx)
 
     expected = _expected_v34_diag_title(pb_idx)
+    lines = _wait_for_lcd(
+        chain,
+        lambda lcd: (
+            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
+            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
+            and lcd[0] == expected
+        ),
+        limit=700,
+    )
+    assert lines[0] == expected
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v35_diag_ok_title_shows_visible_main_identity(
+    v173_hex: Path, v35_hex: Path, pb_idx: int
+) -> None:
+    chain = _connected_chain(v173_hex, v35_hex)
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_v35_diag_title(pb_idx)
     lines = _wait_for_lcd(
         chain,
         lambda lcd: (

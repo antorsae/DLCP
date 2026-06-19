@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import SCRIPTS_DIR, V173_CONTROL_HEX, V34_MAIN_HEX
+from dlcp_fw.paths import SCRIPTS_DIR, V173_CONTROL_HEX, V35_MAIN_HEX
 
 
 _explore_spec = importlib.util.spec_from_file_location(
@@ -66,7 +66,7 @@ def _golden():
 
 @pytest.mark.slow
 def test_golden_image_learner_returns_distinct_stable_a_b_images_per_pb() -> None:
-    golden = _explore.learn_preset_golden_images(V173_CONTROL_HEX, V34_MAIN_HEX)
+    golden = _explore.learn_preset_golden_images(V173_CONTROL_HEX, V35_MAIN_HEX)
 
     assert set(golden) == {0, 1}
     for unit in (0, 1):
