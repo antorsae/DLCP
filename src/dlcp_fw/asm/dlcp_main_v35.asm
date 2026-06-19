@@ -2306,6 +2306,10 @@ eeprom_read_indexed_byte_to_postinc2:
 eeprom_write_runtime_version_byte_at_w:
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
     clrf        flash_end_high_or_loop_mask_scratch_byte, ACCESS
+    ; V3.5-specific size shortcut: the only callers pass W=0x80 and W=0x81,
+    ; which map via rlncf/+2 to version bytes 0x03 and 0x05.  Rework this
+    ; helper cleanly for any later major/minor version instead of carrying
+    ; this arithmetic forward blindly.
     rlncf       count_flash_page_or_i2c_payload_scratch_byte, W, ACCESS
     addlw       0x02
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
