@@ -787,6 +787,9 @@ def test_phase_env_contract_covers_live_hardware_opt_in_gates() -> None:
     assert phase_contract["preset-filename-lcd"]["required_env"] == {
         "DLCP_HW_EXPECTED_PRESET_FILENAME"
     }
+    assert phase_contract["preset-filename-scroll-repro"]["env"] == {
+        "DLCP_HW_PRESET_FILENAME_SCROLL_REPRO": "1"
+    }
     assert phase_contract["front-panel-standby-wake"]["env"] == {
         "DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM": "1"
     }
@@ -872,6 +875,7 @@ def test_phase_resource_contract_covers_live_hardware_requirements() -> None:
         "front-panel-preset-a": ("pair", True, False),
         "front-panel-preset-b": ("pair", True, False),
         "preset-filename-lcd": ("pair", True, False),
+        "preset-filename-scroll-repro": ("pair", True, False),
         "front-panel-standby-wake": ("pair", True, False),
         "preset-convergence": ("pair", True, True),
         "rapid-toggle": ("pair", True, True),
@@ -1315,6 +1319,7 @@ def test_bug_selector_expands_aliases_and_deduplicates() -> None:
         "front-panel-preset-a",
         "front-panel-preset-b",
         "preset-filename-lcd",
+        "preset-filename-scroll-repro",
     ]
 
 
@@ -1747,6 +1752,7 @@ def test_remaining_combined_plan_keeps_v16b_baseline_next_to_v171_restore(
             "front-panel-preset-a",
             "front-panel-preset-b",
             "preset-filename-lcd",
+            "preset-filename-scroll-repro",
             "rapid-toggle",
         "preset-convergence",
         "settings",

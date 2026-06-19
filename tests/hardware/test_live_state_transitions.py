@@ -407,6 +407,55 @@ def _capture_lcd_summary(
     return json.loads(summaries[-1].read_text(encoding="utf-8"))
 
 
+def _capture_preset_filename_scroll(
+    tmp_path: Path,
+    name: str,
+    *,
+    expected_name: str,
+) -> dict:
+    from dlcp_fw.cli import hardware_lcd_probe
+
+    summary = _capture_lcd_summary(tmp_path, name, raw_ordered_row=True)
+    consensus = summary.get("consensus", {})
+    raw_line1 = str(consensus.get("raw_line1") or "")
+    line1 = str(consensus.get("line1") or "")
+    assert line1 == "Preset" or raw_line1.startswith("Preset"), (
+        "scroll repro must be captured while CONTROL is on the Preset page; "
+        f"summary={summary!r}"
+    )
+
+    captures = summary.get("captures", [])
+    raw_windows = [
+        str(item.get("raw_line2") or "").strip()
+        for item in captures
+        if str(item.get("raw_line2") or "").strip()
+    ]
+    unique_windows = list(dict.fromkeys(raw_windows))
+    reconstructed = str(
+        summary.get("scroll_reconstruction", {}).get("line2") or ""
+    ).strip()
+    norm_expected = hardware_lcd_probe._norm(expected_name)
+    norm_seen = hardware_lcd_probe._norm(reconstructed or " ".join(raw_windows))
+    min_windows = int(os.environ.get("DLCP_HW_PRESET_SCROLL_MIN_WINDOWS", "2"))
+
+    assert norm_expected and norm_expected in norm_seen, (
+        f"Preset filename OCR did not reconstruct expected PB1 name {expected_name!r}; "
+        f"reconstructed={reconstructed!r}; raw_windows={raw_windows!r}; "
+        f"summary={summary!r}"
+    )
+    assert len(unique_windows) >= min_windows, (
+        "Preset filename row did not show enough distinct scroll windows; "
+        f"unique={unique_windows!r}; expected at least {min_windows}; "
+        f"summary={summary!r}"
+    )
+    return {
+        "summary": summary,
+        "raw_windows": raw_windows,
+        "unique_windows": unique_windows,
+        "reconstructed": reconstructed,
+    }
+
+
 def _capture_lcd_consensus(tmp_path: Path, name: str) -> tuple[str, str]:
     summary = _capture_lcd_summary(tmp_path, name)
     consensus = summary.get("consensus", {})
@@ -856,6 +905,60 @@ def test_live_preset_filename_lcd_confirm_reconstructs_pb1_name(tmp_path: Path) 
         f"expected PB1 filename {expected_name!r}; reconstructed={reconstructed!r}; "
         f"summary={summary!r}"
     )
+
+
+@pytest.mark.hardware
+def test_live_preset_filename_scroll_survives_manual_a_b_a(tmp_path: Path) -> None:
+    """Manual repro gate for Preset LCD scrolling after A>B>A.
+
+    Operator workflow:
+      1. Put CONTROL on the Preset page with preset A active.
+      2. Run with DLCP_HW_PRESET_FILENAME_SCROLL_REPRO=1.
+      3. The test captures the initial A scroll.
+      4. When prompted, use the physical CONTROL Preset-page controls to switch
+         A -> B -> A, then leave CONTROL parked on the Preset A page.
+      5. The test captures the post-cycle A scroll and fails if the row becomes
+         static or no longer reconstructs PB1's preset-A filename.
+    """
+    if os.environ.get("DLCP_HW_PRESET_FILENAME_SCROLL_REPRO") != "1":
+        pytest.skip(
+            "set DLCP_HW_PRESET_FILENAME_SCROLL_REPRO=1 after navigating "
+            "CONTROL to Preset A; the test will prompt for manual A>B>A"
+        )
+
+    _require_main_pair_and_camera_accessible()
+
+    from dlcp_fw.flash import dlcp_v35_release_flash
+
+    expected_a = os.environ.get("DLCP_HW_EXPECTED_PRESET_FILENAME_A", "").strip()
+    if not expected_a:
+        expected_a = _release_capture_name(dlcp_v35_release_flash.CAPTURE_A_META)
+
+    print(
+        "PRECONDITION: CONTROL must be on the Preset page with preset A active. "
+        "Capturing the initial scroll now.",
+        flush=True,
+    )
+    before = _capture_preset_filename_scroll(
+        tmp_path,
+        "preset_scroll_before_a_b_a",
+        expected_name=expected_a,
+    )
+
+    input(
+        "ACTION REQUIRED: from the CONTROL Preset page, switch A -> B -> A "
+        "with the physical UP/DOWN controls, wait for row 0 to show preset A, "
+        "then press Enter here. "
+    )
+
+    after = _capture_preset_filename_scroll(
+        tmp_path,
+        "preset_scroll_after_a_b_a",
+        expected_name=expected_a,
+    )
+
+    assert before["unique_windows"], before
+    assert after["unique_windows"], after
 
 
 @pytest.mark.hardware

@@ -605,7 +605,7 @@ Hardware phase map for `scripts/run_v171_v32_ledger_hardware_gate.py --bug`:
 | Bug(s) | Required phase(s) |
 | --- | --- |
 | BUG-REV-01 | `identity` |
-| BUG-PRESET-01 | `identity`, then `front-panel-preset-a`, `front-panel-preset-b`, `preset-filename-lcd` |
+| BUG-PRESET-01 | `identity`, then `front-panel-preset-a`, `front-panel-preset-b`, `preset-filename-lcd`, `preset-filename-scroll-repro` |
 | BUG-PRESET-02 | `rapid-toggle`, plus `front-panel-preset-a` / `front-panel-preset-b`; manual rapid physical A/B if the operator can reproduce the in-progress switch |
 | BUG-PRESET-03 | Covered by sim for the saturated path; ordinary live path covered by `front-panel-preset-a`, `front-panel-preset-b`, `preset-convergence`, `rapid-toggle` |
 | BUG-STDBY-01 | `front-panel-standby-wake`, `preset-standby-wake`, `reconnect-soak` |

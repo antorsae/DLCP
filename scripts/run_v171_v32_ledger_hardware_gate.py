@@ -195,6 +195,20 @@ PHASES: tuple[Phase, ...] = (
         needs_camera=True,
     ),
     Phase(
+        name="preset-filename-scroll-repro",
+        description="Preset filename scroll survives manual A>B>A cycling.",
+        node="test_live_preset_filename_scroll_survives_manual_a_b_a",
+        env=(("DLCP_HW_PRESET_FILENAME_SCROLL_REPRO", "1"),),
+        args=("-s",),
+        manual=(
+            "Navigate CONTROL to the Preset page with preset A active. The "
+            "test captures the initial A scroll, prompts for a physical "
+            "A -> B -> A cycle on the Preset page, then captures the A "
+            "scroll again."
+        ),
+        needs_camera=True,
+    ),
+    Phase(
         name="front-panel-standby-wake",
         description="Physical CONTROL STBY then wake from Volume.",
         node="test_live_manual_front_panel_standby_wake_from_volume",
@@ -432,6 +446,7 @@ BUG_PHASES: dict[str, tuple[str, ...]] = {
         "front-panel-preset-a",
         "front-panel-preset-b",
         "preset-filename-lcd",
+        "preset-filename-scroll-repro",
     ),
     "BUG-PRESET-02": (
         "rapid-toggle",
