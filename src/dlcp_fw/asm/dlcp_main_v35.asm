@@ -273,12 +273,16 @@ diag_inc_sat MACRO counter
 ; ---------------------------------------------------------------------------
 ; Hypex MAIN images live above the bootloader at 0x1000. The bootloader's
 ; reset vector at 0x0000 jumps here; the bootloader's HW interrupt vector at
-; 0x0008 jumps to 0x1008 below, hence the FSR2 spill + ISR call sequence
-; that occupies words 0x1008..0x1012. app_entry__jump_to_cold_init then jumps to the
-; cold-init path (boot_cold_init__clear_ram_and_runtime_state).
+; 0x0008 jumps to byte address 0x1008 below, hence the FSR2 spill + ISR call
+; sequence at fixed entry 0x1008. The BRA is one word, so the three DW pads are
+; intentional ABI padding; if this trampoline changes again, redo the
+; bootloader/app vector layout cleanly and update the vector tests.
+; app_entry__jump_to_cold_init then jumps to the cold-init path
+; (boot_cold_init__clear_ram_and_runtime_state).
 ; ---------------------------------------------------------------------------
     org 0x1000
     bra         app_entry__jump_to_cold_init                 ; 0x1000 user reset trampoline
+    dw          0xFFFF
     dw          0xFFFF
     dw          0xFFFF
     movff       FSR2L, isr_save_fsr2l_b0_phys               ; 0x1008 ISR shadow vector entry
@@ -2307,7 +2311,7 @@ restore_eeprom_settings_on_boot__read_preset_a_filename:
     rcall       eeprom_write_runtime_version_byte_at_w
     movlw       0x82
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x84                            ; V3.5_RUNTIME_EEPROM_REV_LO
+    movlw       0x85                            ; V3.5_RUNTIME_EEPROM_REV_LO
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
     bra         eeprom_write_byte_if_changed_rcall_trampoline
 
@@ -9175,7 +9179,7 @@ cmd25_identity_query_handler:
     movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS
     movlw       0x08                        ; V3.5_IDENTITY_REV_LO_HI
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x04                        ; V3.5_IDENTITY_REV_LO_LO
+    movlw       0x05                        ; V3.5_IDENTITY_REV_LO_LO
     movwf       flash_end_high_or_loop_mask_scratch_byte, ACCESS
     movlw       0x00                        ; V3.5_IDENTITY_REV_HI_HI
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
@@ -10343,7 +10347,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x05, 0x84, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
+    db  0x03, 0x05, 0x85, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

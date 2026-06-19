@@ -157,15 +157,27 @@ def test_isr_decode_wrap_saves_and_restores_foreground_scratch() -> None:
     """Structural pin for the fix: the ISR must save the full foreground
     scratch set before `rcall ir_rc5_decode` and restore it after the
     result stores; the health-suffix patch must no longer mask GIE."""
+    import re
+
     text = V173_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
-    isr_idx = text.index("rcall   ir_rc5_decode")
-    before = text[isr_idx - 1600 : isr_idx]
-    after = text[isr_idx : isr_idx + 1600]
-    for off in (5, 8, 12, 13, 14, 16, 17, 18, 19, 20, 21):
-        assert f"movff   (Common_RAM + {off}), " in before, (
+    isr_start = text.index("isr_entry__service_portb_change_if_ready:")
+    match = re.search(r"^\s*rcall\s+ir_rc5_decode\b", text[isr_start:], re.M)
+    assert match is not None, "missing ISR call to ir_rc5_decode"
+    isr_idx = isr_start + match.start()
+    before = text[isr_start:isr_idx]
+    after = text[isr_idx : text.index("isr_entry__clear_portb_change_flag:", isr_idx)]
+    restore_region = after.split("bcf     control_flags_acc")[0]
+    for idx, off in enumerate((5, 8, 12, 13, 14, 16, 17, 18, 19, 20, 21)):
+        assert re.search(
+            rf"movff\s+\(Common_RAM \+ {off}\),\s+v173_isr_decode_save_b2_phys \+ {idx}\b",
+            before,
+        ), (
             f"missing ISR save of Common_RAM+{off} before the decode"
         )
-        assert f" (Common_RAM + {off})" in after.split("bcf     control_flags_acc")[0], (
+        assert re.search(
+            rf"movff\s+v173_isr_decode_save_b2_phys \+ {idx},\s+\(Common_RAM \+ {off}\)",
+            restore_region,
+        ), (
             f"missing ISR restore of Common_RAM+{off} after the result stores"
         )
     assert after.index("movff   (Common_RAM + 13), ir_decoded_addr") < after.index(
@@ -180,8 +192,6 @@ def test_isr_decode_wrap_saves_and_restores_foreground_scratch() -> None:
     # codex review of 00f654b: the text pin above cannot catch a wrong or
     # overlapping save-area allocation, and the behavioral count check may
     # skip.  Verify the RESOLVED alias range and its uniqueness directly.
-    import re
-
     inc = V17_CONTROL_RAM_INC.read_text(encoding="utf-8", errors="replace")
     m = re.search(
         r"^v173_isr_decode_save_b2_phys\s+EQU\s+0x([0-9A-Fa-f]+)", inc, re.M

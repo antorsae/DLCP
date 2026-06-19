@@ -101,7 +101,16 @@ def test_build_v172_release_updates_revision_date_and_banner(
     def _fake_assemble(_asm_path: Path, hex_out: Path, **_kwargs) -> None:
         hex_out.write_text(":00000001FF\n", encoding="ascii")
 
+    safety_targets: list[str] = []
+
+    def _fake_ram_safety(targets: list[str]) -> None:
+        safety_targets.extend(targets)
+
     monkeypatch.setattr("dlcp_fw.patch.build_v172_release.assemble_v17", _fake_assemble)
+    monkeypatch.setattr(
+        "dlcp_fw.patch.build_v172_release.assert_targets_safe",
+        _fake_ram_safety,
+    )
 
     old_rev, new_rev, built_hex = build_v172_release(
         asm_path=asm_path,
@@ -115,6 +124,7 @@ def test_build_v172_release_updates_revision_date_and_banner(
     assert "db      0x20, 0x26, 0x05, 0x29" in text
     assert '"Rev x32 20260529"' in text
     assert output_hex.read_text(encoding="ascii") == ":00000001FF\n"
+    assert safety_targets == ["control-v172"]
 
 
 def test_build_v172_release_rolls_back_source_hex_and_listing_on_failure(
