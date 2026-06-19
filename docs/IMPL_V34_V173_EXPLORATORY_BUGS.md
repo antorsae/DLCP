@@ -270,12 +270,12 @@ the ledger entry when closing the bug, and re-run
 
 Three findings, all verified against the current source:
 
-1. **No IR re-arm in WAITING.** The cold loop (`flow_ccs_0FA0_118C`,
+1. **No IR re-arm in WAITING.** The cold loop (`boot_waiting_for_dlcp_loop`,
    `dlcp_control_v173.asm:6363-6483`) and the reconnect loop
    (`v171_reconnect_wait_body`, `:6708-6813`) each call only
    `button_scan_debounce`, `poll_frame_send`, `delay_short`, `rx_parser_entry`,
    `v171_service_rx_frame_gap`. Neither runs the foreground IR dispatcher
-   (`control_core_service_0DCE`), which contains the only `bsf
+   (`ir_dispatch_configured_or_fixed_shortcuts`), which contains the only `bsf
    control_flags,IR_ARMED` re-arm sites (`:3456`, `:3487`, `:3514`, `:3536`).
    The IR ISR clears `IR_ARMED` when it captures a frame; if that happens while
    a WAITING loop is foreground, nothing re-arms the decoder until DISPLAY
@@ -419,11 +419,11 @@ v173_preset_lcd_invalidate:
 
 Call it once at each transition that overlays/leaves the Preset page:
 
-- cold WAITING entry — inside `flow_ccs_0FA0_118C`. Note the label is also the
-  loop-back target (`bra flow_ccs_0FA0_118C` at `:6473`), so a call placed in
+- cold WAITING entry — inside `boot_waiting_for_dlcp_loop`. Note the label is also the
+  loop-back target (`bra boot_waiting_for_dlcp_loop` at `:6473`), so a call placed in
   the body runs per-iteration; the helper is idempotent and the loop period is
   ~10 ms, so this is fine (and self-healing). No loop restructuring needed.
-- standby/WAITING entry — `flow_display_state_entry_1250` body (`:6618-6630`),
+- standby/WAITING entry — `display_state_entry__enter_standby_waiting` body (`:6618-6630`),
   runs once per standby entry.
 - reconnect WAITING entry — `reconnect_wait_loop` init block (`:6690-6706`),
   runs once per reconnect attempt (the loop-back target is

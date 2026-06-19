@@ -96,11 +96,11 @@ def test_bug_v34v173_2_waiting_loops_must_service_ir_and_fresh_status(
     v173_bug_asm: Path,
 ) -> None:
     text = v173_bug_asm.read_text(encoding="utf-8", errors="replace")
-    cold_wait = _label_body(text, "flow_ccs_0FA0_118C", ["post_connect_init"])
+    cold_wait = _label_body(text, "boot_waiting_for_dlcp_loop", ["post_connect_init"])
     reconnect_wait = _label_body(text, "v171_reconnect_wait_body", ["v171_reconnect_wait_done"])
 
     ir_service_call = re.compile(
-        r"\bcall\s+(?:display_loop_iteration|control_core_service_0DCE|v173_waiting_ir_service)\b"
+        r"\bcall\s+(?:display_loop_iteration|ir_dispatch_configured_or_fixed_shortcuts|v173_waiting_ir_service)\b"
     )
     for name, body in {
         "cold WAITING": cold_wait,
@@ -116,11 +116,11 @@ def test_bug_v34v173_3_lcd_lifecycle_must_invalidate_preset_row0_before_waiting(
     v173_bug_asm: Path,
 ) -> None:
     text = v173_bug_asm.read_text(encoding="utf-8", errors="replace")
-    cold_wait_entry = _label_body(text, "flow_ccs_0FA0_118C", ["post_connect_init"])
+    cold_wait_entry = _label_body(text, "boot_waiting_for_dlcp_loop", ["post_connect_init"])
     standby_wait_entry = _label_body(
         text,
-        "flow_display_state_entry_1250",
-        ["flow_display_state_entry_126E"],
+        "display_state_entry__enter_standby_waiting",
+        ["display_state_entry__standby_wait_loop"],
     )
     reconnect_wait_entry = _label_body(text, "reconnect_wait_loop", ["v171_reconnect_wait_body"])
 

@@ -44,8 +44,8 @@ Through the entire stuck window (>140M ticks observed):
   (`asm:6651`) and clears it only at loop entry (`asm:6668`) — the foreground
   is parked *between* those two instructions.
 - PC histogram (300 samples): 99% at `0x01E2/0x01E4` — the inner spin of the
-  blocking 16-bit delay (`delay_short` / `control_core_service_01BE` /
-  `control_core_service_01D8`).
+  blocking 16-bit delay (`delay_short` / `delay_short_16bit_countdown_from_w` /
+  `delay_short_inner_spin_from_w`).
 - The delay counter cells are live: `0x00F:0x00E` decremented `0x10E8 →
   0x0FEE` across 12M ticks ≈ **44.6k ticks (2.79 ms) per unit** — i.e. the
   `delay_short` header's "50 µs per unit" calibration comment is ~56× off for
@@ -55,7 +55,7 @@ Through the entire stuck window (>140M ticks observed):
 
 The stock V1.6b WAITING entries begin with **open-loop blocking banner
 delays**, executed after painting `Waiting for DLCP` and before entering the
-(closed-loop) WAITING loops. All `control_core_service_01BE` call sites in
+(closed-loop) WAITING loops. All `delay_short_16bit_countdown_from_w` call sites in
 V1.73, with measured durations at 2.79 ms/unit:
 
 | Site (v173 asm) | Count | Duration | Context |
@@ -66,8 +66,8 @@ V1.73, with measured durations at 2.79 ms/unit:
 | `:6420-6423` | 0x0FA0 = 4000 | **~11.2 s** | cold-boot `Waiting for DLCP` → cold WAITING loop |
 | `:6734-6737` | 0x1388 = 5000 | **~13.9 s** | wake-path `Waiting for DLCP` → reconnect loop |
 
-(The cold loop's auto-label `flow_ccs_0FA0_118C` literally encodes the 0x0FA0
-argument.)
+(The cold loop's former auto-label `flow_ccs_0FA0_118C` encoded the 0x0FA0
+argument; it is now named `boot_waiting_for_dlcp_loop`.)
 
 During these delays the foreground is completely dead: no status polls, no RX
 parsing (the 47-byte RX ring overflows under chain traffic), no button scan,

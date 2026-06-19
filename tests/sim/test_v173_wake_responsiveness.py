@@ -191,16 +191,16 @@ def test_v173_connected_waiting_exit_bound_after_wake(
 
 def test_v173_waiting_entries_have_no_blocking_banner_delay() -> None:
     """Structural pin: the two WAITING entries must not re-grow an open-loop
-    `control_core_service_01BE` banner delay; the loops own the wait."""
+    `delay_short_16bit_countdown_from_w` banner delay; the loops own the wait."""
     text = V173_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
 
     def window_before(label: str, span: int = 1200) -> str:
         idx = text.index(f"\n{label}:")
         return text[max(0, idx - span) : idx]
 
-    cold_entry = window_before("flow_ccs_0FA0_118C")
+    cold_entry = window_before("boot_waiting_for_dlcp_loop")
     wake_entry = window_before("reconnect_wait_loop")
     for name, body in {"cold": cold_entry, "wake": wake_entry}.items():
-        assert "call    control_core_service_01BE" not in body, (
+        assert "call    delay_short_16bit_countdown_from_w" not in body, (
             f"{name} WAITING entry re-introduced a blocking banner delay"
         )
