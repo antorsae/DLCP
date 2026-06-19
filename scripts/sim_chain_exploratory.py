@@ -214,6 +214,69 @@ def _decode_slot(raw: list[int] | bytes) -> str:
     return "".join(out)
 
 
+def _main_eeprom_slot(chain: Chain, unit: int, base: int) -> bytes:
+    return bytes(chain.read_main_eeprom_byte(unit, base + i) for i in range(FILENAME_LEN))
+
+
+def _slot_diff(expected: bytes, observed: bytes) -> list[dict[str, int]]:
+    return [
+        {"offset": idx, "expected": exp, "observed": got}
+        for idx, (exp, got) in enumerate(zip(expected, observed))
+        if exp != got
+    ]
+
+
+def _expected_filename_slot(config: SessionConfig, unit: int, slot: str) -> bytes:
+    attr = f"slot_{slot.lower()}_pb{unit + 1}"
+    return _slot_bytes(str(getattr(config, attr)))
+
+
+def _filename_eeprom_slot_incidents(
+    config: SessionConfig,
+    unit_state: dict[str, Any],
+) -> list[Incident]:
+    incidents: list[Incident] = []
+    unit = int(unit_state["unit"])
+    if int(unit_state.get("filename_dirty_flags", 0)):
+        return incidents
+    for slot, field in (("A", "filename_eeprom_a_hex"), ("B", "filename_eeprom_b_hex")):
+        observed_hex = str(unit_state.get(field, ""))
+        if not observed_hex:
+            continue
+        observed = bytes.fromhex(observed_hex)
+        expected = _expected_filename_slot(config, unit, slot)
+        if observed == expected:
+            continue
+        diffs = _slot_diff(expected, observed)
+        incidents.append(
+            Incident(
+                "HIGH",
+                "persistent.filename_eeprom.slot",
+                f"MAIN{unit} preset-{slot} filename EEPROM differs from seeded slot",
+                (
+                    "persistent preset filename EEPROM must remain byte-exact unless "
+                    "the session explicitly writes that slot"
+                ),
+                {
+                    "unit": unit,
+                    "slot": slot,
+                    "expected_text": _decode_slot(expected),
+                    "observed_text": _decode_slot(observed),
+                    "expected_hex": expected.hex(),
+                    "observed_hex": observed.hex(),
+                    "diffs": diffs[:16],
+                    "diff_count": len(diffs),
+                    "filename_ram": unit_state.get("filename_ram"),
+                    "active_preset": unit_state.get("active_preset"),
+                    "filename_dirty_flags": unit_state.get("filename_dirty_flags"),
+                },
+                "MAIN filename EEPROM persistence",
+                f"fname-eeprom-corrupt:unit{unit}:slot{slot}:{observed.hex()}",
+            )
+        )
+    return incidents
+
+
 def _compact_stats(stats: dict[str, Any]) -> dict[str, Any]:
     """Keep I2C/SRC stats useful without writing 256-entry zero-heavy arrays."""
     out: dict[str, Any] = {}
@@ -921,6 +984,8 @@ class Explorer:
             active_flags = chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS)
             biquad_image = _dsp_biquad_image(chain, unit)
             full_image = bytes(chain.read_main_dsp_reg(unit, s) for s in range(0x00, 0x100))
+            eeprom_a = _main_eeprom_slot(chain, unit, PRESET_A_EEPROM_BASE)
+            eeprom_b = _main_eeprom_slot(chain, unit, PRESET_B_EEPROM_BASE)
             unit_state = {
                 "unit": unit,
                 "active_flags": active_flags,
@@ -973,6 +1038,10 @@ class Explorer:
                 "filename_ram": _decode_slot(
                     [chain.read_main_reg(unit, FILENAME_RAM_BASE + i) for i in range(FILENAME_LEN)]
                 ),
+                "filename_eeprom_a": _decode_slot(eeprom_a),
+                "filename_eeprom_b": _decode_slot(eeprom_b),
+                "filename_eeprom_a_hex": eeprom_a.hex(),
+                "filename_eeprom_b_hex": eeprom_b.hex(),
                 "filename_dirty_flags": chain.read_main_reg(unit, FILENAME_DIRTY_FLAGS),
             }
             unit_state.update(_golden_match_fields(unit_state, self.golden_images))
@@ -1092,6 +1161,7 @@ class Explorer:
                 )
             )
         for unit_state in sample["main"]:
+            incidents.extend(_filename_eeprom_slot_incidents(config, unit_state))
             golden_incident = _golden_coeff_incident(
                 sample,
                 unit_state,
@@ -1186,6 +1256,8 @@ class Explorer:
     ) -> None:
         try:
             self._apply_action(chain, action, params)
+            if action == "hid_filename_write":
+                self._record_expected_filename_write(chain, config, params)
             self._log_event(config.session_id, action, params, {"ok": True, "tick": chain.current_tick()})
         except Exception as exc:
             self._log_event(
@@ -1208,6 +1280,17 @@ class Explorer:
                     f"action-exception:{action}:{type(exc).__name__}",
                 ),
             )
+
+    def _record_expected_filename_write(
+        self,
+        chain: Chain,
+        config: SessionConfig,
+        params: dict[str, Any],
+    ) -> None:
+        unit = int(params["unit"])
+        preset_b = bool(chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS) & MAIN_ACTIVE_PRESET_MASK)
+        slot = "b" if preset_b else "a"
+        setattr(config, f"slot_{slot}_pb{unit + 1}", str(params["name"]))
 
     def _apply_action(self, chain: Chain, action: str, params: dict[str, Any]) -> None:
         if action == "step":

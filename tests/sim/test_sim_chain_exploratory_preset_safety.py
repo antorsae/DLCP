@@ -64,6 +64,21 @@ def _golden():
     }
 
 
+def _session_config():
+    return _explore.SessionConfig(
+        session_id=1,
+        campaign="preset-filename",
+        seed=123,
+        slot_a_pb1="LX521.4 22MG10F-v5",
+        slot_b_pb1="LX521.4 22MG10F-v7",
+        slot_a_pb2="bad\x01name",
+        slot_b_pb2="USB Audio",
+        src_initial="locked",
+        active_preset="A",
+        reset_source="por",
+    )
+
+
 @pytest.mark.slow
 def test_golden_image_learner_returns_distinct_stable_a_b_images_per_pb() -> None:
     golden = _explore.learn_preset_golden_images(V173_CONTROL_HEX, V35_MAIN_HEX)
@@ -115,8 +130,42 @@ def test_golden_coeff_oracle_ignores_non_live_or_non_healthy_windows(overrides) 
     assert incident is None
 
 
+def test_filename_eeprom_oracle_accepts_seeded_malformed_slot_bytes() -> None:
+    config = _session_config()
+    state = _unit_state(
+        unit=1,
+        filename_eeprom_a_hex=_explore._slot_bytes("bad\x01name").hex(),
+        filename_eeprom_b_hex=_explore._slot_bytes("USB Audio").hex(),
+    )
+
+    assert _explore._filename_eeprom_slot_incidents(config, state) == []
+
+
+def test_filename_eeprom_oracle_high_for_persistent_slot_corruption() -> None:
+    config = _session_config()
+    corrupt = bytearray(_explore._slot_bytes("LX521.4 22MG10F-v5"))
+    corrupt[11:15] = bytes.fromhex("b22300b1")
+    state = _unit_state(
+        filename_ram="LX521.4 22MG10F-v5",
+        active_preset=0,
+        filename_dirty_flags=0,
+        filename_eeprom_a_hex=bytes(corrupt).hex(),
+        filename_eeprom_b_hex=_explore._slot_bytes("LX521.4 22MG10F-v7").hex(),
+    )
+
+    incidents = _explore._filename_eeprom_slot_incidents(config, state)
+
+    assert len(incidents) == 1
+    incident = incidents[0]
+    assert incident.severity == "HIGH"
+    assert incident.oracle == "persistent.filename_eeprom.slot"
+    assert incident.observed["slot"] == "A"
+    assert incident.observed["diff_count"] >= 1
+
+
 def _triage_observation(*, golden_match: bool) -> dict:
     def main(unit: int) -> dict:
+        slot_a = _explore._slot_bytes("LX521.4 22MG10F-v5")
         return {
             "unit": unit,
             "active_gate": 1,
@@ -126,6 +175,10 @@ def _triage_observation(*, golden_match: bool) -> dict:
             "diag": {},
             "reset": {},
             "filename_ram": "",
+            "filename_eeprom_a": _explore._decode_slot(slot_a),
+            "filename_eeprom_b": "",
+            "filename_eeprom_a_hex": slot_a.hex(),
+            "filename_eeprom_b_hex": bytes([0xFF] * _explore.FILENAME_LEN).hex(),
             "tas_stats": {},
             "src_stats": {},
             "mute_latch": 4,
@@ -189,6 +242,23 @@ def test_src_rxckr_churn_is_realistic_when_live_wrong_coeff_is_present() -> None
     assert rows["signals"]["final_live_wrong_coeff"] is True
     assert rows["synthetic_fault_load"] == 0
     assert rows["realistic_score"] >= 100
+
+
+def test_filename_eeprom_embedded_nul_is_realistic_high_priority_signal() -> None:
+    events = [
+        {"session_id": 1, "event_id": 1, "action": "init", "params": {"campaign": "preset-filename", "seed": 1}},
+        {"session_id": 1, "event_id": 2, "action": "run_until_connected", "params": {}, "result": {"connected": True}},
+    ]
+    obs = _triage_observation(golden_match=True)
+    corrupt = bytearray(_explore._slot_bytes("LX521.4 22MG10F-v5"))
+    corrupt[12] = 0x00
+    obs["main"][0]["filename_eeprom_a_hex"] = bytes(corrupt).hex()
+    rows = _fmt._triage_session(Path("."), 1, events=events, observations=[obs])
+
+    assert rows["signals"]["filename_eeprom_corrupt_obs"] == 1
+    assert rows["signals"]["final_filename_eeprom_corrupt"] is True
+    assert rows["synthetic_fault_load"] == 0
+    assert rows["realistic_score"] >= 90
 
 
 def test_preset_phase_sweep_plan_is_deterministic_and_logs_phase_delay() -> None:

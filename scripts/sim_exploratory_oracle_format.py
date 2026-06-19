@@ -182,6 +182,21 @@ def _nonzero(d: dict[str, Any]) -> dict[str, int]:
     return {k: int(v) for k, v in d.items() if int(v)}
 
 
+def _slot_hex_has_embedded_nul(raw_hex: str) -> bool:
+    if not raw_hex:
+        return False
+    try:
+        raw = bytes.fromhex(raw_hex)
+    except ValueError:
+        return True
+    for value in raw:
+        if value == 0xFF:
+            return False
+        if value == 0x00:
+            return True
+    return False
+
+
 def _state_vector(obs: dict[str, Any]) -> dict[str, Any]:
     ctl = obs["control"]
     flags = int(ctl["flags"])
@@ -215,6 +230,10 @@ def _state_vector(obs: dict[str, Any]) -> dict[str, Any]:
         sv[f"{tag}_diag"] = _nonzero(m["diag"])
         sv[f"{tag}_reset"] = _nonzero(m["reset"])
         sv[f"{tag}_fname"] = m["filename_ram"]
+        sv[f"{tag}_fname_eep_a"] = m.get("filename_eeprom_a", "")
+        sv[f"{tag}_fname_eep_b"] = m.get("filename_eeprom_b", "")
+        sv[f"{tag}_fname_eep_a_hex"] = m.get("filename_eeprom_a_hex", "")
+        sv[f"{tag}_fname_eep_b_hex"] = m.get("filename_eeprom_b_hex", "")
         sv[f"{tag}_tas_ack"] = int(tas.get("bytes_acked", 0))
         sv[f"{tag}_tas_nack"] = int(tas.get("bytes_nacked", 0))
         sv[f"{tag}_src_wr"] = int(src.get("write_transactions", 0))
@@ -470,6 +489,12 @@ def render_card(run_dir: Path, session_id: int) -> str:
                 f"job={sv[f'{tag}_job']} jobtgt={sv[f'{tag}_job_target']} "
                 f"diag={sv[f'{tag}_diag']} reset={sv[f'{tag}_reset']} "
                 f"fname={sv[f'{tag}_fname']!r}"
+                + (
+                    f" eepA={sv[f'{tag}_fname_eep_a']!r}"
+                    f" eepB={sv[f'{tag}_fname_eep_b']!r}"
+                    if sv.get(f"{tag}_fname_eep_a_hex") or sv.get(f"{tag}_fname_eep_b_hex")
+                    else ""
+                )
             )
             out.append(
                 f"- {tag}.audio: mute_latch=0x{sv[f'{tag}_mute_latch']:02X} "
@@ -513,11 +538,13 @@ def render_card(run_dir: Path, session_id: int) -> str:
         "seeded into each MAIN's preset-A/preset-B EEPROM slots before boot. These come "
         "from an arbitrary test-string pool that INCLUDES input-sounding names (e.g. "
         "'USB Audio', 'RCA SPDIF') and deliberately malformed bytes (e.g. 'bad\\x01name'). "
-        "A `PBn fname=` value that matches the active preset's seeded slot is CORRECT "
+        "A `PBn fname=`/`eepA=`/`eepB=` value that matches the seeded slot is CORRECT "
         "firmware behavior — it is the firmware echoing stored preset-name bytes, NOT a "
         "preset/input conflation. Only flag a filename that does NOT match the seeded slot "
         "for the active preset (wrong slot, stale after a slot change, truncated, or "
-        "corrupted beyond the injected bytes)."
+        "corrupted beyond the injected bytes). Embedded `0x00` before `0xFF` padding in "
+        "an EEPROM slot is a persistent-corruption signal unless the setup explicitly "
+        "injected that byte."
     )
     return "\n".join(out) + "\n"
 
@@ -621,6 +648,8 @@ def _triage_session(
         "preset_coeff_unstable": False,    # one preset maps to >1 coeff image
         "live_wrong_coeff_obs": 0,
         "final_live_wrong_coeff": False,
+        "filename_eeprom_corrupt_obs": 0,
+        "final_filename_eeprom_corrupt": False,
         # candidate mute-leak windows: CONTROL shows muted yet a MAIN wrote a
         # volume coefficient (0x30) in the interval (agent adjudicates the value).
         "mute_volwrite_obs": 0,
@@ -646,6 +675,11 @@ def _triage_session(
         for tag in ("PB1", "PB2"):
             if sv.get(f"{tag}_golden_live") and sv.get(f"{tag}_golden_match") is False:
                 signals["live_wrong_coeff_obs"] += 1
+            if (
+                _slot_hex_has_embedded_nul(str(sv.get(f"{tag}_fname_eep_a_hex", "")))
+                or _slot_hex_has_embedded_nul(str(sv.get(f"{tag}_fname_eep_b_hex", "")))
+            ):
+                signals["filename_eeprom_corrupt_obs"] += 1
         # cross-PB coefficient desync: both awake, SAME active preset, but the
         # actual biquad coefficient images differ -> one MAIN has wrong/stale
         # coeffs even though the preset flags agree.
@@ -716,6 +750,11 @@ def _triage_session(
             last.get(f"{tag}_golden_live") and last.get(f"{tag}_golden_match") is False
             for tag in ("PB1", "PB2")
         )
+        signals["final_filename_eeprom_corrupt"] = any(
+            _slot_hex_has_embedded_nul(str(last.get(f"{tag}_fname_eep_a_hex", "")))
+            or _slot_hex_has_embedded_nul(str(last.get(f"{tag}_fname_eep_b_hex", "")))
+            for tag in ("PB1", "PB2")
+        )
     else:
         # no observations: boot/connect failure or aborted before sampling
         signals["no_observations"] = True
@@ -755,6 +794,8 @@ def _triage_session(
         + (5 if signals["lcd_idle_streak"] >= 8 else 0)
         + 100 * int(signals["final_live_wrong_coeff"])
         + 20 * min(signals["live_wrong_coeff_obs"], 5)
+        + 90 * int(signals["final_filename_eeprom_corrupt"])
+        + 12 * min(signals["filename_eeprom_corrupt_obs"], 5)
         + 24 * int(signals["final_cross_pb_coeff_desync"])
         + 18 * int(signals["preset_coeff_collision"])
         # soft/confounded: the biquad range (0x37..0x90) is also perturbed within a
@@ -790,6 +831,8 @@ def _triage_session(
         + (4 if signals["lcd_idle_streak"] >= 8 else 0)
         + 100 * int(signals["final_live_wrong_coeff"])
         + 20 * min(signals["live_wrong_coeff_obs"], 5)
+        + 90 * int(signals["final_filename_eeprom_corrupt"])
+        + 12 * min(signals["filename_eeprom_corrupt_obs"], 5)
         + 24 * int(signals["final_cross_pb_coeff_desync"])
         + 18 * int(signals["preset_coeff_collision"])
         # soft/confounded (see score above); minor tiebreaker only
