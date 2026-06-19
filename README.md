@@ -2,7 +2,7 @@
 
 Drop-in replacement firmware for the **Hypex DLCP**.  The recommended release pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0084`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0085`)
 - CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x49 / build 20260616`)
 
 This README focuses on the recommended V3.5 + V1.73 deployment.  All
@@ -130,7 +130,7 @@ behavior changes.
 
 **Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the
 recommended V1.73 + V3.5 pair, each healthy Diagnostics page also shows that
-MAIN's live identity, for example `PB1 OK v3.5 0084` and `PB2 OK v3.5 0084`.
+MAIN's live identity, for example `PB1 OK v3.5 0085` and `PB2 OK v3.5 0085`.
 The full MAIN counter set, including USB-only SRC/DSP counters, is available
 over USB:
 

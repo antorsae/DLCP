@@ -448,7 +448,7 @@ Version labels:
 
 Recent verification (latest 2026-06-19):
 
-- `.venv/bin/python scripts/build_v35_release.py` -> canonical `DLCP_Firmware_V3.5.hex` built with release rev `0x0083 -> 0x0084`; follow-up direct reassembly after local helper-label cleanup kept rev `0x0084` and RAM safety passed for `main-v35`.
+- `.venv/bin/python scripts/build_v35_release.py` -> canonical `DLCP_Firmware_V3.5.hex` built with release rev `0x0083 -> 0x0084`; follow-up direct reassembly after local helper-label cleanup kept rev `0x0084` and RAM safety passed for `main-v35`. The filename-EEPROM NUL fix later rebuilt canonical V3.5 with release rev `0x0084 -> 0x0085`; current `DLCP_Firmware_V3.5.hex` reports EEPROM tuple `3.5 / rev 0x85` and cmd `0x25` identity rev `0085`.
 - `.venv/bin/python -m pytest -q -n 8 tests/sim/test_v35_v173_release_builders.py tests/sim/test_dlcp_v35_release_flash.py tests/sim/test_firmware_version_label.py::test_v35_usb_and_eeprom_version_match_release_identity tests/sim/test_v172_v33_diag_identity.py::test_v35_cmd25_identity_handler_emits_16bit_revision_nibbles tests/sim/test_v172_v33_diag_identity.py::test_v173_v35_diag_ok_title_shows_visible_main_identity tests/sim/test_ram_bank_safety.py::test_current_targets_pass_ram_bank_safety_checker tests/sim/test_ram_bank_safety.py::test_v34_v173_targets_are_registered tests/sim/test_sim_chain_exploratory_preset_safety.py::test_golden_image_learner_returns_distinct_stable_a_b_images_per_pb` -> `19 passed in 16.67s`
 - `.venv/bin/python -m pytest tests --collect-only -q` -> `1767 tests collected in 0.41s`
 - `.venv/bin/python -m pytest -q -n 16` -> `1744 passed, 20 skipped, 3 xfailed, 1 warning in 709.26s`
