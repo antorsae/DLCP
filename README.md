@@ -10,8 +10,12 @@ user-facing comparisons below use stock MAIN V2.3 + CONTROL V1.6b as the
 baseline.  Against that stock baseline, V3.5/V1.73 adds A/B presets, PB1/PB2
 diagnostics, MAIN identity display, bounded I2C and chain recovery, RAM-bank
 and ISR scratch hardening, SRC4382 robustness, DSP coefficient safety, and wake
-I2C phase-order hardening.  Older patched and rewrite releases are historical
-implementation steps; see [docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
+I2C phase-order hardening.  The current source line is also materially more
+maintainable: the MAIN assembly has semantic labels for the major service
+paths/RAM roles, and the V3.4/V3.5 size-reclaim campaign recovered roughly
+2 KB of contiguous MAIN flash headroom for future features.  Older patched and
+rewrite releases are historical implementation steps; see
+[docs/RELEASE_ARCHIVE.md](docs/RELEASE_ARCHIVE.md).
 
 ## Fresh Clone Setup
 
@@ -111,6 +115,18 @@ reassert through the validated preset-table path, waits for the post-wake
 device-init barrier, then applies late input-route side effects and volume
 restore.  This preserves the route-sync fix without letting early I2C side
 effects create startup `I6` or a live wrong DSP image.
+
+**Maintainable MAIN source and headroom.**  The current V3.5 MAIN source lives
+in `src/dlcp_fw/asm/dlcp_main_v35.asm`, with the historical V3.4 source kept
+stable for reproducible rebuilds.  The reanalysis work replaced opaque
+auto-labels with semantic labels across the high-value control flow and RAM
+roles, with rename decisions tracked in
+`artifacts/reanalysis/dlcp_main_v34_rename_ledger.tsv`.  The same engineering
+pass reclaimed the MAIN app region from the edge of the fixed `0x4C00` preset
+table wall to roughly 2 KB of contiguous space; the current V3.5 listing ends
+at `0x4432`, leaving `1998` bytes before `0x4C00`.  That reserve is deliberate
+feature budget for future diagnostics, safety checks, and controlled UI/audio
+behavior changes.
 
 **Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the
 recommended V1.73 + V3.5 pair, each healthy Diagnostics page also shows that
