@@ -32,6 +32,46 @@ Style conventions:
 - Raw source line numbers are avoided in comments. Use labels, document/test
   IDs, bug IDs, or stable hardware/protocol names instead.
 
+Fixed-address ABI and size-optimization rules:
+
+- The preserved MAIN bootloader vectors at `0x0000` and `0x0008` and the app
+  entry stubs at `0x1000` and `0x1008` are binary ABI, not ordinary layout.
+  Any edit near those `org` blocks must keep the seeded-image vector targets
+  instruction-aligned and covered by a byte-level test.
+- Treat size reductions near `org`, reset vectors, interrupt vectors,
+  bootloader trampolines, ISR prologues/epilogues, shared scratch storage,
+  FSR helpers, and multiword `movff` sequences as high risk. Add or update a
+  structural listing/HEX test in the same change.
+- Do not count bytes saved in a fixed-entry stub until the boot-vector ABI gate
+  and the relevant full-chain behavioral test both pass. If a future version
+  intentionally changes these addresses, rework the bootloader/app contract
+  cleanly instead of relying on incidental padding.
+
+## CONTROL PIC18 Assembly
+
+Scope: `src/dlcp_fw/asm/dlcp_control_v173.asm` and shared CONTROL include
+files such as `src/dlcp_fw/asm/dlcp_control_ram.inc`.
+
+Style conventions:
+
+- PIC SFR/register symbols from `p18f25k20.inc` stay uppercase, for example
+  `INTCON`, `INTCON3`, `PIE1`, `RCSTA`, `TXSTA`, `EECON1`, and `WREG`.
+- Instructions are lower-case, for example `movlw`, `movwf`, `btfsc`, `bra`,
+  `rcall`, and `return`.
+- Assembler directives are uppercase where already established, especially
+  `EQU`, `MACRO`, and `ENDM`. Preserve local directive style for existing
+  header/config blocks.
+- Runtime labels and RAM aliases use `lower_snake_case`.
+- Protocol constants, device constants, RC5 codes, EEPROM slots, and bit masks
+  use `UPPER_SNAKE_CASE`.
+- Auto-generated `stock_*`, `ram_0x*`, `_op`, `_phys`, and
+  `(Common_RAM + N)` address-stable aliases are not renamed for cosmetics.
+  Rename them only when the current V1.73 source provides direct semantic
+  evidence, and update the source of truth for generated aliases in the same
+  change.
+- Raw source line numbers are avoided in comments. Use labels, document/test
+  IDs, bug IDs, or stable hardware/protocol names instead.
+
 ## Comments
 
 - Comments must describe current behavior. When a bug has been fixed, update or
