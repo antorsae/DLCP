@@ -39,6 +39,7 @@ use dlcp_sim::peripherals::src4382::Src4382;
 use dlcp_sim::peripherals::tas3108::Tas3108;
 use dlcp_sim::pinnet::{PortLetter, default_rx_pin, default_tx_pin};
 use dlcp_sim::reset::{ResetSource, apply_reset};
+use dlcp_sim::scheduler::EventKind;
 
 /// Path to the project root (the `analysis-sim-rewrite-rust`
 /// directory) at compile time.  Resolved from
@@ -1147,6 +1148,109 @@ impl Chain {
     /// Current universal-clock tick.
     fn current_tick(&self) -> u64 {
         self.inner.current_tick
+    }
+
+    /// Investigation hook: run the normal chain scheduler and record MAIN RAM
+    /// cell transitions with the scheduler tick and pre-instruction PC.
+    ///
+    /// This is intentionally generic and read-only apart from normal simulator
+    /// execution. It is used for firmware root-cause work where Python polling
+    /// is too coarse to identify which instruction first changed a scratch byte.
+    #[pyo3(signature = (unit, watch_addrs, max_ticks, max_records=10_000))]
+    fn trace_main_ram_transitions(
+        &mut self,
+        unit: u8,
+        watch_addrs: Vec<u16>,
+        max_ticks: u64,
+        max_records: usize,
+    ) -> PyResult<Vec<(u64, u32, usize, u16, u8, u8)>> {
+        if watch_addrs.is_empty() {
+            return Err(PyValueError::new_err(
+                "trace_main_ram_transitions: watch_addrs must not be empty",
+            ));
+        }
+        if max_ticks == 0 {
+            return Err(PyValueError::new_err(
+                "trace_main_ram_transitions: max_ticks must be > 0",
+            ));
+        }
+        if max_records == 0 {
+            return Err(PyValueError::new_err(
+                "trace_main_ram_transitions: max_records must be > 0",
+            ));
+        }
+
+        let i_main = self.main_core_index(unit, "trace_main_ram_transitions")?;
+        let addrs: Vec<u16> = watch_addrs.into_iter().map(|addr| addr & 0x0FFF).collect();
+        let mut last_values: Vec<u8> = addrs
+            .iter()
+            .map(|addr| {
+                self.inner.cores[i_main]
+                    .memory
+                    .read_raw(dlcp_sim::memory::Address::from_raw(*addr))
+            })
+            .collect();
+        let deadline = self.inner.current_tick.saturating_add(max_ticks);
+        let mut records: Vec<(u64, u32, usize, u16, u8, u8)> = Vec::new();
+
+        while self.inner.current_tick < deadline && records.len() < max_records {
+            let Some(next) = self.inner.events.peek().cloned() else {
+                self.inner.current_tick = deadline;
+                break;
+            };
+            if next.tick > deadline {
+                self.inner.current_tick = deadline;
+                break;
+            }
+
+            let event = self.inner.events.pop().expect("peek/pop consistency");
+            self.inner.current_tick = event.tick;
+            let (event_core_idx, pc_before) = match &event.kind {
+                EventKind::CoreInstructionComplete(core_idx) => {
+                    (*core_idx, self.inner.cores[*core_idx].pc())
+                }
+                EventKind::UartByteDelivery { .. }
+                | EventKind::PinPropagation(_)
+                | EventKind::PeripheralDeadline { .. } => (usize::MAX, 0),
+            };
+
+            match event.kind {
+                EventKind::CoreInstructionComplete(core_idx) => {
+                    self.inner.execute_core_step(core_idx);
+                }
+                EventKind::UartByteDelivery { .. } => {
+                    return Err(PyRuntimeError::new_err(
+                        "trace_main_ram_transitions: queued UART delivery event is not supported by this investigation hook",
+                    ));
+                }
+                EventKind::PinPropagation(_) | EventKind::PeripheralDeadline { .. } => {
+                    // These event kinds are currently no-ops in Chain::dispatch_event.
+                }
+            }
+
+            for (idx, addr) in addrs.iter().enumerate() {
+                let new_value = self.inner.cores[i_main]
+                    .memory
+                    .read_raw(dlcp_sim::memory::Address::from_raw(*addr));
+                let old_value = last_values[idx];
+                if new_value != old_value {
+                    records.push((
+                        self.inner.current_tick,
+                        pc_before,
+                        event_core_idx,
+                        *addr,
+                        old_value,
+                        new_value,
+                    ));
+                    last_values[idx] = new_value;
+                    if records.len() >= max_records {
+                        break;
+                    }
+                }
+            }
+        }
+
+        Ok(records)
     }
 
     /// Index of the CONTROL core in the chain.

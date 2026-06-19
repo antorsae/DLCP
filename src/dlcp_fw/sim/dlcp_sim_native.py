@@ -1495,6 +1495,28 @@ class Chain:
         """MAIN0 core's current PC.  See :meth:`current_ctl_pc`."""
         return int(self._inner.current_main_pc())
 
+    def trace_main_ram_transitions(
+        self,
+        unit: int,
+        watch_addrs: list[int],
+        max_ticks: int,
+        max_records: int = 10_000,
+    ) -> list[tuple[int, int, int, int, int, int]]:
+        """Run the normal chain scheduler while recording MAIN RAM writes.
+
+        Returns tuples ``(tick, pc_before, event_core_idx, addr, old, new)``.
+        This is an investigation hook for firmware root-cause probes where
+        Python-side polling is too coarse.
+        """
+        return list(
+            self._inner.trace_main_ram_transitions(
+                int(unit),
+                [int(addr) & 0x0FFF for addr in watch_addrs],
+                int(max_ticks),
+                int(max_records),
+            )
+        )
+
     def step_until_pc_hit(
         self,
         core_idx: int,
