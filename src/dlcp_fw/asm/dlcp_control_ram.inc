@@ -24,21 +24,41 @@ tx_ring_rd                 equ  0x096    ; ISR consumer index
 tx_ring_wr                 equ  0x097    ; producer index
 rx_ring_rd                 equ  0x098    ; parser consumer index
 rx_ring_wr                 equ  0x099    ; ISR producer index
+button_event_latch         equ  0x09A    ; debounced/repeat button event bitmap consumed by UI pages
+button_repeat_timer_lo     equ  0x09B    ; 16-bit button repeat/event timer lo
+button_repeat_timer_hi     equ  0x09C    ; 16-bit button repeat/event timer hi
 idle_timeout_lo            equ  0x09D    ; 16-bit idle timer lo, init 0xEA61
 idle_timeout_hi            equ  0x09E    ; 16-bit idle timer hi
 full_sync_lo               equ  0x09F    ; 16-bit full-sync counter lo, init 0x4E20
 full_sync_hi               equ  0x0A0    ; 16-bit full-sync counter hi
 raw_status_cache           equ  0x0A1    ; boot sentinel #4, init 0x80 until BF/05
+menu_option_max_index      equ  0x0A4    ; inclusive max index for shared menu option editors
+menu_option_selected_index equ  0x0A5    ; selected index for shared menu option editors
 rx_frame_position          equ  0x0A6    ; parser state: 0=route, 1=cmd, 2=data
 cmd1d_setting_cache        equ  0x0A7    ; boot sentinel #3, init 0x80 until BF/1D
+backlight_elapsed_lo       equ  0x0B0    ; 32-bit backlight elapsed counter lo
+backlight_elapsed_mid_lo   equ  0x0B1
+backlight_elapsed_mid_hi   equ  0x0B2
+backlight_elapsed_hi       equ  0x0B3
+mute_blink_counter_lo      equ  0x0B4    ; muted-state backlight blink counter lo
+mute_blink_counter_hi      equ  0x0B5
+rx_parser_current_byte     equ  0x0B6    ; byte popped from RX ring for parser classification
 rx_ring_staging            equ  0x0B7    ; single-byte holding cell for parser
 input_select_cache         equ  0x0B8    ; boot sentinel #1, init 0x80 until BF/06
 volume_cache               equ  0x0B9    ; boot sentinel #2, init 0x80 until BF/07
+setup_submenu_index        equ  0x0BA    ; persisted setup/settings row index
 button_debounce_counter    equ  0x0BB    ; threshold = 4
 button_last_scan           equ  0x0BC    ; raw button sample
+button_debounced_prev      equ  0x0BD    ; previous debounced button snapshot
 button_debounced           equ  0x0BE    ; debounced state
 display_state_index        equ  0x0BF    ; menu screen 0..3 (Vol/Preset/Input/Setup)
+source_channel_menu_index  equ  0x0C0    ; source/channel settings bank row index
 saved_settings_base        equ  0x0C1    ; loaded by eeprom_settings_load (0x0C1..0x0CC)
+backlight_timeout_selection equ  0x0EB   ; persisted backlight timeout menu selection
+backlight_timeout_threshold_lo equ  0x0EC ; 32-bit backlight timeout threshold lo
+backlight_timeout_threshold_mid_lo equ  0x0ED
+backlight_timeout_threshold_mid_hi equ  0x0EE
+backlight_timeout_threshold_hi equ  0x0EF
 
 ; --- V1.71 additions ---
 ; V1.71 inlines the features from V1.61b (presets), V1.62b (reconnect
@@ -181,6 +201,10 @@ v171_full_sync_step        equ  0x070
 ; queue is no longer needed.  The slot is intentionally left
 ; un-defined here so any stray reference produces an assembler error
 ; rather than silently picking up new semantics.
+;
+; v171_preset_bit_snapshot — BANK 1, physical 0x172.  Preset screen
+; redraw dirty-check snapshot of control_flags.PRESET_BIT.
+v171_preset_bit_snapshot  equ  0x072
 
 ; --- V1.71 Layer 1: bounded tx_byte_enqueue ---
 ; Replaces the V1.6b indefinite busy-wait at tx_byte_enqueue when the
@@ -702,12 +726,21 @@ rx_ring_rd_b0_phys               EQU  0x098    ; physical address for movff/lfsr
 rx_ring_wr_b0                    EQU  0x099    ; phys 0x099, bank 0, owner rx_ring_wr
 rx_ring_wr_b0_op                 EQU  0x99     ; 8-bit f operand for rx_ring_wr_b0
 rx_ring_wr_b0_phys               EQU  0x099    ; physical address for movff/lfsr
+button_event_latch_b0            EQU  0x09A    ; phys 0x09A, bank 0, owner button_event_latch
+button_event_latch_b0_op         EQU  0x9A     ; 8-bit f operand for button_event_latch_b0
+button_event_latch_b0_phys       EQU  0x09A    ; physical address for movff/lfsr
 stock_09A_b0                     EQU  0x09A    ; phys 0x09A, bank 0, owner stock-derived
 stock_09A_b0_op                  EQU  0x9A     ; 8-bit f operand for stock_09A_b0
 stock_09A_b0_phys                EQU  0x09A    ; physical address for movff/lfsr
+button_repeat_timer_lo_b0        EQU  0x09B    ; phys 0x09B, bank 0, owner button_repeat_timer_lo
+button_repeat_timer_lo_b0_op     EQU  0x9B     ; 8-bit f operand for button_repeat_timer_lo_b0
+button_repeat_timer_lo_b0_phys   EQU  0x09B    ; physical address for movff/lfsr
 stock_09B_b0                     EQU  0x09B    ; phys 0x09B, bank 0, owner stock-derived
 stock_09B_b0_op                  EQU  0x9B     ; 8-bit f operand for stock_09B_b0
 stock_09B_b0_phys                EQU  0x09B    ; physical address for movff/lfsr
+button_repeat_timer_hi_b0        EQU  0x09C    ; phys 0x09C, bank 0, owner button_repeat_timer_hi
+button_repeat_timer_hi_b0_op     EQU  0x9C     ; 8-bit f operand for button_repeat_timer_hi_b0
+button_repeat_timer_hi_b0_phys   EQU  0x09C    ; physical address for movff/lfsr
 stock_09C_b0                     EQU  0x09C    ; phys 0x09C, bank 0, owner stock-derived
 stock_09C_b0_op                  EQU  0x9C     ; 8-bit f operand for stock_09C_b0
 stock_09C_b0_phys                EQU  0x09C    ; physical address for movff/lfsr
@@ -732,9 +765,15 @@ stock_0A2_b0_phys                EQU  0x0A2    ; physical address for movff/lfsr
 stock_0A3_b0                     EQU  0x0A3    ; phys 0x0A3, bank 0, owner stock-derived
 stock_0A3_b0_op                  EQU  0xA3     ; 8-bit f operand for stock_0A3_b0
 stock_0A3_b0_phys                EQU  0x0A3    ; physical address for movff/lfsr
+menu_option_max_index_b0         EQU  0x0A4    ; phys 0x0A4, bank 0, owner menu_option_max_index
+menu_option_max_index_b0_op      EQU  0xA4     ; 8-bit f operand for menu_option_max_index_b0
+menu_option_max_index_b0_phys    EQU  0x0A4    ; physical address for movff/lfsr
 stock_0A4_b0                     EQU  0x0A4    ; phys 0x0A4, bank 0, owner stock-derived
 stock_0A4_b0_op                  EQU  0xA4     ; 8-bit f operand for stock_0A4_b0
 stock_0A4_b0_phys                EQU  0x0A4    ; physical address for movff/lfsr
+menu_option_selected_index_b0    EQU  0x0A5    ; phys 0x0A5, bank 0, owner menu_option_selected_index
+menu_option_selected_index_b0_op EQU  0xA5     ; 8-bit f operand for menu_option_selected_index_b0
+menu_option_selected_index_b0_phys EQU  0x0A5    ; physical address for movff/lfsr
 stock_0A5_b0                     EQU  0x0A5    ; phys 0x0A5, bank 0, owner stock-derived
 stock_0A5_b0_op                  EQU  0xA5     ; 8-bit f operand for stock_0A5_b0
 stock_0A5_b0_phys                EQU  0x0A5    ; physical address for movff/lfsr
@@ -765,24 +804,45 @@ stock_0AE_b0_phys                EQU  0x0AE    ; physical address for movff/lfsr
 stock_0AF_b0                     EQU  0x0AF    ; phys 0x0AF, bank 0, owner stock-derived
 stock_0AF_b0_op                  EQU  0xAF     ; 8-bit f operand for stock_0AF_b0
 stock_0AF_b0_phys                EQU  0x0AF    ; physical address for movff/lfsr
+backlight_elapsed_lo_b0          EQU  0x0B0    ; phys 0x0B0, bank 0, owner backlight_elapsed_lo
+backlight_elapsed_lo_b0_op       EQU  0xB0     ; 8-bit f operand for backlight_elapsed_lo_b0
+backlight_elapsed_lo_b0_phys     EQU  0x0B0    ; physical address for movff/lfsr
 stock_0B0_b0                     EQU  0x0B0    ; phys 0x0B0, bank 0, owner stock-derived
 stock_0B0_b0_op                  EQU  0xB0     ; 8-bit f operand for stock_0B0_b0
 stock_0B0_b0_phys                EQU  0x0B0    ; physical address for movff/lfsr
+backlight_elapsed_mid_lo_b0      EQU  0x0B1    ; phys 0x0B1, bank 0, owner backlight_elapsed_mid_lo
+backlight_elapsed_mid_lo_b0_op   EQU  0xB1     ; 8-bit f operand for backlight_elapsed_mid_lo_b0
+backlight_elapsed_mid_lo_b0_phys EQU  0x0B1    ; physical address for movff/lfsr
 stock_0B1_b0                     EQU  0x0B1    ; phys 0x0B1, bank 0, owner stock-derived
 stock_0B1_b0_op                  EQU  0xB1     ; 8-bit f operand for stock_0B1_b0
 stock_0B1_b0_phys                EQU  0x0B1    ; physical address for movff/lfsr
+backlight_elapsed_mid_hi_b0      EQU  0x0B2    ; phys 0x0B2, bank 0, owner backlight_elapsed_mid_hi
+backlight_elapsed_mid_hi_b0_op   EQU  0xB2     ; 8-bit f operand for backlight_elapsed_mid_hi_b0
+backlight_elapsed_mid_hi_b0_phys EQU  0x0B2    ; physical address for movff/lfsr
 stock_0B2_b0                     EQU  0x0B2    ; phys 0x0B2, bank 0, owner stock-derived
 stock_0B2_b0_op                  EQU  0xB2     ; 8-bit f operand for stock_0B2_b0
 stock_0B2_b0_phys                EQU  0x0B2    ; physical address for movff/lfsr
+backlight_elapsed_hi_b0          EQU  0x0B3    ; phys 0x0B3, bank 0, owner backlight_elapsed_hi
+backlight_elapsed_hi_b0_op       EQU  0xB3     ; 8-bit f operand for backlight_elapsed_hi_b0
+backlight_elapsed_hi_b0_phys     EQU  0x0B3    ; physical address for movff/lfsr
 stock_0B3_b0                     EQU  0x0B3    ; phys 0x0B3, bank 0, owner stock-derived
 stock_0B3_b0_op                  EQU  0xB3     ; 8-bit f operand for stock_0B3_b0
 stock_0B3_b0_phys                EQU  0x0B3    ; physical address for movff/lfsr
+mute_blink_counter_lo_b0         EQU  0x0B4    ; phys 0x0B4, bank 0, owner mute_blink_counter_lo
+mute_blink_counter_lo_b0_op      EQU  0xB4     ; 8-bit f operand for mute_blink_counter_lo_b0
+mute_blink_counter_lo_b0_phys    EQU  0x0B4    ; physical address for movff/lfsr
 stock_0B4_b0                     EQU  0x0B4    ; phys 0x0B4, bank 0, owner stock-derived
 stock_0B4_b0_op                  EQU  0xB4     ; 8-bit f operand for stock_0B4_b0
 stock_0B4_b0_phys                EQU  0x0B4    ; physical address for movff/lfsr
+mute_blink_counter_hi_b0         EQU  0x0B5    ; phys 0x0B5, bank 0, owner mute_blink_counter_hi
+mute_blink_counter_hi_b0_op      EQU  0xB5     ; 8-bit f operand for mute_blink_counter_hi_b0
+mute_blink_counter_hi_b0_phys    EQU  0x0B5    ; physical address for movff/lfsr
 stock_0B5_b0                     EQU  0x0B5    ; phys 0x0B5, bank 0, owner stock-derived
 stock_0B5_b0_op                  EQU  0xB5     ; 8-bit f operand for stock_0B5_b0
 stock_0B5_b0_phys                EQU  0x0B5    ; physical address for movff/lfsr
+rx_parser_current_byte_b0        EQU  0x0B6    ; phys 0x0B6, bank 0, owner rx_parser_current_byte
+rx_parser_current_byte_b0_op     EQU  0xB6     ; 8-bit f operand for rx_parser_current_byte_b0
+rx_parser_current_byte_b0_phys   EQU  0x0B6    ; physical address for movff/lfsr
 stock_0B6_b0                     EQU  0x0B6    ; phys 0x0B6, bank 0, owner stock-derived
 stock_0B6_b0_op                  EQU  0xB6     ; 8-bit f operand for stock_0B6_b0
 stock_0B6_b0_phys                EQU  0x0B6    ; physical address for movff/lfsr
@@ -795,6 +855,9 @@ input_select_cache_b0_phys       EQU  0x0B8    ; physical address for movff/lfsr
 volume_cache_b0                  EQU  0x0B9    ; phys 0x0B9, bank 0, owner volume_cache
 volume_cache_b0_op               EQU  0xB9     ; 8-bit f operand for volume_cache_b0
 volume_cache_b0_phys             EQU  0x0B9    ; physical address for movff/lfsr
+setup_submenu_index_b0           EQU  0x0BA    ; phys 0x0BA, bank 0, owner setup_submenu_index
+setup_submenu_index_b0_op        EQU  0xBA     ; 8-bit f operand for setup_submenu_index_b0
+setup_submenu_index_b0_phys      EQU  0x0BA    ; physical address for movff/lfsr
 stock_0BA_b0                     EQU  0x0BA    ; phys 0x0BA, bank 0, owner stock-derived
 stock_0BA_b0_op                  EQU  0xBA     ; 8-bit f operand for stock_0BA_b0
 stock_0BA_b0_phys                EQU  0x0BA    ; physical address for movff/lfsr
@@ -804,6 +867,9 @@ button_debounce_counter_b0_phys  EQU  0x0BB    ; physical address for movff/lfsr
 button_last_scan_b0              EQU  0x0BC    ; phys 0x0BC, bank 0, owner button_last_scan
 button_last_scan_b0_op           EQU  0xBC     ; 8-bit f operand for button_last_scan_b0
 button_last_scan_b0_phys         EQU  0x0BC    ; physical address for movff/lfsr
+button_debounced_prev_b0         EQU  0x0BD    ; phys 0x0BD, bank 0, owner button_debounced_prev
+button_debounced_prev_b0_op      EQU  0xBD     ; 8-bit f operand for button_debounced_prev_b0
+button_debounced_prev_b0_phys    EQU  0x0BD    ; physical address for movff/lfsr
 stock_0BD_b0                     EQU  0x0BD    ; phys 0x0BD, bank 0, owner stock-derived
 stock_0BD_b0_op                  EQU  0xBD     ; 8-bit f operand for stock_0BD_b0
 stock_0BD_b0_phys                EQU  0x0BD    ; physical address for movff/lfsr
@@ -813,6 +879,9 @@ button_debounced_b0_phys         EQU  0x0BE    ; physical address for movff/lfsr
 display_state_index_b0           EQU  0x0BF    ; phys 0x0BF, bank 0, owner display_state_index
 display_state_index_b0_op        EQU  0xBF     ; 8-bit f operand for display_state_index_b0
 display_state_index_b0_phys      EQU  0x0BF    ; physical address for movff/lfsr
+source_channel_menu_index_b0     EQU  0x0C0    ; phys 0x0C0, bank 0, owner source_channel_menu_index
+source_channel_menu_index_b0_op  EQU  0xC0     ; 8-bit f operand for source_channel_menu_index_b0
+source_channel_menu_index_b0_phys EQU  0x0C0    ; physical address for movff/lfsr
 stock_0C0_b0                     EQU  0x0C0    ; phys 0x0C0, bank 0, owner stock-derived
 stock_0C0_b0_op                  EQU  0xC0     ; 8-bit f operand for stock_0C0_b0
 stock_0C0_b0_phys                EQU  0x0C0    ; physical address for movff/lfsr
@@ -837,18 +906,33 @@ stock_0DF_b0_phys                EQU  0x0DF    ; physical address for movff/lfsr
 stock_0E5_b0                     EQU  0x0E5    ; phys 0x0E5, bank 0, owner stock-derived
 stock_0E5_b0_op                  EQU  0xE5     ; 8-bit f operand for stock_0E5_b0
 stock_0E5_b0_phys                EQU  0x0E5    ; physical address for movff/lfsr
+backlight_timeout_selection_b0   EQU  0x0EB    ; phys 0x0EB, bank 0, owner backlight_timeout_selection
+backlight_timeout_selection_b0_op EQU  0xEB     ; 8-bit f operand for backlight_timeout_selection_b0
+backlight_timeout_selection_b0_phys EQU  0x0EB    ; physical address for movff/lfsr
 stock_0EB_b0                     EQU  0x0EB    ; phys 0x0EB, bank 0, owner stock-derived
 stock_0EB_b0_op                  EQU  0xEB     ; 8-bit f operand for stock_0EB_b0
 stock_0EB_b0_phys                EQU  0x0EB    ; physical address for movff/lfsr
+backlight_timeout_threshold_lo_b0 EQU  0x0EC    ; phys 0x0EC, bank 0, owner backlight_timeout_threshold_lo
+backlight_timeout_threshold_lo_b0_op EQU  0xEC     ; 8-bit f operand for backlight_timeout_threshold_lo_b0
+backlight_timeout_threshold_lo_b0_phys EQU  0x0EC    ; physical address for movff/lfsr
 stock_0EC_b0                     EQU  0x0EC    ; phys 0x0EC, bank 0, owner stock-derived
 stock_0EC_b0_op                  EQU  0xEC     ; 8-bit f operand for stock_0EC_b0
 stock_0EC_b0_phys                EQU  0x0EC    ; physical address for movff/lfsr
+backlight_timeout_threshold_mid_lo_b0 EQU  0x0ED    ; phys 0x0ED, bank 0, owner backlight_timeout_threshold_mid_lo
+backlight_timeout_threshold_mid_lo_b0_op EQU  0xED     ; 8-bit f operand for backlight_timeout_threshold_mid_lo_b0
+backlight_timeout_threshold_mid_lo_b0_phys EQU  0x0ED    ; physical address for movff/lfsr
 stock_0ED_b0                     EQU  0x0ED    ; phys 0x0ED, bank 0, owner stock-derived
 stock_0ED_b0_op                  EQU  0xED     ; 8-bit f operand for stock_0ED_b0
 stock_0ED_b0_phys                EQU  0x0ED    ; physical address for movff/lfsr
+backlight_timeout_threshold_mid_hi_b0 EQU  0x0EE    ; phys 0x0EE, bank 0, owner backlight_timeout_threshold_mid_hi
+backlight_timeout_threshold_mid_hi_b0_op EQU  0xEE     ; 8-bit f operand for backlight_timeout_threshold_mid_hi_b0
+backlight_timeout_threshold_mid_hi_b0_phys EQU  0x0EE    ; physical address for movff/lfsr
 stock_0EE_b0                     EQU  0x0EE    ; phys 0x0EE, bank 0, owner stock-derived
 stock_0EE_b0_op                  EQU  0xEE     ; 8-bit f operand for stock_0EE_b0
 stock_0EE_b0_phys                EQU  0x0EE    ; physical address for movff/lfsr
+backlight_timeout_threshold_hi_b0 EQU  0x0EF    ; phys 0x0EF, bank 0, owner backlight_timeout_threshold_hi
+backlight_timeout_threshold_hi_b0_op EQU  0xEF     ; 8-bit f operand for backlight_timeout_threshold_hi_b0
+backlight_timeout_threshold_hi_b0_phys EQU  0x0EF    ; physical address for movff/lfsr
 stock_0EF_b0                     EQU  0x0EF    ; phys 0x0EF, bank 0, owner stock-derived
 stock_0EF_b0_op                  EQU  0xEF     ; 8-bit f operand for stock_0EF_b0
 stock_0EF_b0_phys                EQU  0x0EF    ; physical address for movff/lfsr
@@ -858,6 +942,9 @@ v171_full_sync_step_b1_phys      EQU  0x170    ; physical address for movff/lfsr
 stock_172_b1                     EQU  0x172    ; phys 0x172, bank 1, owner stock-derived
 stock_172_b1_op                  EQU  0x72     ; 8-bit f operand for stock_172_b1
 stock_172_b1_phys                EQU  0x172    ; physical address for movff/lfsr
+v171_preset_bit_snapshot_b1      EQU  0x172    ; phys 0x172, bank 1, owner v171_preset_bit_snapshot
+v171_preset_bit_snapshot_b1_op   EQU  0x72     ; 8-bit f operand for v171_preset_bit_snapshot_b1
+v171_preset_bit_snapshot_b1_phys EQU  0x172    ; physical address for movff/lfsr
 stock_173_b1                     EQU  0x173    ; phys 0x173, bank 1, owner stock-derived
 stock_173_b1_op                  EQU  0x73     ; 8-bit f operand for stock_173_b1
 stock_173_b1_phys                EQU  0x173    ; physical address for movff/lfsr

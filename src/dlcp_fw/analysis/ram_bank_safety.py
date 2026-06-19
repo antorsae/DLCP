@@ -901,11 +901,11 @@ def _default_roots(target: str, program: _AsmProgram) -> list[tuple[int, BsrStat
             "vector_reset",
             "vector_int_high",
             "vector_int_low",
-            "flow_local_0040",
+            "aux_vector_cold_init_entry",
             "app_entry_defensive_stub",
             "main_event_loop",
-            "flow_main_event_loop_1642",
-            "control_core_service_17E8",
+            "settings_bank_editor",
+            "settings_bank_store_selected_value",
         ),
     }
     for label in target_root_labels.get(target, ()):
