@@ -196,6 +196,27 @@ class CaptureOverlay:
 def detect_static_hex_hid_version(hex_mem: Dict[int, int]) -> Optional[VersionInfo]:
     for addr in range(MAIN_APP_START, PRESET_A_FLASH_BASE, 2):
         if (
+            # Compact V3.4+ form:
+            #   movlw MAJOR; movlb 0x1; movwf byte1; movwf byte2;
+            #   movlw MINOR; movwf byte3
+            hex_mem.get(addr + 1, 0xFF) == 0x0E
+            and hex_mem.get(addr + 2, 0xFF) == 0x01
+            and hex_mem.get(addr + 3, 0xFF) == 0x01
+            and hex_mem.get(addr + 4, 0xFF) == 0x5B
+            and hex_mem.get(addr + 5, 0xFF) == 0x6F
+            and hex_mem.get(addr + 6, 0xFF) == 0x5C
+            and hex_mem.get(addr + 7, 0xFF) == 0x6F
+            and hex_mem.get(addr + 9, 0xFF) == 0x0E
+            and hex_mem.get(addr + 10, 0xFF) == 0x5D
+            and hex_mem.get(addr + 11, 0xFF) == 0x6F
+        ):
+            major = hex_mem.get(addr, 0xFF) & 0xFF
+            return VersionInfo(
+                flag=major,
+                major=major,
+                minor=hex_mem.get(addr + 8, 0xFF) & 0xFF,
+            )
+        if (
             hex_mem.get(addr + 1, 0xFF) == 0x0E
             and hex_mem.get(addr + 2, 0xFF) == 0x01
             and hex_mem.get(addr + 3, 0xFF) == 0x01

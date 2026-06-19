@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,20 @@ pytestmark = pytest.mark.dual_supported
 def _touch(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("x", encoding="ascii")
+
+
+def _write_capture_pair(bin_path: Path, meta_path: Path, *, fill: int, name: str) -> None:
+    bin_path.parent.mkdir(parents=True, exist_ok=True)
+    bin_path.write_bytes(bytes([fill & 0xFF]) * 0x0A00)
+    meta_path.write_text(
+        json.dumps(
+            {
+                "config_name": name,
+                "config_name_raw_hex": name.encode("ascii").ljust(0x1E, b"\xFF").hex(),
+            }
+        ),
+        encoding="utf-8",
+    )
 
 
 def test_main_left_forwards_canonical_v35_release_args(monkeypatch, tmp_path) -> None:
@@ -173,3 +188,28 @@ def test_v35_flash_requires_explicit_route(monkeypatch) -> None:
     with pytest.raises(SystemExit) as exc:
         release_flash.main([])
     assert exc.value.code == 2
+
+
+def test_main_left_preflight_with_real_v35_hex_and_local_captures(
+    monkeypatch,
+    tmp_path,
+    capsys,
+) -> None:
+    capture_a = tmp_path / "LX521.4_22MG10F-v5.bin"
+    meta_a = tmp_path / "LX521.4_22MG10F-v5.json"
+    capture_b = tmp_path / "LX521.4_22MG10F-v7.bin"
+    meta_b = tmp_path / "LX521.4_22MG10F-v7.json"
+    _write_capture_pair(capture_a, meta_a, fill=0xA5, name="preset A")
+    _write_capture_pair(capture_b, meta_b, fill=0x5A, name="preset B")
+
+    monkeypatch.setattr(release_flash, "CAPTURE_A_BIN", capture_a)
+    monkeypatch.setattr(release_flash, "CAPTURE_A_META", meta_a)
+    monkeypatch.setattr(release_flash, "CAPTURE_B_BIN", capture_b)
+    monkeypatch.setattr(release_flash, "CAPTURE_B_META", meta_b)
+
+    rc = release_flash.main(["--left", "--preflight-only"])
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "preflight: OK" in out
+    assert "target firmware version: 3.5" in out

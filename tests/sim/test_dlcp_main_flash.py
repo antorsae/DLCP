@@ -21,6 +21,7 @@ from dlcp_fw.flash.dlcp_main_flash import (
     build_main_stream,
     decode_filename_slot,
     decode_route_entries,
+    detect_static_hex_hid_version,
     _probe_device_snapshot,
     main,
     parse_intel_hex,
@@ -28,7 +29,7 @@ from dlcp_fw.flash.dlcp_main_flash import (
     run_preflight,
 )
 from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
-from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX, V32_MAIN_ASM
+from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX, V32_MAIN_ASM, V34_MAIN_HEX, V35_MAIN_HEX
 from dlcp_fw.patch.build_v32_release import build_v32_release
 
 
@@ -93,6 +94,17 @@ def test_bootloader_mismatch_addresses_only_reports_explicit_bytes(stock_main_he
 
     mismatches = bootloader_mismatch_addresses(candidate, reference)
     assert mismatches == [target]
+
+
+@pytest.mark.parametrize(
+    "hex_path, expected",
+    [
+        pytest.param(V34_MAIN_HEX, VersionInfo(flag=0x03, major=0x03, minor=0x04), id="v34"),
+        pytest.param(V35_MAIN_HEX, VersionInfo(flag=0x03, major=0x03, minor=0x05), id="v35"),
+    ],
+)
+def test_static_hid_version_detector_accepts_compact_v34_plus_shape(hex_path, expected) -> None:
+    assert detect_static_hex_hid_version(parse_intel_hex(str(hex_path))) == expected
 
 
 def test_cli_blocks_unsafe_flags_without_force(stock_main_hex) -> None:
