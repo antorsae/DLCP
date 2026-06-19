@@ -7,6 +7,9 @@ Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 `AGENTS.md` is the single source of truth for repository layout, canonical paths, and operational commands.
 
+All code changes must follow `CODING_STYLE.md`. It is initially MAIN-assembly
+focused; where it is silent, use the existing local style.
+
 If any file is moved/renamed, update this document in the same change.
 
 ## System Overview
@@ -23,6 +26,7 @@ If any file is moved/renamed, update this document in the same change.
 ```text
 analysis/
 ├── AGENTS.md
+├── CODING_STYLE.md
 ├── tests/
 │   ├── conftest.py
 │   ├── hardware/

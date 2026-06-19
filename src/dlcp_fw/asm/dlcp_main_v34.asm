@@ -22,6 +22,21 @@
 ;              (from src/dlcp_fw/sim/v30_symbols.py::assemble_v30)
 ;
 ; ---------------------------------------------------------------------------
+; Style conventions
+; ---------------------------------------------------------------------------
+;   - PIC SFR/register symbols from p18f2455.inc stay uppercase.
+;   - Instructions are lower-case.
+;   - Assembler directives are uppercase where already established: EQU,
+;     MACRO, ENDM.
+;   - Runtime labels and RAM aliases use lower_snake_case.
+;   - Protocol constants, device register constants, and bit masks use
+;     UPPER_SNAKE_CASE.
+;   - Auto-generated stock_*/ram_0x*/_op/_phys aliases are address-stable;
+;     do not rename them for cosmetics only.
+;   - Raw source line numbers are avoided in comments; use labels or doc/test
+;     IDs.
+;
+; ---------------------------------------------------------------------------
 ; Position in the V2.x/V3.x release line
 ; ---------------------------------------------------------------------------
 ;   V2.3   Stock Hypex MAIN binary (reference baseline).
@@ -88,7 +103,7 @@
 ;   M6  rx_ring_no_overflow_detect    — silent overwrite at 0x0200 ring
 ;   M7  flash_write_gie_leak          — flash_write_with_gie_off
 ;   M8  no_clrwdt_main_loop           — only usb_disconnect_handler clears WDT
-;   M9  adc_boot_gate_no_timeout      — run_wake_rail_gate_and_dsp_cold_init (waits AN0 ≥ 0x0236)
+;   M9  adc_boot_gate_no_timeout      — addressed by Bug #45 §C rail-wait bound
 ;
 ; ===========================================================================
 
@@ -2984,8 +2999,8 @@ persist_dirty_runtime_state_to_eeprom__clear_filename_usb_transaction_gate:
     ; V3.2 USB-xact gate: ALWAYS clear bit6 when the host triggers
     ; the dirty-service path (event_flags.0 = 1), regardless of
     ; whether bit5 was set when this dispatcher ran.  bit5 may have
-    ; ALREADY been cleared by preset_job_pending's persist branch
-    ; (asm:9568) before persist_dirty_runtime_state_to_eeprom got to it -- if so,
+    ; ALREADY been cleared by preset_job_pending's persist branch before
+    ; persist_dirty_runtime_state_to_eeprom got to it -- if so,
     ; the bit5 test above branches over the persist call and bit6
     ; would stay set forever, locking the gate (codex MEDIUM vs
     ; f3b25d6).  Putting the bit6 clear AFTER the bit5 branch
@@ -3819,11 +3834,10 @@ wake_rebroadcast_downstream:
 ; Function: run_wake_rail_gate_and_dsp_cold_init                  (rail-rise wait + DSP cold init)
 ; Address : 0x2D8C
 ; ---------------------------------------------------------------------------
-; Phase A — RAIL WAIT (BUG M9: unbounded). With INTCON.GIE=0, samples AN0
-;   (12-bit ADC) every 10 ms and stores ram_0x088:089. Loop exits when
-;   ram_0x088:089 ≥ 0x0236 (i.e. supply rail is up). There is no timeout: a
-;   stuck rail blocks here forever. The V3.2 hardening plan workstream 5
-;   would gate this with a watchdog.
+; Phase A — RAIL WAIT. With INTCON.GIE=0, samples AN0 every 10 ms and stores
+;   adc_rail_sample_lo/hi. Loop exits when the sample is ≥ 0x0236 (i.e. supply
+;   rail is up). Bounded by Bug #45 §C to about 50 × 10 ms; if AN0 remains low,
+;   proceed with bring-up rather than wedging forever.
 ;
 ; Phase B — DSP COLD BRING-UP. Once the rail is good:
 ;   • Quiesce the EUSART first so reconnect polls cannot accumulate into OERR
@@ -3947,8 +3961,8 @@ adc_boot_gate__resume_uart_and_rebroadcast_wake:
     call        uart_wake_reconfigure_tx_only_and_resync_parser, 0x0
     ; Bug #45 H2: re-emit B0/03/01 broadcast post-gate.  The parser's
     ; chain-echo at _1e6c forwards the WAKE data byte BEFORE this MAIN
-    ; enters run_wake_rail_gate_and_dsp_cold_init, but the call to uart_quiesce_for_wake at
-    ; gate entry (asm:4043) clears CREN/TXEN/SPEN -- if the third byte
+    ; enters run_wake_rail_gate_and_dsp_cold_init, but uart_quiesce_for_wake
+    ; at gate entry clears CREN/TXEN/SPEN -- if the third byte
     ; of the broadcast was still in the TX path (sw ring, TXREG, or
     ; TSR shift register) when quiesce hit, it never makes it onto the
     ; wire.  MAIN1 then sees only `B0 03 ...` (incomplete frame) and
@@ -5125,8 +5139,8 @@ usb_ep0_prepare_get_status_reply__endpoint_status:
 ;                                           this as the working filter addr)
 ;     ram_0x072:ram_0x073 = ram_0x003:004 +/- mul_hi adjustment per bit7
 ;   Factors an identical 20-instruction block shared by
-;     usb_ep0_apply_clear_set_feature_request (L4961 in v32) and
-;     usb_ep0_prepare_get_status_reply (L5339 in v32).
+;     usb_ep0_apply_clear_set_feature_request and
+;     usb_ep0_prepare_get_status_reply.
 ;   Uses rcall (within range from both callers).  BSR left unchanged; callers
 ;   continue to expect BANKED access to bank 0 (ram_0x0D0..ram_0x0D3 live
 ;   in bank 0).
@@ -8113,7 +8127,7 @@ timer3_arm_interrupt_countdown:
 ; Drains a pending standby event (event_flags.bit2 set by label_154/155 in
 ; the cmd_03 sub-dispatch) and reacts based on the current active gate
 ; (active_flags.bit3):
-;   gate set    -> run_wake_rail_gate_and_dsp_cold_init          (waits AN0 ≥ 0x0236; bug M9: unbounded)
+;   gate set    -> run_wake_rail_gate_and_dsp_cold_init          (bounded AN0 wait; Bug #45 §C)
 ;   gate clear  -> hw_standby_shutdown    (I2C DSP shutdown, T0 disable, OSCCON
 ;                                          switch, USB disable; sets
 ;                                          usb_reinit_pending=0x01)
@@ -8857,14 +8871,14 @@ i2c_reenable_sda_sspen:
 ; BSR contract: self-asserts BSR=0 at entry so the BANKED writes to
 ; ``dsp_fault_flags`` (0x07F, bank 0) hit the right cell regardless of
 ; the caller's incoming BSR.  Required because at least one caller --
-; the volume_dsp_write retry-exhausted recovery branch at
-; ``vol_exhausted_skip_i2c`` predecessor (asm:9370+) -- invokes
+; the volume_dsp_write retry-exhausted recovery branch that falls through
+; to ``vol_exhausted_skip_i2c`` -- invokes
 ; ``diag_inc_sat diag_r`` (which sets BSR=2) immediately before the
 ; ``rcall dsp_ping``, so without this self-assertion the BANKED writes
 ; would land at 0x27F (bank 2) instead of 0x07F.  The intermediate
 ; helpers ``wait_sen_bounded``, ``wait_pen_bounded`` are ACCESS-only
-; (BSR-neutral) and ``i2c_byte_tx`` save/restores caller's BSR
-; (asm:6696/6703), so the entry assertion alone is sufficient.
+; (BSR-neutral) and ``i2c_byte_tx`` save/restores caller's BSR, so the
+; entry assertion alone is sufficient.
 ; ---------------------------------------------------------------------------
 ;@routine dsp_ping entry_bsr=unknown exit_bsr=0
 dsp_ping:
@@ -9508,7 +9522,6 @@ preset_job_advance_cursor_to_next_table_row:
     incf        preset_job_index_b2, F, BANKED
     return      0
 
-preset_job_apply_i2c_entry:
 preset_job_apply_i2c_entry:
     ; FIELD-4A/FIELD-10: the shared i2c_byte_tx engine latches
     ; dsp_fault_flags.2 on any master-TX NACK.  A pre-existing latch means a
