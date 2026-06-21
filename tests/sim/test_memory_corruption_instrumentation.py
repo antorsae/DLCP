@@ -132,7 +132,7 @@ def test_v173_v35_baseline_writes_use_firmware_paths_for_both_mains() -> None:
     assert chain.memory_trace_first_violation() is None
 
 
-def test_v173_v35_live_like_churn_reproduces_preset_b_0x8f_nul() -> None:
+def test_v173_v35_live_like_churn_keeps_preset_b_eeprom_clean() -> None:
     _require_rust()
     chain = start_v173_v35_chain()
     assert chain.main0 != chain.main1
@@ -161,35 +161,10 @@ def test_v173_v35_live_like_churn_reproduces_preset_b_0x8f_nul() -> None:
     assert summary["dropped_count"] == 0
 
     violation = chain.memory_trace_first_violation()
-    assert violation is not None
-    assert violation["role"] == "MAIN0"
-    assert violation["kind"] == "EepromArm"
-    assert violation["addr"] == PRESET_B_EEPROM_BASE + 0x0C
-    assert violation["old"] == ord("1")
-    assert violation["new"] == 0x00
-    assert violation["arm"]["eeadr"] == PRESET_B_EEPROM_BASE + 0x0C
-    assert violation["arm"]["eedata"] == 0x00
-    assert violation["pc"] == 0x3984  # nvm_unlock_and_set_wr: bsf EECON1.WR
-    assert violation["cpu"]["tos"] == 0x396A  # eeprom_write_blocking wait loop
-    assert violation["cpu"]["stack"] == [
-        0x3E30,  # run_main_foreground_loop after run_main_service_pass
-        0x3D28,  # run_main_service_pass after persist_dirty_runtime_state_to_eeprom
-        0x20A6,  # persist_dirty_runtime_state_to_eeprom after block-0 walker call
-        0x210E,  # eeprom_persist_block_walker record tail
-        0x396A,  # eeprom_write_blocking wait loop
-    ]
-    assert any(
-        item.phase == "menu"
-        and item.action == "press"
-        and item.params.get("key") == "RIGHT"
-        and item.tick_before <= violation["tick"] <= item.tick_after
-        for item in stimuli
-    )
+    assert violation is None
 
     for unit in (0, 1):
-        observed = read_eeprom_slot(chain, unit, PRESET_B_EEPROM_BASE)
-        assert observed[0x0C] == 0x00
-        assert observed != slot_b
+        assert read_eeprom_slot(chain, unit, PRESET_B_EEPROM_BASE) == slot_b
 
 
 def test_v173_v35_filename_eeprom_guard_rejects_runtime_writes_after_repair() -> None:

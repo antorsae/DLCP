@@ -837,8 +837,12 @@ hid_command_dispatch__probe_diag_memread_opcode:
     goto        hid_diag_memread_dispatch
 hid_cmd_diag_snapshot_probe:
     xorlw       0x07                            ; V3.2 Tier-1: cumulative 0x43 ^ 0x07 = 0x44
-    bnz         hid_command_dispatch__unsupported_opcode  ; not 0x44 either -> fall through
+    bnz         hid_cmd_src4382_diag_probe
     goto        hid_diag_snapshot_emit           ; cmd 0x44 (V3.2 Tier-1 diag snapshot)
+hid_cmd_src4382_diag_probe:
+    xorlw       0x01                            ; cumulative 0x44 ^ 0x01 = 0x45
+    bnz         hid_command_dispatch__unsupported_opcode
+    goto        hid_src4382_diag_dispatch        ; cmd 0x45 (SRC4382 USB diagnostics V1a)
 hid_command_dispatch__clear_opcode_and_return:
     movlb       0x1
     clrf        usb_hid_out_opcode_b1, BANKED
@@ -2311,7 +2315,7 @@ restore_eeprom_settings_on_boot__read_preset_a_filename:
     rcall       eeprom_write_runtime_version_byte_at_w
     movlw       0x82
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x85                            ; V3.5_RUNTIME_EEPROM_REV_LO
+    movlw       0x90                            ; V3.5_RUNTIME_EEPROM_REV_LO
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
     bra         eeprom_write_byte_if_changed_rcall_trampoline
 
@@ -3037,14 +3041,16 @@ persist_dirty_runtime_state_to_eeprom__return:
 ;                   so a subsequent call consumes the next block.
 ; Effect: Reads the count byte.  Consumes `count` (offset, src_lo) pairs
 ;         from TBLPTR.  If the mask bit is set in ram_0x0BD, each pair
-;         triggers a call to eeprom_write_byte_if_changed with
-;             ram_0x008 = 0 (addr_hi),
+;         calls a local write-if-changed helper with
 ;             ram_0x007 = offset,
 ;             ram_0x009 = *(bank 0 RAM at src_lo).
+;         That helper intentionally avoids eeprom_write_byte_if_changed because
+;         the generic helper can route through chain_copy, whose contract
+;         clobbers TBLPTR while the walker still owns a live table cursor.
 ;         The matching bit in ram_0x0BD is cleared iff the walk fired.
 ;         BSR = 0 on exit (same contract as the inline version).
 ; Scratch: ram_0x00A (mask save), ram_0x00B (gate), ram_0x013 (loop count),
-;          ram_0x003/4/7/8/9 (eeprom_write_byte_if_changed I/O), FSR0.
+;          ram_0x003/5/6/7/9 (local EEPROM write helper I/O), FSR0.
 ; ---------------------------------------------------------------------------
 eeprom_persist_block_walker:
     movwf       eeprom_mask_or_flash_src_high_scratch_byte, ACCESS                ; save the bit mask
@@ -3062,9 +3068,8 @@ eeprom_persist_block_walker__process_next_record:
     movf        eeprom_gate_flash_gie_or_uart_timeout_scratch_byte, F, ACCESS             ; is the gate still set?
     btfsc       STATUS, 2, ACCESS                ; Z => bit was clear
     bra         eeprom_persist_record_next
-    clrf        flash_end_high_or_loop_mask_scratch_byte, ACCESS
     movff       INDF0, eeprom_or_filename_data_or_flash_buffer_ptr_low_or_signature_low_phys
-    rcall       eeprom_write_byte_if_changed_rcall_trampoline
+    rcall       eeprom_persist_static_record_write_if_changed
 eeprom_persist_record_next:
     decfsz      route_bit_or_tblptr_upper_scratch_byte, F, ACCESS
     bra         eeprom_persist_block_walker__process_next_record
@@ -3074,6 +3079,31 @@ eeprom_persist_record_next:
     movlb       0x0
     comf        eeprom_mask_or_flash_src_high_scratch_byte, W, ACCESS             ; W = ~mask
     andwf       filename_dirty_flags_b0, F, BANKED             ; drop only this block's bit
+    return      0
+
+
+; ---------------------------------------------------------------------------
+; Helper: eeprom_persist_static_record_write_if_changed
+; ---------------------------------------------------------------------------
+; TBLPTR-safe write-if-changed for eeprom_persist_block_walker.  The generic
+; eeprom_write_byte_if_changed helper may call chain_copy, which clobbers
+; TBLPTR; this local path reads and writes EEPROM directly so the walker's
+; packed-record cursor stays valid across every static record.
+;
+; Entry : ram_0x007 = EEPROM offset
+;         ram_0x009 = desired byte
+; Exit  : EEPROM is written iff the byte differs.
+; Clobbers: W, STATUS, ram_0x003, ram_0x005, ram_0x006, EEPROM SFRs.
+; Preserves: TBLPTR, FSR0, ram_0x00A, ram_0x00B, ram_0x013.
+; ---------------------------------------------------------------------------
+eeprom_persist_static_record_write_if_changed:
+    movff       computed_volume_or_flash_count_eeprom_addr_adc_usb_ptr_scratch_phys, addr_low_counter_or_payload_scratch_phys
+    call        eeprom_read_byte, 0x0
+    xorwf       flash_src_low_or_rx_length_scratch_byte, W, ACCESS
+    bz          eeprom_persist_static_record_write_if_changed__return_unchanged
+    movff       eeprom_or_filename_data_or_flash_buffer_ptr_low_or_signature_low_phys, saved_w_b0_phys
+    goto        eeprom_write_blocking
+eeprom_persist_static_record_write_if_changed__return_unchanged:
     return      0
 
 
@@ -9177,9 +9207,9 @@ cmd25_identity_query_handler:
     movwf       length_mask_or_divisor_low_scratch_byte, ACCESS
     movlw       0x05                        ; V3.5 identity minor
     movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x08                        ; V3.5_IDENTITY_REV_LO_HI
+    movlw       0x09                        ; V3.5_IDENTITY_REV_LO_HI
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x05                        ; V3.5_IDENTITY_REV_LO_LO
+    movlw       0x00                        ; V3.5_IDENTITY_REV_LO_LO
     movwf       flash_end_high_or_loop_mask_scratch_byte, ACCESS
     movlw       0x00                        ; V3.5_IDENTITY_REV_HI_HI
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
@@ -9955,6 +9985,96 @@ hid_diag_memread__return_response:
 ;
 ; See V32_DIAG_TIER1_SPEC.md §"HID protocol extension — new cmd 0x44".
 ; ---------------------------------------------------------------------------
+; Function: hid_src4382_diag_dispatch       (USB HID cmd 0x45, raw SRC read)
+; ---------------------------------------------------------------------------
+; Request:  [0]=0x45, [1]=SRC4382 page-0 register, [2..63]=ignored.
+; Response: [0]=0x45, [1]=status, [2]=register echo, [3]=value.
+; No firmware whitelist/cache/decode: operator tooling owns the register list
+; and assembles the human-readable snapshot from multiple raw reads.
+; ---------------------------------------------------------------------------
+hid_src4382_diag_dispatch:
+    movlb       0x1
+    movf        usb_hid_out_arg0_b1, W, BANKED
+    movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS
+    movf        status_addr_high_or_i2c_payload_scratch_byte, W, ACCESS
+    rcall       src4382_cmd45_i2c_read_reg
+    movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
+    movlw       0x00
+    bnc         hid_src4382_diag_dispatch__stage_response
+    movlw       0x01
+    setf        count_flash_page_or_i2c_payload_scratch_byte, ACCESS
+hid_src4382_diag_dispatch__stage_response:
+    movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
+    lfsr        FSR2, usb_hid_ep1_in_report_cmd_selector_phys
+    movlw       0x45
+    movwf       POSTINC2, ACCESS
+    movf        flash_src_low_or_rx_length_scratch_byte, W, ACCESS
+    movwf       POSTINC2, ACCESS
+    movf        status_addr_high_or_i2c_payload_scratch_byte, W, ACCESS
+    movwf       POSTINC2, ACCESS
+    movf        count_flash_page_or_i2c_payload_scratch_byte, W, ACCESS
+    movwf       POSTINC2, ACCESS
+    goto        hid_command_dispatch__clear_opcode_and_return
+
+src4382_cmd45_i2c_tx_checked:
+    movlb       0x0
+    bcf         dsp_fault_flags_b0, 2, BANKED
+    call        i2c_byte_tx, 0x0
+    bc          src4382_cmd45_i2c_tx_checked__fail
+    movlb       0x0
+    btfsc       dsp_fault_flags_b0, 2, BANKED
+    bra         src4382_cmd45_i2c_tx_checked__fail
+    bcf         STATUS, 0, ACCESS
+    return      0
+src4382_cmd45_i2c_tx_checked__fail:
+    bsf         STATUS, 0, ACCESS
+    return      0
+
+src4382_cmd45_i2c_read_reg:
+    movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS
+    call        i2c_start_after_idle_bounded, 0x0
+    bc          src4382_cmd45_i2c_timeout
+    movlw       0xE2
+    rcall       src4382_cmd45_i2c_tx_checked
+    bc          src4382_cmd45_i2c_fail_carry
+    movf        status_addr_high_or_i2c_payload_scratch_byte, W, ACCESS
+    rcall       src4382_cmd45_i2c_tx_checked
+    bc          src4382_cmd45_i2c_fail_carry
+    bsf         SSPCON2, 1, ACCESS
+    call        wait_rsen_bounded, 0x0
+    bc          src4382_cmd45_i2c_timeout
+    movlw       0xE3
+    rcall       src4382_cmd45_i2c_tx_checked
+    bc          src4382_cmd45_i2c_fail_carry
+    movf        SSPBUF, W, ACCESS
+    call        i2c_receive_sspbuf_bounded, 0x0
+    bc          src4382_cmd45_i2c_fail_carry
+    movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
+    bsf         SSPCON2, 5, ACCESS
+    bsf         SSPCON2, 4, ACCESS
+    call        wait_acken_bounded, 0x0
+    bc          src4382_cmd45_i2c_timeout
+    bsf         SSPCON2, 2, ACCESS
+    call        wait_pen_bounded, 0x0
+    bc          src4382_cmd45_i2c_pen_timeout
+    movf        count_flash_page_or_i2c_payload_scratch_byte, W, ACCESS
+    bcf         STATUS, 0, ACCESS
+    return      0
+
+src4382_cmd45_i2c_fail_carry:
+    bsf         SSPCON2, 2, ACCESS
+    call        wait_pen_bounded, 0x0
+    bsf         STATUS, 0, ACCESS
+    return      0
+src4382_cmd45_i2c_timeout:
+    call        i2c_timeout_recover_advertise, 0x0
+    bsf         STATUS, 0, ACCESS
+    return      0
+src4382_cmd45_i2c_pen_timeout:
+    call        i2c_pen_timeout_recover_advertise, 0x0
+    bsf         STATUS, 0, ACCESS
+    return      0
+; ---------------------------------------------------------------------------
 hid_diag_snapshot_copy_block_count_w:
     movwf       diff_count_update_compare_or_route_mask_scratch_byte, ACCESS
 hid_diag_snapshot_copy_block__copy_next_byte:
@@ -10347,7 +10467,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x05, 0x85, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
+    db  0x03, 0x05, 0x90, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
