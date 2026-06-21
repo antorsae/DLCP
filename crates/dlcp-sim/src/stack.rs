@@ -271,6 +271,12 @@ impl Stack {
         }
     }
 
+    pub fn frames(&self) -> Vec<u32> {
+        (0..self.depth as usize)
+            .map(|idx| self.slots[idx].as_pc())
+            .collect()
+    }
+
     /// Set the top of stack (TOSU/TOSH/TOSL software writes).
     /// At depth=0 the write is silently dropped — matches
     /// silicon behaviour (the TOSU/TOSH/TOSL bytes still

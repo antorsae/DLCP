@@ -834,6 +834,25 @@ fn write_addr_masked(core: &mut Core, target: Address, value: u8) {
     let old = core.memory.read_raw(target);
     let new_value = apply_sfr_sw_write(old, value, target.as_u16());
     core.memory.write_raw(target, new_value);
+    let space = if target.is_sfr() {
+        crate::memtrace::MemSpace::Sfr
+    } else {
+        crate::memtrace::MemSpace::DataRam
+    };
+    let kind = if target.is_sfr() {
+        crate::memtrace::TraceKind::FirmwareSfrWrite
+    } else {
+        crate::memtrace::TraceKind::FirmwareDataWrite
+    };
+    core.trace_memory_write(
+        kind,
+        space,
+        target.as_u16(),
+        old,
+        new_value,
+        Some(value),
+        crate::memtrace::TraceOrigin::FirmwareInstruction,
+    );
     let a = target.as_u16();
     if a == PCL_ADDR {
         core.stage_pcl_sw_write(new_value);
@@ -849,8 +868,14 @@ fn write_addr_masked(core: &mut Core, target: Address, value: u8) {
     if a == crate::stack::STKPTR_ADDR {
         core.stage_stkp_sw_write(value);
     }
-    core.peripherals
-        .on_sfr_write(target.as_u16(), value, &mut core.memory);
+    core.peripherals.on_sfr_write_traced(
+        target.as_u16(),
+        value,
+        &mut core.memory,
+        core.memory_trace.as_mut(),
+        core.memory_trace_context.as_ref(),
+        core.memory_trace_current_pc,
+    );
     if target.as_u16() == crate::peripherals::eeprom::EECON1_ADDR {
         commit_tblwt_long_write(core, value);
     }
@@ -1054,6 +1079,7 @@ pub fn step(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
             }
         }
     }
+    core.clear_memory_trace_current_pc();
     result
 }
 
@@ -1102,6 +1128,7 @@ fn step_inner(core: &mut Core, stack: &mut Stack) -> Result<u8, ExecError> {
     }
 
     let pc = core.pc();
+    core.set_memory_trace_current_pc(pc);
     let pc_idx = pc as usize;
 
     // PC must have at least one full word ahead.

@@ -377,6 +377,65 @@ class Chain:
         """Current universal-clock tick (48 MHz time base)."""
         return self._inner.current_tick()
 
+    def begin_memory_trace(
+        self,
+        watches: list[dict[str, object]] | list[tuple[object, ...]],
+        max_records: int = 10_000,
+    ) -> None:
+        """Enable range-driven memory tracing.
+
+        Dict watches use keys: ``role``, ``space``, ``start``, ``end``,
+        ``label``, ``protected``, ``stop_on_write``, ``fail_on_write``.
+        ``role`` may be omitted/empty to match all cores.
+        """
+        native_watches: list[tuple[str, str, int, int, str, bool, bool, bool]] = []
+        for idx, watch in enumerate(watches):
+            if isinstance(watch, dict):
+                role = str(watch.get("role", ""))
+                space = str(watch["space"])
+                start = int(watch["start"])
+                end = int(watch["end"])
+                label = str(watch.get("label", f"watch_{idx}"))
+                protected = bool(watch.get("protected", False))
+                stop_on_write = bool(watch.get("stop_on_write", False))
+                fail_on_write = bool(watch.get("fail_on_write", False))
+            else:
+                role, space, start, end, label, protected, stop_on_write, fail_on_write = watch
+                role = str(role)
+                space = str(space)
+                start = int(start)
+                end = int(end)
+                label = str(label)
+                protected = bool(protected)
+                stop_on_write = bool(stop_on_write)
+                fail_on_write = bool(fail_on_write)
+            native_watches.append(
+                (
+                    role,
+                    space,
+                    start & 0x0FFF,
+                    end & 0x0FFF,
+                    label,
+                    protected,
+                    stop_on_write,
+                    fail_on_write,
+                )
+            )
+        self._inner.begin_memory_trace(native_watches, int(max_records))
+
+    def clear_memory_trace(self) -> None:
+        self._inner.clear_memory_trace()
+
+    def memory_trace_records(self) -> list[dict[str, object]]:
+        return [dict(record) for record in self._inner.memory_trace_records()]
+
+    def memory_trace_summary(self) -> dict[str, object]:
+        return dict(self._inner.memory_trace_summary())
+
+    def memory_trace_first_violation(self) -> dict[str, object] | None:
+        violation = self._inner.memory_trace_first_violation()
+        return None if violation is None else dict(violation)
+
     @property
     def ctl(self) -> int:
         """Index of the CONTROL core in the chain."""

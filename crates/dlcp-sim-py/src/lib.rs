@@ -28,11 +28,15 @@
 
 use pyo3::exceptions::{PyKeyError, PyNotImplementedError, PyRuntimeError, PyValueError};
 use pyo3::prelude::*;
+use pyo3::types::{PyDict, PyList};
 use std::path::PathBuf;
 
 use dlcp_sim::chain::Chain as RustChain;
 use dlcp_sim::core::{Core, CoreLoadOptions, core_from_hex_image};
 use dlcp_sim::hex::HexImage;
+use dlcp_sim::memtrace::{
+    MemSpace, MemTraceConfig, MemTraceSummary, TraceKind, TraceOrigin, TraceRecord, TraceWatch,
+};
 use dlcp_sim::lcd::Hd44780;
 use dlcp_sim::memory::Variant;
 use dlcp_sim::peripherals::src4382::Src4382;
@@ -702,6 +706,125 @@ fn parse_port_letter(name: &str) -> Result<PortLetter, String> {
     }
 }
 
+fn parse_mem_space(name: &str) -> PyResult<MemSpace> {
+    match name.trim().to_ascii_lowercase().replace(['_', '-', ' '], "").as_str() {
+        "dataram" | "ram" => Ok(MemSpace::DataRam),
+        "sfr" => Ok(MemSpace::Sfr),
+        "eeprom" => Ok(MemSpace::Eeprom),
+        "hardwaredma" | "dma" => Ok(MemSpace::HardwareDma),
+        other => Err(PyValueError::new_err(format!(
+            "unknown memory trace space {other:?}; expected DataRam, Sfr, Eeprom, or HardwareDma"
+        ))),
+    }
+}
+
+fn mem_space_name(space: MemSpace) -> &'static str {
+    match space {
+        MemSpace::DataRam => "DataRam",
+        MemSpace::Sfr => "Sfr",
+        MemSpace::Eeprom => "Eeprom",
+        MemSpace::HardwareDma => "HardwareDma",
+    }
+}
+
+fn trace_kind_name(kind: TraceKind) -> &'static str {
+    match kind {
+        TraceKind::FirmwareDataWrite => "FirmwareDataWrite",
+        TraceKind::FirmwareSfrWrite => "FirmwareSfrWrite",
+        TraceKind::PeripheralSfrSideEffect => "PeripheralSfrSideEffect",
+        TraceKind::EepromArm => "EepromArm",
+        TraceKind::EepromCommit => "EepromCommit",
+        TraceKind::EepromResetDrop => "EepromResetDrop",
+        TraceKind::HostRamPoke => "HostRamPoke",
+        TraceKind::HostEepromSeed => "HostEepromSeed",
+    }
+}
+
+fn trace_origin_name(origin: TraceOrigin) -> &'static str {
+    match origin {
+        TraceOrigin::FirmwareInstruction => "FirmwareInstruction",
+        TraceOrigin::Peripheral => "Peripheral",
+        TraceOrigin::Reset => "Reset",
+        TraceOrigin::Host => "Host",
+    }
+}
+
+fn trace_record_to_dict<'py>(
+    py: Python<'py>,
+    record: &TraceRecord,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("seq", record.seq)?;
+    dict.set_item("tick", record.tick)?;
+    dict.set_item("core_tcy", record.core_tcy)?;
+    dict.set_item("core_idx", record.core_idx)?;
+    dict.set_item("role", &record.role)?;
+    dict.set_item("kind", trace_kind_name(record.kind))?;
+    dict.set_item("space", mem_space_name(record.space))?;
+    dict.set_item("addr", record.addr)?;
+    dict.set_item("old", record.old)?;
+    dict.set_item("new", record.new)?;
+    dict.set_item("intended", record.intended)?;
+    dict.set_item("changed", record.changed)?;
+    dict.set_item("label", &record.label)?;
+    dict.set_item("protected", record.protected)?;
+    dict.set_item("stop_on_write", record.stop_on_write)?;
+    dict.set_item("fail_on_write", record.fail_on_write)?;
+    dict.set_item("phase", &record.phase)?;
+    dict.set_item("origin", trace_origin_name(record.origin))?;
+    dict.set_item("pc", record.pc)?;
+    dict.set_item("rejected_reason", &record.rejected_reason)?;
+    if let Some(cpu) = &record.cpu {
+        let cpu_dict = PyDict::new(py);
+        cpu_dict.set_item("wreg", cpu.wreg)?;
+        cpu_dict.set_item("status", cpu.status)?;
+        cpu_dict.set_item("bsr", cpu.bsr)?;
+        cpu_dict.set_item("fsr0", cpu.fsr0)?;
+        cpu_dict.set_item("fsr1", cpu.fsr1)?;
+        cpu_dict.set_item("fsr2", cpu.fsr2)?;
+        cpu_dict.set_item("tos", cpu.tos)?;
+        cpu_dict.set_item("stack", cpu.stack.clone())?;
+        dict.set_item("cpu", cpu_dict)?;
+    } else {
+        dict.set_item("cpu", py.None())?;
+    }
+    if let Some(arm) = &record.arm {
+        let arm_dict = PyDict::new(py);
+        arm_dict.set_item("seq", arm.seq)?;
+        arm_dict.set_item("pc", arm.pc)?;
+        arm_dict.set_item("tick", arm.tick)?;
+        arm_dict.set_item("core_tcy", arm.core_tcy)?;
+        arm_dict.set_item("eecon1_intended", arm.eecon1_intended)?;
+        arm_dict.set_item("eecon1_landed", arm.eecon1_landed)?;
+        arm_dict.set_item("eeadr", arm.eeadr)?;
+        arm_dict.set_item("eedata", arm.eedata)?;
+        arm_dict.set_item("old_at_arm", arm.old_at_arm)?;
+        dict.set_item("arm", arm_dict)?;
+    } else {
+        dict.set_item("arm", py.None())?;
+    }
+    Ok(dict)
+}
+
+fn trace_summary_to_dict<'py>(
+    py: Python<'py>,
+    summary: &MemTraceSummary,
+) -> PyResult<Bound<'py, PyDict>> {
+    let dict = PyDict::new(py);
+    dict.set_item("total_count", summary.total_count)?;
+    dict.set_item("dropped_count", summary.dropped_count)?;
+    dict.set_item("overflowed", summary.overflowed)?;
+    dict.set_item("record_count", summary.record_count)?;
+    dict.set_item("first_match_labels", summary.first_match_labels.clone())?;
+    dict.set_item("stop_requested", summary.stop_requested)?;
+    if let Some(record) = &summary.first_violation {
+        dict.set_item("first_violation", trace_record_to_dict(py, record)?)?;
+    } else {
+        dict.set_item("first_violation", py.None())?;
+    }
+    Ok(dict)
+}
+
 /// Universal-tick budget for a button press: hold the bit
 /// LOW for `BUTTON_HOLD_TICKS`, then release HIGH and
 /// step `BUTTON_RELEASE_SETTLE_TICKS` more.  V1.71's
@@ -1150,6 +1273,81 @@ impl Chain {
         self.inner.current_tick
     }
 
+    /// Enable default-off range-driven memory tracing.
+    ///
+    /// Each watch tuple is:
+    /// ``(role, space, start, end, label, protected, stop_on_write, fail_on_write)``.
+    /// ``role`` may be an empty string to match all roles, or one of
+    /// ``CONTROL``, ``MAIN0``, ``MAIN1``.
+    #[pyo3(signature = (watches, max_records=10_000))]
+    fn begin_memory_trace(
+        &mut self,
+        watches: Vec<(String, String, u16, u16, String, bool, bool, bool)>,
+        max_records: usize,
+    ) -> PyResult<()> {
+        if watches.is_empty() {
+            return Err(PyValueError::new_err(
+                "begin_memory_trace: at least one watch range is required",
+            ));
+        }
+        let mut parsed = Vec::with_capacity(watches.len());
+        for (role, space, start, end, label, protected, stop_on_write, fail_on_write) in watches {
+            let start = start & 0x0FFF;
+            let end = end & 0x0FFF;
+            if start > end {
+                return Err(PyValueError::new_err(format!(
+                    "begin_memory_trace: watch {label:?} has start 0x{start:03X} > end 0x{end:03X}"
+                )));
+            }
+            parsed.push(TraceWatch {
+                core_idx: None,
+                role: if role.trim().is_empty() {
+                    None
+                } else {
+                    Some(role)
+                },
+                space: parse_mem_space(&space)?,
+                start,
+                end,
+                label,
+                protected,
+                stop_on_write,
+                fail_on_write,
+            });
+        }
+        self.inner.begin_memory_trace(MemTraceConfig {
+            watches: parsed,
+            max_records,
+        });
+        Ok(())
+    }
+
+    fn clear_memory_trace(&mut self) {
+        self.inner.clear_memory_trace();
+    }
+
+    fn memory_trace_records<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyList>> {
+        let list = PyList::empty(py);
+        for record in self.inner.memory_trace_records() {
+            list.append(trace_record_to_dict(py, &record)?)?;
+        }
+        Ok(list)
+    }
+
+    fn memory_trace_summary<'py>(&self, py: Python<'py>) -> PyResult<Bound<'py, PyDict>> {
+        trace_summary_to_dict(py, &self.inner.memory_trace_summary())
+    }
+
+    fn memory_trace_first_violation<'py>(
+        &self,
+        py: Python<'py>,
+    ) -> PyResult<Option<Bound<'py, PyDict>>> {
+        self.inner
+            .memory_trace_first_violation()
+            .map(|record| trace_record_to_dict(py, &record))
+            .transpose()
+    }
+
     /// Investigation hook: run the normal chain scheduler and record MAIN RAM
     /// cell transitions with the scheduler tick and pre-instruction PC.
     ///
@@ -1488,9 +1686,15 @@ impl Chain {
     /// firmware paths via direct RAM writes (e.g.
     /// display_state_index, button-debounce, sentinels).
     fn write_reg(&mut self, addr: u16, value: u8) {
+        let addr = addr & 0x0FFF;
+        let old = self.inner.cores[self.i_ctl]
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(addr));
         self.inner.cores[self.i_ctl]
             .memory
             .write_raw(dlcp_sim::memory::Address::from_raw(addr), value);
+        self.inner
+            .trace_host_ram_poke(self.i_ctl, addr, old, value);
     }
 
     /// Read a single byte of one MAIN's data memory at the
@@ -1542,9 +1746,14 @@ impl Chain {
                 )));
             }
         };
+        let addr = addr & 0x0FFF;
+        let old = self.inner.cores[i_main]
+            .memory
+            .read_raw(dlcp_sim::memory::Address::from_raw(addr));
         self.inner.cores[i_main]
             .memory
             .write_raw(dlcp_sim::memory::Address::from_raw(addr), value);
+        self.inner.trace_host_ram_poke(i_main, addr, old, value);
         Ok(())
     }
 
@@ -1810,6 +2019,7 @@ impl Chain {
                         ))
                     })?;
                 }
+                chain.dispatch_post_instruction_peripherals(core_idx);
             }
             chain.cores[core_idx].set_pc(old_pc);
             Err(PyRuntimeError::new_err(format!(
@@ -2588,10 +2798,13 @@ impl Chain {
     /// step / warmup, since the firmware reads EEPROM
     /// during early boot.
     fn write_control_eeprom_byte(&mut self, addr: u8, value: u8) {
+        let old = self.inner.cores[self.i_ctl].peripherals.eeprom.get_byte(addr);
         self.inner.cores[self.i_ctl]
             .peripherals
             .eeprom
             .set_byte(addr, value);
+        self.inner
+            .trace_host_eeprom_seed(self.i_ctl, addr, old, value);
     }
 
     /// Read a single byte of one MAIN's EEPROM peripheral
@@ -2636,10 +2849,13 @@ impl Chain {
                 )));
             }
         };
+        let old = self.inner.cores[i_main].peripherals.eeprom.get_byte(addr);
         self.inner.cores[i_main]
             .peripherals
             .eeprom
             .set_byte(addr, value);
+        self.inner
+            .trace_host_eeprom_seed(i_main, addr, old, value);
         Ok(())
     }
 

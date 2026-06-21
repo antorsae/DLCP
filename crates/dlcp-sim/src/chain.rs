@@ -24,7 +24,8 @@ use crate::clock::ClockDomain;
 use crate::core::{Core, RunState};
 use crate::exec::step;
 use crate::lcd::Hd44780;
-use crate::memory::Address;
+use crate::memtrace::{MemTraceConfig, MemTraceSummary, TraceContext, TraceRecord};
+use crate::memory::{Address, Variant};
 use crate::peripherals::eusart::RxDelivery;
 use crate::peripherals::gpio;
 use crate::peripherals::mssp::{I2cBusEvent, Mssp};
@@ -814,6 +815,105 @@ impl Chain {
         self.cores[core_idx].ticks_per_tcy()
     }
 
+    fn memory_trace_role_for_core(&self, core_idx: usize) -> String {
+        match self.cores[core_idx].variant() {
+            Variant::Pic18F25K20 => "CONTROL".to_string(),
+            Variant::Pic18F2455 => {
+                let ordinal = self
+                    .cores
+                    .iter()
+                    .take(core_idx + 1)
+                    .filter(|core| core.variant() == Variant::Pic18F2455)
+                    .count()
+                    .saturating_sub(1);
+                format!("MAIN{ordinal}")
+            }
+        }
+    }
+
+    pub fn begin_memory_trace(&mut self, config: MemTraceConfig) {
+        let roles: Vec<String> = (0..self.cores.len())
+            .map(|idx| self.memory_trace_role_for_core(idx))
+            .collect();
+        for (idx, role) in roles.into_iter().enumerate() {
+            self.cores[idx].begin_memory_trace(config.clone(), idx, role, self.current_tick);
+        }
+    }
+
+    pub fn clear_memory_trace(&mut self) {
+        for core in &mut self.cores {
+            core.clear_memory_trace();
+        }
+    }
+
+    pub fn memory_trace_records(&self) -> Vec<TraceRecord> {
+        let mut records: Vec<TraceRecord> = self
+            .cores
+            .iter()
+            .filter_map(|core| core.memory_trace.as_ref())
+            .flat_map(|trace| trace.records.iter().cloned())
+            .collect();
+        records.sort_by_key(|r| (r.tick, r.core_idx, r.seq));
+        records
+    }
+
+    pub fn memory_trace_first_violation(&self) -> Option<TraceRecord> {
+        self.cores
+            .iter()
+            .filter_map(|core| core.memory_trace.as_ref()?.first_violation.clone())
+            .min_by_key(|r| (r.tick, r.core_idx, r.seq))
+    }
+
+    pub fn memory_trace_summary(&self) -> MemTraceSummary {
+        let mut summary = MemTraceSummary {
+            total_count: 0,
+            dropped_count: 0,
+            overflowed: false,
+            record_count: 0,
+            first_match_labels: Vec::new(),
+            first_violation: None,
+            stop_requested: false,
+        };
+        for trace in self.cores.iter().filter_map(|core| core.memory_trace.as_ref()) {
+            let one = trace.summary();
+            summary.total_count = summary.total_count.saturating_add(one.total_count);
+            summary.dropped_count = summary.dropped_count.saturating_add(one.dropped_count);
+            summary.overflowed |= one.overflowed;
+            summary.record_count = summary.record_count.saturating_add(one.record_count);
+            summary.stop_requested |= one.stop_requested;
+            for label in one.first_match_labels {
+                if !summary.first_match_labels.contains(&label) {
+                    summary.first_match_labels.push(label);
+                }
+            }
+            if let Some(candidate) = one.first_violation {
+                let replace = summary
+                    .first_violation
+                    .as_ref()
+                    .is_none_or(|current| {
+                        (candidate.tick, candidate.core_idx, candidate.seq)
+                            < (current.tick, current.core_idx, current.seq)
+                    });
+                if replace {
+                    summary.first_violation = Some(candidate);
+                }
+            }
+        }
+        summary
+    }
+
+    pub fn trace_host_ram_poke(&mut self, core_idx: usize, addr: u16, old: u8, new: u8) {
+        let role = self.memory_trace_role_for_core(core_idx);
+        let tick = self.current_tick;
+        self.cores[core_idx].trace_host_ram_poke(core_idx, role, tick, addr, old, new);
+    }
+
+    pub fn trace_host_eeprom_seed(&mut self, core_idx: usize, addr: u8, old: u8, new: u8) {
+        let role = self.memory_trace_role_for_core(core_idx);
+        let tick = self.current_tick;
+        self.cores[core_idx].trace_host_eeprom_seed(core_idx, role, tick, addr, old, new);
+    }
+
     /// Advance the universal clock by `n_ticks`, draining
     /// every event whose deadline `<= current_tick + n_ticks`.
     /// Phase-3 sub-tasks fill in the actual handler bodies;
@@ -1071,7 +1171,23 @@ impl Chain {
         // counting BEFORE step here would record hits for
         // instructions about to be vectored away from when
         // an IRQ fires at PC inside a watched range.
+        let role = self.memory_trace_role_for_core(core_idx);
+        let current_tick = self.current_tick;
+        let ticks_per_tcy = self.clocks[core_idx].nominal_ticks_per_tcy;
+        let core_tcy_before = self.cores[core_idx].cycles();
+        let tos = self.stacks[core_idx].top();
+        let stack_frames = self.stacks[core_idx].frames();
         let core = &mut self.cores[core_idx];
+        core.set_memory_trace_context(TraceContext {
+            core_idx,
+            role,
+            tick: current_tick,
+            ticks_per_tcy,
+            core_tcy_before,
+            phase: "core_step".to_string(),
+            tos: Some(tos),
+            stack: stack_frames,
+        });
         let stack = &mut self.stacks[core_idx];
         // Best-effort: errors propagate as a panic for
         // now -- a real chain would distinguish "fatal"
@@ -1157,11 +1273,23 @@ impl Chain {
                     .write_raw(crate::memory::Address::from_raw(addr), val);
             }
         }
+        self.dispatch_post_instruction_peripherals(core_idx);
+        self.cores[core_idx].clear_memory_trace_context();
+        self.schedule_next_core_step(core_idx);
+    }
+
+    /// Run the cross-device peripheral dispatch that belongs immediately
+    /// after one executed instruction, without scheduling another CPU step.
+    ///
+    /// Normal chain execution calls this from `execute_core_step`.  Test
+    /// harnesses that invoke firmware subroutines inline, such as the HID
+    /// report helper in `dlcp-sim-py`, use the same hook so MSSP/UART/LCD/GPIO
+    /// side effects are not bypassed while the PC is temporarily redirected.
+    pub fn dispatch_post_instruction_peripherals(&mut self, core_idx: usize) {
         self.drain_completed_tx_bytes(core_idx);
         self.dispatch_i2c_to_coupled_slaves(core_idx);
         self.dispatch_lcd_pins_to_coupled_slaves(core_idx);
         self.dispatch_gpio_pin_couplings(core_idx);
-        self.schedule_next_core_step(core_idx);
     }
 
     /// Hold a core's MCLR pin LOW: the core's CPU stops
@@ -1649,6 +1777,28 @@ impl Chain {
     /// SFRs at K20_POR before any cross-core stimulus runs.
     pub fn apply_reset_all(&mut self, source: ResetSource) {
         for idx in 0..self.cores.len() {
+            let role = self.memory_trace_role_for_core(idx);
+            let ctx = TraceContext {
+                core_idx: idx,
+                role,
+                tick: self.current_tick,
+                ticks_per_tcy: self.clocks[idx].nominal_ticks_per_tcy,
+                core_tcy_before: self.cores[idx].cycles(),
+                phase: "reset".to_string(),
+                tos: Some(self.stacks[idx].top()),
+                stack: self.stacks[idx].frames(),
+            };
+            let source_label = format!("{source:?}");
+            {
+                let core = &mut self.cores[idx];
+                core.peripherals.eeprom.trace_reset_drop(
+                    core.memory_trace.as_mut(),
+                    Some(&ctx),
+                    core.memory_trace_current_pc,
+                    &source_label,
+                    &core.memory,
+                );
+            }
             apply_reset(&mut self.cores[idx], &mut self.stacks[idx], source);
         }
         // Clear the UART byte-delivery history so a

@@ -38,6 +38,10 @@
 //! Datasheet, NOT against gpsim, on the V1.71-baseline
 //! "EEPROM image after write" parity.
 
+use crate::memtrace::{
+    EepromArmTrace, MemSpace, MemTraceState, TraceContext, TraceCpuSnapshot, TraceEvent,
+    TraceKind, TraceOrigin,
+};
 use crate::memory::{Address, Memory, Variant};
 use serde::{Deserialize, Serialize};
 
@@ -97,6 +101,9 @@ pub struct Eeprom {
     pending_addr: u8,
     /// Data byte latched at write-trigger time.
     pending_data: u8,
+    /// Trace metadata for the in-flight write, if tracing was enabled when
+    /// firmware armed the write.
+    pending_trace: Option<EepromArmTrace>,
     /// EECON2 unlock sequencer state.
     unlock: UnlockPhase,
 }
@@ -108,6 +115,7 @@ impl Default for Eeprom {
             pending_tcy: None,
             pending_addr: 0,
             pending_data: 0,
+            pending_trace: None,
             unlock: UnlockPhase::Idle,
         }
     }
@@ -125,7 +133,44 @@ impl Eeprom {
         self.pending_tcy = None;
         self.pending_addr = 0;
         self.pending_data = 0;
+        self.pending_trace = None;
         self.unlock = UnlockPhase::Idle;
+    }
+
+    pub fn trace_reset_drop(
+        &mut self,
+        trace: Option<&mut MemTraceState>,
+        context: Option<&TraceContext>,
+        current_pc: Option<u32>,
+        source: &str,
+        mem: &Memory,
+    ) {
+        if self.pending_tcy.is_none() {
+            return;
+        }
+        let Some(trace) = trace else {
+            return;
+        };
+        let old = self.storage[self.pending_addr as usize];
+        let arm = self.pending_trace.clone();
+        let mut cpu = TraceCpuSnapshot::from_memory(mem);
+        cpu.tos = context.and_then(|ctx| ctx.tos);
+        cpu.stack = context.map_or_else(Vec::new, |ctx| ctx.stack.clone());
+        let event = TraceEvent {
+            kind: TraceKind::EepromResetDrop,
+            space: MemSpace::Eeprom,
+            addr: self.pending_addr as u16,
+            old,
+            new: self.pending_data,
+            intended: Some(self.pending_data),
+            origin: TraceOrigin::Reset,
+            pc: current_pc.or_else(|| arm.as_ref().and_then(|a| a.pc)),
+            cpu: Some(cpu),
+            arm,
+            rejected_reason: Some(format!("pending EEPROM write dropped by {source} reset")),
+            seq: None,
+        };
+        let _ = trace.record(context, event);
     }
 
     /// Inject EEPROM contents (e.g. for boot fixtures).
@@ -140,9 +185,21 @@ impl Eeprom {
     }
 
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
+        self.on_sfr_write_traced(addr, value, mem, None, None, None);
+    }
+
+    pub fn on_sfr_write_traced(
+        &mut self,
+        addr: u16,
+        value: u8,
+        mem: &mut Memory,
+        trace: Option<&mut MemTraceState>,
+        context: Option<&TraceContext>,
+        current_pc: Option<u32>,
+    ) {
         match addr {
             EECON2_ADDR => self.handle_eecon2_write(value),
-            EECON1_ADDR => self.handle_eecon1_write(value, mem),
+            EECON1_ADDR => self.handle_eecon1_write(value, mem, trace, context, current_pc),
             EEDATA_ADDR | EEADR_ADDR => {}
             _ => {
                 // Any non-EECON2 SFR write doesn't progress
@@ -157,6 +214,17 @@ impl Eeprom {
     }
 
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
+        self.tick_tcy_traced(n, mem, None, None, None);
+    }
+
+    pub fn tick_tcy_traced(
+        &mut self,
+        n: u32,
+        mem: &mut Memory,
+        trace: Option<&mut MemTraceState>,
+        context: Option<&TraceContext>,
+        current_pc: Option<u32>,
+    ) {
         let Some(remaining) = self.pending_tcy else {
             return;
         };
@@ -166,7 +234,31 @@ impl Eeprom {
         }
         // Write completes.
         self.pending_tcy = None;
+        let old = self.storage[self.pending_addr as usize];
         self.storage[self.pending_addr as usize] = self.pending_data;
+        if let Some(trace) = trace {
+            let arm = self.pending_trace.take();
+            let mut cpu = TraceCpuSnapshot::from_memory(mem);
+            cpu.tos = context.and_then(|ctx| ctx.tos);
+            cpu.stack = context.map_or_else(Vec::new, |ctx| ctx.stack.clone());
+            let event = TraceEvent {
+                kind: TraceKind::EepromCommit,
+                space: MemSpace::Eeprom,
+                addr: self.pending_addr as u16,
+                old,
+                new: self.pending_data,
+                intended: Some(self.pending_data),
+                origin: TraceOrigin::Peripheral,
+                pc: current_pc.or_else(|| arm.as_ref().and_then(|a| a.pc)),
+                cpu: Some(cpu),
+                arm,
+                rejected_reason: None,
+                seq: None,
+            };
+            let _ = trace.record(context, event);
+        } else {
+            self.pending_trace = None;
+        }
         // Clear EECON1.WR.
         let con1 = mem.read_raw(Address::from_raw(EECON1_ADDR));
         mem.write_raw(Address::from_raw(EECON1_ADDR), con1 & !EECON1_WR);
@@ -185,7 +277,14 @@ impl Eeprom {
         }
     }
 
-    fn handle_eecon1_write(&mut self, value: u8, mem: &mut Memory) {
+    fn handle_eecon1_write(
+        &mut self,
+        value: u8,
+        mem: &mut Memory,
+        mut trace: Option<&mut MemTraceState>,
+        context: Option<&TraceContext>,
+        current_pc: Option<u32>,
+    ) {
         // RD path: an EEPGD=0 + RD=1 write reads the EEPROM
         // byte at EEADR into EEDATA.  Phase-2 simplifies
         // by treating the read as instantaneous (real
@@ -208,6 +307,44 @@ impl Eeprom {
                 self.pending_addr = mem.read_raw(Address::from_raw(EEADR_ADDR));
                 self.pending_data = mem.read_raw(Address::from_raw(EEDATA_ADDR));
                 self.pending_tcy = Some(POST_WRITE_TCY);
+                let old_at_arm = self.storage[self.pending_addr as usize];
+                if let Some(trace) = trace.as_mut() {
+                    let seq = trace.reserve_seq();
+                    let tick = context.map_or(0, |ctx| ctx.tick);
+                    let core_tcy = context.map_or(0, |ctx| ctx.core_tcy_before);
+                    let arm = EepromArmTrace {
+                        seq,
+                        pc: current_pc,
+                        tick,
+                        core_tcy,
+                        eecon1_intended: value,
+                        eecon1_landed: mem.read_raw(Address::from_raw(EECON1_ADDR)),
+                        eeadr: self.pending_addr,
+                        eedata: self.pending_data,
+                        old_at_arm,
+                    };
+                    self.pending_trace = Some(arm.clone());
+                    let mut cpu = TraceCpuSnapshot::from_memory(mem);
+                    cpu.tos = context.and_then(|ctx| ctx.tos);
+                    cpu.stack = context.map_or_else(Vec::new, |ctx| ctx.stack.clone());
+                    let event = TraceEvent {
+                        kind: TraceKind::EepromArm,
+                        space: MemSpace::Eeprom,
+                        addr: self.pending_addr as u16,
+                        old: old_at_arm,
+                        new: self.pending_data,
+                        intended: Some(self.pending_data),
+                        origin: TraceOrigin::FirmwareInstruction,
+                        pc: current_pc,
+                        cpu: Some(cpu),
+                        arm: Some(arm),
+                        rejected_reason: None,
+                        seq: Some(seq),
+                    };
+                    let _ = trace.record(context, event);
+                } else {
+                    self.pending_trace = None;
+                }
                 self.unlock = UnlockPhase::Idle;
             } else {
                 // Not armed -- silicon sets WRERR (write

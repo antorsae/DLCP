@@ -36,6 +36,7 @@ pub mod tas3108;
 pub mod timer;
 pub mod usb;
 
+use crate::memtrace::{MemTraceState, TraceContext};
 use crate::memory::{Memory, Variant};
 use serde::{Deserialize, Serialize};
 
@@ -85,11 +86,24 @@ impl Peripherals {
     /// to react if the write triggers a side effect (DMA-style
     /// register, FIFO push, baud-generator reload, etc.).
     pub fn on_sfr_write(&mut self, addr: u16, value: u8, mem: &mut Memory) {
+        self.on_sfr_write_traced(addr, value, mem, None, None, None);
+    }
+
+    pub fn on_sfr_write_traced(
+        &mut self,
+        addr: u16,
+        value: u8,
+        mem: &mut Memory,
+        trace: Option<&mut MemTraceState>,
+        context: Option<&TraceContext>,
+        current_pc: Option<u32>,
+    ) {
         self.eusart.on_sfr_write(addr, value, mem);
         self.mssp.on_sfr_write(addr, value, mem);
         self.timers.on_sfr_write(addr, value, mem);
         self.adc.on_sfr_write(addr, value, mem);
-        self.eeprom.on_sfr_write(addr, value, mem);
+        self.eeprom
+            .on_sfr_write_traced(addr, value, mem, trace, context, current_pc);
         self.gpio.on_sfr_write(addr, value, mem);
         self.irq.on_sfr_write(addr, value, mem);
         self.stubs.on_sfr_write(addr, value, mem);
@@ -111,6 +125,7 @@ impl Peripherals {
     /// RCIF never cleared.
     pub fn on_sfr_read(&mut self, addr: u16, mem: &mut Memory) {
         self.eusart.on_sfr_read(addr, mem);
+        self.mssp.on_sfr_read(addr, mem);
         self.timers.on_sfr_read(addr, mem);
     }
 
@@ -119,11 +134,23 @@ impl Peripherals {
     /// peripherals can update their own status SFRs (TXSTA.TRMT,
     /// PIR1.TXIF, etc.) without needing a callback layer.
     pub fn tick_tcy(&mut self, n: u32, mem: &mut Memory) {
+        self.tick_tcy_traced(n, mem, None, None, None);
+    }
+
+    pub fn tick_tcy_traced(
+        &mut self,
+        n: u32,
+        mem: &mut Memory,
+        trace: Option<&mut MemTraceState>,
+        context: Option<&TraceContext>,
+        current_pc: Option<u32>,
+    ) {
         self.eusart.tick_tcy(n, mem);
         self.mssp.tick_tcy(n, mem);
         self.timers.tick_tcy(n, mem);
         self.adc.tick_tcy(n, mem);
-        self.eeprom.tick_tcy(n, mem);
+        self.eeprom
+            .tick_tcy_traced(n, mem, trace, context, current_pc);
         self.irq.tick_tcy(n, mem);
         self.usb.tick_tcy(n, mem);
         self.osc.tick_tcy(n, mem);

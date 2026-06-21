@@ -32,6 +32,10 @@
 
 use crate::config::Config;
 use crate::hex::HexImage;
+use crate::memtrace::{
+    MemSpace, MemTraceConfig, MemTraceState, TraceContext, TraceCpuSnapshot, TraceEvent,
+    TraceKind, TraceOrigin,
+};
 use crate::memory::{Address, Memory, Variant};
 use crate::peripherals::{Peripherals, irq};
 use serde::{Deserialize, Serialize};
@@ -232,6 +236,16 @@ pub struct Core {
     /// Test-only field; production chains should leave this
     /// `None`.
     pub cycle_probe: Option<CycleProbe>,
+    /// Default-off write trace used by corruption investigations.
+    #[serde(default)]
+    pub memory_trace: Option<MemTraceState>,
+    /// Chain-provided role/tick context for the instruction currently
+    /// executing on this core.
+    #[serde(default)]
+    pub memory_trace_context: Option<TraceContext>,
+    /// Pre-instruction PC for the instruction currently executing.
+    #[serde(default)]
+    pub memory_trace_current_pc: Option<u32>,
 }
 
 /// Per-instruction probe -- see `Core::cycle_probe`.  Holds an
@@ -521,6 +535,9 @@ impl Core {
             stkp_sw_write_pending: None,
             pcl_sw_write_pending: None,
             cycle_probe: None,
+            memory_trace: None,
+            memory_trace_context: None,
+            memory_trace_current_pc: None,
         }
     }
 
@@ -729,9 +746,171 @@ impl Core {
         self.pcl_sw_write_pending.take()
     }
 
+    pub fn begin_memory_trace(
+        &mut self,
+        config: MemTraceConfig,
+        core_idx: usize,
+        role: impl Into<String>,
+        tick: u64,
+    ) {
+        self.memory_trace = Some(MemTraceState::new(config));
+        self.memory_trace_context = Some(TraceContext {
+            core_idx,
+            role: role.into(),
+            tick,
+            ticks_per_tcy: self.ticks_per_tcy(),
+            core_tcy_before: self.cycles(),
+            phase: "idle".to_string(),
+            tos: None,
+            stack: Vec::new(),
+        });
+        self.memory_trace_current_pc = None;
+    }
+
+    pub fn clear_memory_trace(&mut self) {
+        if let Some(trace) = self.memory_trace.as_mut() {
+            trace.clear();
+        }
+    }
+
+    pub fn set_memory_trace_context(&mut self, context: TraceContext) {
+        self.memory_trace_context = Some(context);
+    }
+
+    pub fn clear_memory_trace_context(&mut self) {
+        self.memory_trace_context = None;
+        self.memory_trace_current_pc = None;
+    }
+
+    pub fn set_memory_trace_current_pc(&mut self, pc: u32) {
+        self.memory_trace_current_pc = Some(pc);
+    }
+
+    pub fn clear_memory_trace_current_pc(&mut self) {
+        self.memory_trace_current_pc = None;
+    }
+
+    pub fn trace_memory_write(
+        &mut self,
+        kind: TraceKind,
+        space: MemSpace,
+        addr: u16,
+        old: u8,
+        new: u8,
+        intended: Option<u8>,
+        origin: TraceOrigin,
+    ) {
+        let Some(trace) = self.memory_trace.as_mut() else {
+            return;
+        };
+        let ctx = self.memory_trace_context.as_ref();
+        let mut cpu = TraceCpuSnapshot::from_memory(&self.memory);
+        cpu.tos = ctx.and_then(|ctx| ctx.tos);
+        cpu.stack = ctx.map_or_else(Vec::new, |ctx| ctx.stack.clone());
+        let event = TraceEvent {
+            kind,
+            space,
+            addr,
+            old,
+            new,
+            intended,
+            origin,
+            pc: self.memory_trace_current_pc,
+            cpu: Some(cpu),
+            arm: None,
+            rejected_reason: None,
+            seq: None,
+        };
+        let _ = trace.record(ctx, event);
+    }
+
+    pub fn trace_host_ram_poke(
+        &mut self,
+        core_idx: usize,
+        role: impl Into<String>,
+        tick: u64,
+        addr: u16,
+        old: u8,
+        new: u8,
+    ) {
+        let role = role.into();
+        let ctx = TraceContext {
+            core_idx,
+            role,
+            tick,
+            ticks_per_tcy: self.ticks_per_tcy(),
+            core_tcy_before: self.cycles(),
+            phase: "host".to_string(),
+            tos: None,
+            stack: Vec::new(),
+        };
+        if let Some(trace) = self.memory_trace.as_mut() {
+            let event = TraceEvent {
+                kind: TraceKind::HostRamPoke,
+                space: if addr >= 0xF60 { MemSpace::Sfr } else { MemSpace::DataRam },
+                addr,
+                old,
+                new,
+                intended: Some(new),
+                origin: TraceOrigin::Host,
+                pc: None,
+                cpu: Some(TraceCpuSnapshot::from_memory(&self.memory)),
+                arm: None,
+                rejected_reason: None,
+                seq: None,
+            };
+            let _ = trace.record(Some(&ctx), event);
+        }
+    }
+
+    pub fn trace_host_eeprom_seed(
+        &mut self,
+        core_idx: usize,
+        role: impl Into<String>,
+        tick: u64,
+        addr: u8,
+        old: u8,
+        new: u8,
+    ) {
+        let role = role.into();
+        let ctx = TraceContext {
+            core_idx,
+            role,
+            tick,
+            ticks_per_tcy: self.ticks_per_tcy(),
+            core_tcy_before: self.cycles(),
+            phase: "host".to_string(),
+            tos: None,
+            stack: Vec::new(),
+        };
+        if let Some(trace) = self.memory_trace.as_mut() {
+            let event = TraceEvent {
+                kind: TraceKind::HostEepromSeed,
+                space: MemSpace::Eeprom,
+                addr: addr as u16,
+                old,
+                new,
+                intended: Some(new),
+                origin: TraceOrigin::Host,
+                pc: None,
+                cpu: Some(TraceCpuSnapshot::from_memory(&self.memory)),
+                arm: None,
+                rejected_reason: None,
+                seq: None,
+            };
+            let _ = trace.record(Some(&ctx), event);
+        }
+    }
+
     pub fn advance_halted_cycles(&mut self, n: u32) {
         if self.run_state == RunState::Idle {
-            self.peripherals.tick_tcy(n, &mut self.memory);
+            self.peripherals.tick_tcy_traced(
+                n,
+                &mut self.memory,
+                self.memory_trace.as_mut(),
+                self.memory_trace_context.as_ref(),
+                self.memory_trace_current_pc,
+            );
         } else if self.run_state == RunState::Sleep {
             self.peripherals.tick_sleep_tcy(n, &mut self.memory);
             if irq::is_irq_pending(&self.memory) {
@@ -749,7 +928,13 @@ impl Core {
     /// in lock-step with the executor.
     pub fn advance_cycles(&mut self, n: u32) {
         self.cycles = self.cycles.saturating_add(n as u64);
-        self.peripherals.tick_tcy(n, &mut self.memory);
+        self.peripherals.tick_tcy_traced(
+            n,
+            &mut self.memory,
+            self.memory_trace.as_mut(),
+            self.memory_trace_context.as_ref(),
+            self.memory_trace_current_pc,
+        );
         self.tick_wdt(n);
     }
 

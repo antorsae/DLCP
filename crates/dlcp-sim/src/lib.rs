@@ -16,6 +16,7 @@ pub mod exec;
 pub mod hex;
 pub mod isa;
 pub mod lcd;
+pub mod memtrace;
 pub mod memory;
 pub mod peripherals;
 pub mod pinnet;
