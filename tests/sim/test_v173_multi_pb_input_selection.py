@@ -49,6 +49,10 @@ INPUT_INTENT_PB2 = 0x1BB
 INPUT_SPLIT_FLAG_PB2_SEEN = 0
 INPUT_SPLIT_FLAG_SYNC_TARGET = 1
 INPUT_SPLIT_FLAG_PB2_LINKED = 2
+INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE = 3
+INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY = 4
+INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE = 5
+INPUT_PENDING_PB2 = 0x1BD
 
 IR_ADDR_HYPEX = 0x10
 IR_CMD_INPUT_NEXT = 0x44
@@ -93,6 +97,12 @@ FULL_SYNC_HI = 0x0A0
 FULL_SYNC_STEP = 0x170
 
 CONTROL_DISPLAY_STATE_EEPROM = 0x00
+CONTROL_PB2_INPUT_EEPROM = 0x5F
+PB2_EEPROM_LINKED = 0xA0
+PB2_EEPROM_CONCRETE_BASE = 0xB0
+
+IDLE_TIMEOUT_LO = 0x09D
+IDLE_TIMEOUT_HI = 0x09E
 
 V171_DIAG_PRESENT = 0x197
 HEALTH_FLAGS_PENDING = 0
@@ -206,6 +216,15 @@ def _navigate_right(chain, count: int) -> None:  # type: ignore[no-untyped-def]
 
 def _cmd06_frames(chain, start: int = 0) -> list[tuple[int, int, int]]:  # type: ignore[no-untyped-def]
     return [frame for frame in chain.tx_frames()[start:] if frame[1] == 0x06]
+
+
+def _ctl_tx_frames_since_mark(chain) -> list[tuple[int, int, int]]:  # type: ignore[no-untyped-def]
+    tx = chain.ctl_tx_record_since_last_capture()
+    assert len(tx) % 3 == 0, [f"0x{byte:02X}" for byte in tx]
+    return [
+        (tx[i], tx[i + 1], tx[i + 2])
+        for i in range(0, len(tx), 3)
+    ]
 
 
 def _assert_last_cmd06(
@@ -322,6 +341,45 @@ def _latch_split_from_health(chain) -> None:  # type: ignore[no-untyped-def]
     chain.write_reg(HEALTH_SEEN_MASK, 0x02)
     chain.step_ticks(2_000_000)
     assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_SEEN)
+
+
+def _rediscover_pb2_with_raw_status(chain, raw_status: int = 0x03) -> None:  # type: ignore[no-untyped-def]
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    flags &= ~(
+        (1 << INPUT_SPLIT_FLAG_PB2_SEEN)
+        | (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
+        | (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE)
+    )
+    chain.write_reg(INPUT_SPLIT_FLAGS, flags)
+    chain.write_reg(RAW_STATUS_CACHE, raw_status & 0xFF)
+    chain.write_reg(HEALTH_SEEN_MASK, 0x02)
+    chain.step_ticks(2_000_000)
+    assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_SEEN)
+
+
+def _force_settings_save(chain) -> None:  # type: ignore[no-untyped-def]
+    chain.write_reg(IDLE_TIMEOUT_LO, 0x60)
+    chain.write_reg(IDLE_TIMEOUT_HI, 0xEA)
+    chain.step_ticks(120_000_000)
+
+
+def _control_pb2_eeprom_watch() -> dict[str, object]:
+    return {
+        "role": "CONTROL",
+        "space": "Eeprom",
+        "start": CONTROL_PB2_INPUT_EEPROM,
+        "end": CONTROL_PB2_INPUT_EEPROM,
+        "label": "control_pb2_input_persist",
+    }
+
+
+def _decode_pb2_persisted(byte: int) -> tuple[str, int]:
+    byte &= 0xFF
+    if byte == PB2_EEPROM_LINKED:
+        return ("linked", 0)
+    if (byte & 0xF0) == PB2_EEPROM_CONCRETE_BASE and (byte & 0x0F) <= 0x08:
+        return ("concrete", byte & 0x0F)
+    return ("linked", 0)
 
 
 @pytest.mark.slow
@@ -817,9 +875,9 @@ def test_pb2_input_allows_health_aging_but_not_diagnostics_traffic(
     chain.write_reg(HEALTH_FLAGS, 0x00)
     chain.write_reg(HEALTH_POLL_TARGET, 0x01)
     chain.write_reg(HEALTH_TICK_DIV, 0xFF)
-    before = len(chain.tx_frames())
+    chain.mark_ctl_tx_capture_point()
     chain.step_ticks(8_000_000)
-    new_frames = chain.tx_frames()[before:]
+    new_frames = _ctl_tx_frames_since_mark(chain)
     assert any(frame[1] == 0x23 for frame in new_frames), new_frames
     assert not any(frame[1] in (0x21, 0x22) for frame in new_frames), new_frames
 
@@ -845,9 +903,9 @@ def test_split_setup_keeps_health_service_and_suffix_but_no_diag_poll(
     chain.write_reg(HEALTH_FLAGS, 0x00)
     chain.write_reg(HEALTH_POLL_TARGET, 0x01)
     chain.write_reg(HEALTH_TICK_DIV, 0xFF)
-    before = len(chain.tx_frames())
+    chain.mark_ctl_tx_capture_point()
     chain.step_ticks(8_000_000)
-    new_frames = chain.tx_frames()[before:]
+    new_frames = _ctl_tx_frames_since_mark(chain)
     assert any(frame[1] == 0x23 for frame in new_frames), new_frames
     assert not any(frame[1] in (0x21, 0x22) for frame in new_frames), new_frames
 
@@ -918,6 +976,364 @@ def test_power_on_reset_clears_runtime_pb2_split_state(v173_multi_pb_hex: Path) 
     chain.apply_reset_all("por")
     assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
     assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_SEEN))
+
+
+def test_pb2_persisted_byte_decoder_is_closed_allowlist() -> None:
+    valid = {PB2_EEPROM_LINKED} | {
+        PB2_EEPROM_CONCRETE_BASE | value for value in range(0x09)
+    }
+    for byte in range(0x100):
+        mode, value = _decode_pb2_persisted(byte)
+        if byte == PB2_EEPROM_LINKED:
+            assert (mode, value) == ("linked", 0)
+        elif byte in valid:
+            assert (mode, value) == ("concrete", byte & 0x0F)
+        else:
+            assert (mode, value) == ("linked", 0)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("seed", [0xFF, 0x80, 0x7F, 0x00, 0x07, 0xA1, 0xB9])
+def test_pb2_persisted_erased_unknown_and_legacy_bytes_default_to_linked(
+    v173_multi_pb_hex: Path,
+    seed: int,
+) -> None:
+    chain = _new_chain(v173_multi_pb_hex)
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, seed)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE))
+    assert chain.read_reg(INPUT_INTENT_PB2) == chain.read_reg(INPUT_SELECT_CACHE)
+
+    _navigate_right(chain, 3)
+    assert chain.lcd_lines() == ("Input PB2:      ", "Same as PB1     ")
+    frames = _force_full_sync_input_step(chain)
+    assert frames and frames[-1][0] == 0xB0
+    assert frames[-1][2] <= 0x08
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("cmd06", range(0x09))
+def test_pb2_persisted_valid_concrete_values_apply_after_pb2_discovery(
+    v173_multi_pb_hex: Path,
+    cmd06: int,
+) -> None:
+    chain = _new_chain(v173_multi_pb_hex)
+    chain.write_control_eeprom_byte(
+        CONTROL_PB2_INPUT_EEPROM,
+        PB2_EEPROM_CONCRETE_BASE | cmd06,
+    )
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
+    assert flags & (1 << INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE))
+    assert chain.read_reg(INPUT_PENDING_PB2) == cmd06
+    assert chain.read_reg(INPUT_INTENT_PB2) == cmd06
+
+    assert _force_full_sync_input_step(chain)[-1][0] == 0xB1
+    assert _force_full_sync_input_step(chain)[-1] == (0xB2, 0x06, cmd06)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("raw_status", "expect_concrete"),
+    [
+        (0x00, False),
+        (0x01, False),
+        (0x02, False),
+        (0x03, True),
+        (0x04, True),
+        (0x7F, True),
+        (0x80, True),
+        (0xFF, True),
+    ],
+)
+def test_pb2_persisted_concrete_source_uses_raw_status_fallback_without_overwrite(
+    v173_multi_pb_hex: Path,
+    raw_status: int,
+    expect_concrete: bool,
+) -> None:
+    seed = PB2_EEPROM_CONCRETE_BASE | 0x08  # Optical: valid only in full-input class.
+    chain = _new_chain(v173_multi_pb_hex)
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, seed)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+
+    _rediscover_pb2_with_raw_status(chain, raw_status)
+
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    if expect_concrete:
+        assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
+        assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE))
+        assert chain.read_reg(INPUT_INTENT_PB2) == 0x08
+    else:
+        assert flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
+        assert flags & (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE)
+        assert chain.read_reg(INPUT_INTENT_PB2) == chain.read_reg(INPUT_SELECT_CACHE)
+
+    chain.begin_memory_trace([_control_pb2_eeprom_watch()], max_records=200)
+    _force_settings_save(chain)
+    pb2_commits = [
+        record for record in chain.memory_trace_records()
+        if record["kind"] == "EepromCommit"
+        and record["addr"] == CONTROL_PB2_INPUT_EEPROM
+    ]
+    assert pb2_commits == []
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == seed
+
+
+@pytest.mark.slow
+def test_pb2_user_selected_concrete_round_trips_through_eeprom_and_por(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+
+    _navigate_right(chain, 3)
+    assert chain.lcd_lines() == ("Input PB2:      ", "Same as PB1     ")
+    for _ in range(4):  # Same -> Auto -> S/PDIF -> USB -> AES
+        _press(chain, "UP")
+    assert chain.lcd_lines() == ("Input PB2:      ", "AES             ")
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x07
+    assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY)
+
+    _force_settings_save(chain)
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == (
+        PB2_EEPROM_CONCRETE_BASE | 0x07
+    )
+    assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+
+    reboot = _new_chain(v173_multi_pb_hex)
+    reboot.write_control_eeprom_byte(
+        CONTROL_PB2_INPUT_EEPROM,
+        PB2_EEPROM_CONCRETE_BASE | 0x07,
+    )
+    assert reboot.run_until_connected(limit=300) < 300, reboot.lcd_lines()
+    _rediscover_pb2_with_raw_status(reboot, 0x03)
+    assert not (reboot.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
+    assert reboot.read_reg(INPUT_INTENT_PB2) == 0x07
+
+
+@pytest.mark.slow
+def test_every_user_selected_concrete_pb2_source_saves_documented_encoding(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+
+    _navigate_right(chain, 3)
+    assert chain.lcd_lines() == ("Input PB2:      ", "Same as PB1     ")
+    for label, cmd06 in FULL_INPUT_ROWS:
+        before = len(chain.tx_frames())
+        _press(chain, "UP")
+        frames = _cmd06_frames(chain, before)
+
+        assert chain.lcd_lines() == ("Input PB2:      ", label)
+        assert chain.read_reg(INPUT_INTENT_PB2) == cmd06
+        assert frames and frames[-1] == (0xB2, 0x06, cmd06)
+        assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY)
+
+        _force_settings_save(chain)
+        assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == (
+            PB2_EEPROM_CONCRETE_BASE | cmd06
+        )
+        assert not (
+            chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY)
+        )
+
+
+@pytest.mark.slow
+def test_pb2_same_as_pb1_round_trips_as_linked_encoding(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _new_chain(v173_multi_pb_hex)
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, PB2_EEPROM_CONCRETE_BASE | 0x07)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+
+    _navigate_right(chain, 3)
+    assert chain.lcd_lines() == ("Input PB2:      ", "AES             ")
+    for _ in range(4):  # AES -> USB -> S/PDIF -> Auto Detect -> Same as PB1
+        _press(chain, "DOWN")
+    assert chain.lcd_lines() == ("Input PB2:      ", "Same as PB1     ")
+
+    _press(chain, "RIGHT")
+    _force_settings_save(chain)
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == PB2_EEPROM_LINKED
+
+
+@pytest.mark.slow
+def test_valid_pb2_eeprom_stays_pending_on_single_pb_chain_until_discovery(
+    v173_multi_pb_hex: Path,
+) -> None:
+    _require_rust()
+    chain = RustChain.from_v17_v3x_chain(
+        control_hex_path=str(v173_multi_pb_hex),
+        v3x_main_hex_path=str(V35_MAIN_HEX),
+    )
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, PB2_EEPROM_CONCRETE_BASE | 0x07)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+
+    assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_SEEN))
+    assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE)
+    assert chain.read_reg(INPUT_PENDING_PB2) == 0x07
+
+    _navigate_right(chain, 2)
+    assert chain.read_reg(DISPLAY_STATE) == STATE_INPUT_PB1
+    assert chain.lcd_lines()[0] == "Input:          "
+    before = len(chain.tx_frames())
+    _press(chain, "UP")
+    frames = _cmd06_frames(chain, before)
+    assert frames and frames[-1][0] == 0xB0
+    assert not any(frame[0] == 0xB2 for frame in frames)
+
+
+@pytest.mark.slow
+def test_corrupt_runtime_pb2_intent_saves_linked_default_not_invalid_enum(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+    _navigate_right(chain, 3)
+    _press(chain, "UP")  # normal PB2 user change sets the persistence dirty bit.
+    assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY)
+
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, PB2_EEPROM_CONCRETE_BASE | 0x07)
+    chain.write_reg(INPUT_INTENT_PB2, 0x7F)
+
+    _force_settings_save(chain)
+
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == PB2_EEPROM_LINKED
+    assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("runtime_state", "saved_state", "rediscovered_state"),
+    [
+        (STATE_INPUT_PB2, 0x02, STATE_INPUT_PB1),
+        (STATE_SETUP_SPLIT, 0x03, STATE_SETUP_SPLIT),
+        (STATE_PB1_DIAG_SPLIT, 0x04, STATE_PB1_DIAG_SPLIT),
+        (STATE_PB2_DIAG_SPLIT, 0x05, STATE_PB2_DIAG_SPLIT),
+    ],
+)
+def test_split_display_states_save_in_legacy_space_and_restore_after_rediscovery(
+    v173_multi_pb_hex: Path,
+    runtime_state: int,
+    saved_state: int,
+    rediscovered_state: int,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+    chain.write_reg(DISPLAY_STATE, runtime_state)
+
+    _force_settings_save(chain)
+    assert chain.read_control_eeprom_byte(CONTROL_DISPLAY_STATE_EEPROM) == saved_state
+
+    reboot = _new_chain(v173_multi_pb_hex)
+    reboot.write_control_eeprom_byte(CONTROL_DISPLAY_STATE_EEPROM, saved_state)
+    reboot.run_until_connected(limit=300)
+    state_after_boot = reboot.read_reg(DISPLAY_STATE)
+    assert state_after_boot in {saved_state, rediscovered_state}
+    if reboot.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_SEEN):
+        assert state_after_boot == rediscovered_state
+        return
+
+    assert state_after_boot == saved_state
+    if saved_state in (0x02, 0x03):
+        _rediscover_pb2_with_raw_status(reboot, 0x03)
+        assert reboot.read_reg(DISPLAY_STATE) == rediscovered_state
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("payload", [0x09, 0x7F, 0x80, 0xFF])
+@pytest.mark.parametrize("linked", [True, False])
+def test_malformed_bf06_payloads_do_not_change_pb1_or_pb2_intents(
+    v173_multi_pb_hex: Path,
+    payload: int,
+    linked: bool,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _latch_split(chain, linked=linked)
+    chain.write_reg(INPUT_SELECT_CACHE, 0x08)
+    chain.write_reg(INPUT_INTENT_PB2, 0x03)
+    chain.write_reg(BF06_INPUT_GATE, 0x00)
+
+    _inject_control_rx_frame(chain, (0xBF, 0x06, payload))
+    chain.step_ticks(2_000_000)
+
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x08
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x03
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert bool(flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)) is linked
+    first = _force_full_sync_input_step(chain)
+    if linked:
+        assert first[-1] == (0xB0, 0x06, 0x08)
+    else:
+        assert first[-1] == (0xB1, 0x06, 0x08)
+
+
+@pytest.mark.slow
+def test_pb2_persistence_dirty_flag_prevents_repeat_eeprom_commits(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+    _navigate_right(chain, 3)
+    _press(chain, "UP")  # Same as PB1 -> Auto Detect concrete
+    _force_settings_save(chain)
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == PB2_EEPROM_CONCRETE_BASE
+
+    chain.begin_memory_trace([_control_pb2_eeprom_watch()], max_records=200)
+    _force_settings_save(chain)
+    _force_settings_save(chain)
+    assert [
+        record for record in chain.memory_trace_records()
+        if record["kind"] == "EepromCommit"
+        and record["addr"] == CONTROL_PB2_INPUT_EEPROM
+    ] == []
+
+
+@pytest.mark.slow
+def test_navigation_full_sync_and_relink_cycles_do_not_write_clean_pb2_eeprom(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _new_chain(v173_multi_pb_hex)
+    seed = PB2_EEPROM_CONCRETE_BASE | 0x07
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, seed)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+    assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+
+    chain.begin_memory_trace([_control_pb2_eeprom_watch()], max_records=400)
+
+    _navigate_right(chain, 3)
+    assert chain.lcd_lines() == ("Input PB2:      ", "AES             ")
+    _navigate_right(chain, 4)
+    assert chain.read_reg(DISPLAY_STATE) == STATE_VOLUME
+    assert _force_full_sync_input_step(chain)[-1][0] == 0xB1
+    assert _force_full_sync_input_step(chain)[-1] == (0xB2, 0x06, 0x07)
+
+    chain.write_reg(HEALTH_SEEN_MASK, 0x00)
+    chain.step_ticks(2_000_000)
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+    _force_settings_save(chain)
+
+    assert [
+        record for record in chain.memory_trace_records()
+        if record["kind"] == "EepromCommit"
+        and record["addr"] == CONTROL_PB2_INPUT_EEPROM
+    ] == []
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == seed
 
 
 @pytest.mark.slow
@@ -1250,6 +1666,10 @@ def test_pb2_menu_state_and_malformed_row_are_gated_by_split_flag() -> None:
         text.index("input_screen_compute_menu_max:"):
         text.index("input_screen_prepare_selected_row:")
     ]
+    render = text[
+        text.index("input_screen__render_option_row:"):
+        text.index("input_screen__draw_option_and_service:")
+    ]
     dispatch = text[
         text.index("v171_menu_ck_state_3:"):
         text.index("display_state_entry__handle_menu_next:")
@@ -1269,6 +1689,12 @@ def test_pb2_menu_state_and_malformed_row_are_gated_by_split_flag() -> None:
     assert "movff   v171_tx_enq_retry_acc_phys, raw_status_cache_b0_phys" in text
     assert "input_screen_compute_menu_max:" in text
     assert "call    input_screen_clamp_staged_row, 0x0" in text
+    assert render.index("call    input_screen_compute_menu_max, 0x0") < render.index(
+        "call    input_screen_prepare_option_label, 0x0"
+    )
+    assert render.index("call    input_screen_clamp_staged_row, 0x0") < render.index(
+        "call    input_screen_prepare_option_label, 0x0"
+    )
     assert "movwf   menu_option_max_index_b0, BANKED" in compute_max
     assert "cpfsgt  rx_ring_staging_b0, BANKED" in compute_max
     assert "INPUT_SPLIT_FLAG_PB2_LINKED" in prepare

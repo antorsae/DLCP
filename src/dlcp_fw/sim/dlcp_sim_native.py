@@ -875,6 +875,12 @@ class Chain:
         """
         self._inner.write_control_eeprom_byte(int(addr) & 0xFF, int(value) & 0xFF)
 
+    def read_control_eeprom_byte(self, addr: int) -> int:
+        """Read a single byte from CONTROL's EEPROM peripheral
+        at the given 8-bit address.
+        """
+        return int(self._inner.read_control_eeprom_byte(int(addr) & 0xFF)) & 0xFF
+
     def read_main_eeprom_byte(self, unit: int, addr: int) -> int:
         """Read a single byte from one MAIN's EEPROM peripheral
         at the given 8-bit address.  ``unit=0`` selects MAIN0

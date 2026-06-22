@@ -77,7 +77,9 @@ PB2 seen; visiting the PB2 Diagnostics page must not be required.
 - No arbitrary chain length beyond PB1/PB2.
 - No automatic "slave must be AES" policy; the user chooses PB2 AES or PB2
   Auto Detect.
-- No EEPROM persistence in phase 1.
+- Phase-1 runtime behavior did not include EEPROM persistence.  PB2 input
+  persistence is the x53 follow-up documented in
+  `docs/MULTI_PB_INPUT_SELECTION.md`.
 - No HFD/PC UI redesign.
 - No MAIN USB/HID changes.
 - No SRC4382 sample-rate or diagnostics changes.
@@ -151,13 +153,14 @@ visible page identity is preserved:
 | 5 PB2 Diag | 6 PB2 Diag |
 
 State 3 (`Input PB2`) is runtime-only and must never become a persistent boot
-dependency.  If settings are saved while the UI is on state 3 in split mode,
-CONTROL must persist a legacy-safe state such as state 2 (`Input` /
-`Input PB1`) instead.  When saving from split-mode Setup/Diagnostics, CONTROL
-must map back to legacy state IDs: split state 4 -> EEPROM state 3, split state
-5 -> EEPROM state 4, and split state 6 -> EEPROM state 5.  On settings load,
-CONTROL must clamp any restored `display_state_index >= 6` to a legacy-safe
-state before PB2 discovery.
+dependency.  The x53 persistence follow-up stores only the PB2 input setting,
+not the PB2-seen latch or a split-only menu row.  If settings are saved while
+the UI is on state 3 in split mode, CONTROL must persist a legacy-safe state
+such as state 2 (`Input` / `Input PB1`) instead.  When saving from split-mode
+Setup/Diagnostics, CONTROL must map back to legacy state IDs: split state 4 ->
+EEPROM state 3, split state 5 -> EEPROM state 4, and split state 6 -> EEPROM
+state 5.  On settings load, CONTROL must clamp any restored
+`display_state_index >= 6` to a legacy-safe state before PB2 discovery.
 
 PB1/PB2 Input page titles are exactly 16-column-safe:
 
@@ -323,9 +326,9 @@ Resolution status as of 2026-06-22:
 - The xfail repro was converted to passing coverage and expanded over unknown
   raw-status values `0x04`, `0x7F`, `0x80`, and `0xFF`; valid raw-status DOWN
   behavior remains covered for `0x00..0x03`.
-- The rebuilt canonical CONTROL release is `V1.73 / rev 0x52 / build
-  20260622`; simulator and release-HEX regressions pass against
-  `firmware/patched/releases/DLCP_Control_V1.73.hex`.
+- The rebuilt canonical CONTROL release for this PB2 DOWN bugfix was
+  `V1.73 / rev 0x52 / build 20260622`; x53 retains the runtime fix and adds
+  PB2 input persistence.
 - `rev 0x50` is superseded by `rev 0x51`; x51 moved the temporary raw-status
   fallback scratch off the live IR inhibit timer byte.
 - `rev 0x51` is superseded by `rev 0x52`; x52 keeps the PB2 DOWN fix and fixes
@@ -352,12 +355,32 @@ already uses `[B1/B2, cmd, data]`.
 
 ## CONTROL State Model
 
-Phase 1 is runtime-only.  Do not claim or write new CONTROL EEPROM bytes.
+Phase 1 was runtime-only and did not claim or write new CONTROL EEPROM bytes.
 `docs/V16B_SOURCE_REWRITE_SPEC.md` documents EEPROM `0x75..0xFE` as stock user
 settings, and V1.73 source comments document the image as stock-equivalent
-except `0x70..0x74`.  Persistent split input is a separate future feature gated
-by an EEPROM ownership audit, schema doc, migration tests, and hardware
-settings-preservation tests.
+except `0x70..0x74`.  The x53 PB2 input persistence follow-up is gated by an
+EEPROM ownership audit, schema doc, migration tests, and settings-preservation
+evidence.  The canonical guardrails live in
+`docs/MULTI_PB_INPUT_SELECTION.md`.
+
+Persistent PB2 settings must treat EEPROM as untrusted input.  The canonical
+rules are in `docs/MULTI_PB_INPUT_SELECTION.md` and the reviewed implementation
+plan is in `docs/MULTI_PB_INPUT_SELECTION_PERSISTENCE_IMPL.md`; in
+short:
+
+- choose a byte only after a byte-by-byte EEPROM ownership audit;
+- use a migration discriminator or prove the byte is erased/unused;
+- treat erased `0xFF`, unknown, and pre-migration values as
+  `PB2 = Same as PB1`;
+- validate on load before the raw byte can become a menu index, table index,
+  route byte, or `cmd 0x06` payload;
+- keep use-site clamps before LCD label lookup, menu wrap, source mapping, and
+  full-sync / targeted PB2 send;
+- decode with a closed allowlist;
+- keep valid persisted PB2 state pending and inactive until PB2 discovery;
+- do not rely on release flash to initialize EEPROM defaults;
+- test every preload byte `0x00..0xFF` for no garbage LCD, no invalid frame,
+  and no reset/hang.
 
 CONTROL shall maintain explicit intended input bytes:
 
@@ -472,8 +495,9 @@ CONTROL full-sync is changed:
   until the user selects an independent PB2 source.
 - Two-MAIN chain after PB2 discovery with independent PB2 source: PB1/PB2 input
   changes and full-sync use addressed frames.
-- Cold boot reverts to legacy until PB2 is rediscovered because phase 1 is
-  runtime-only.
+- Cold boot reverts to legacy UI until PB2 is rediscovered.  In x53 and later,
+  a persisted PB2 input setting may be loaded as pending state, but it must
+  remain latent until PB2 discovery.
 - Older MAIN without V3.5 identity still may enable PB2 based on existing health
   or Diagnostics presence.  If PB2 presence is unknown, do not require split UI.
 - Existing tests that assert `("Input:          ", "Auto Detect     ")` remain

@@ -11,8 +11,10 @@ operator approval.
 
 ## Current Overall Status
 
-As of 2026-06-22, the active candidate is canonical CONTROL
-`V1.73 / rev 0x52 / build 20260622`.
+As of the x52 runtime bugfix pass on 2026-06-22, the active candidate was
+canonical CONTROL `V1.73 / rev 0x52 / build 20260622`.  This status block is
+historical; x53 persistence is tracked separately in
+`docs/MULTI_PB_INPUT_SELECTION_PERSISTENCE_IMPL.md`.
 
 - Focused source and canonical-HEX regression gates passed, including full
   multi-PB visible behavior, PB2 `Same as PB1` + DOWN, corrupt PB2 full-sync
@@ -24,6 +26,18 @@ As of 2026-06-22, the active candidate is canonical CONTROL
   is not hardware-validated or field-closed.
 - Older baseline status sections below are historical for the incremental
   multi-PB feature and are superseded by this block for BUG-V173-MPB-PB2-DOWN-RAW.
+
+## PB2 Persistence Follow-Up
+
+V1.73 x52 remains the historical runtime-only multi-PB ledger.  PB2 input
+persistence is the x53 follow-up and must not be inferred from the x52 runtime
+state.
+
+The canonical persistence guardrails are in
+`docs/MULTI_PB_INPUT_SELECTION.md`.  The reviewed persistence implementation
+ledger is kept separate in
+`docs/MULTI_PB_INPUT_SELECTION_PERSISTENCE_IMPL.md` so this x52 ledger stays
+focused on the implemented multi-PB runtime behavior.
 
 ## Summary
 
@@ -361,8 +375,11 @@ Keep PB1 source list unchanged.  For PB2 only:
   - PB2 row >0: clear `PB2_LINKED`, subtract 1, map to cmd06, commit to
     `input_intent_pb2`, and emit addressed PB2 input.
 
-Clamp invalid PB2 row values defensively to row 0 or Auto Detect; do not allow
-row 10+ to index past a source-label table.
+Clamp invalid PB2 row values defensively before label lookup and send mapping.
+For x52 runtime malformed-row recovery, row 0 linked or a concrete Auto Detect
+fallback are acceptable as long as no row 10+ indexes past a source-label table
+and no invalid byte reaches MAIN.  Future EEPROM persistence has a stricter
+rule: corrupt persisted state defaults to linked `Same as PB1`.
 
 ### Work Unit 6 - Broadcast While Linked, Address While Independent
 
@@ -431,6 +448,11 @@ Replace numeric "state < 4" assumptions with semantic page classification:
 
 ### Work Unit 9 - Update Operator/Hardware Docs
 
+Historical scope note: x52 also tightened CONTROL flash wrapper path handling
+so live flashing cannot accidentally use the wrong MAIN HID relay.  Treat that
+as operational safety cleanup recorded with this release, not as part of the
+multi-PB runtime feature itself.
+
 Update `README.md`, `docs/HARDWARE_TEST.md`,
 `docs/REFACTORING_V34_V173_SPEC.md`, and any hardware-test comments that
 describe the old appended state-6 PB2 Input flow or conflicting CONTROL flash
@@ -449,13 +471,13 @@ Required doc/test updates:
   verify per-MAIN `input_select`/`input_mirror`; capture SRC4382 diagnostics
   where applicable for PB1 Optical, PB2 Same, PB2 AES, and PB2 Auto Detect
   AES/CAT.
-- CONTROL flashing rule must be made consistent across the docs.  The proven
-  implementation rule is: CONTROL is flashed through a MAIN USB HID relay.
-  Identify and refresh the MAIN HID path that is physically connected to
-  CONTROL, normally LEFT/PB1, after any MAIN USB re-enumeration.  Pass that
-  relay MAIN path to `scripts/flash_control_safe.sh --path`.  If a future
-  implementation proves a true independent CONTROL USB bootloader path exists,
-  update `dlcp_control_flash.py` evidence and all three docs together.
+- CONTROL flashing rule consistency was handled as the x52 operational cleanup:
+  CONTROL is flashed through a MAIN USB HID relay.  Identify and refresh the
+  MAIN HID path that is physically connected to CONTROL, normally LEFT/PB1,
+  after any MAIN USB re-enumeration.  Pass that relay MAIN path to
+  `scripts/flash_control_safe.sh --path`.  If a future implementation proves a
+  true independent CONTROL USB bootloader path exists, update
+  `dlcp_control_flash.py` evidence and all three docs together.
 
 Update `tests/hardware/test_live_state_transitions.py` navigation counts or
 comments if they encode the old state numbers.  Hardware execution still
@@ -463,12 +485,16 @@ requires separate user approval.
 
 ### Work Unit 10 - Keep MAIN And Host Tools Unchanged
 
-No changes should be made to:
+No multi-PB runtime changes should be made to:
 
 - `src/dlcp_fw/asm/dlcp_main_v35.asm`
 - `scripts/dlcp_src4382_diag.py`
 - MAIN USB command handlers
-- release flash scripts, except as needed by normal V1.73 rebuild artifacts
+- release flash scripts
+
+The x52 `scripts/flash_control_safe.sh --path` enforcement was separate
+operational cleanup.  Do not use it as precedent for adding unrelated tooling
+changes to future multi-PB runtime work.
 
 If implementation unexpectedly needs MAIN changes, stop and update this IMPL
 plus review gate before coding them.
@@ -624,8 +650,9 @@ Rollback:
 - Use the same refreshed CONTROL-relay MAIN HID path selection rule as
   deployment.
 - MAIN V3.5 does not need rollback for this feature if MAIN remains untouched.
-- Because split input is runtime-only, cold boot clears PB2 linked/independent
-  state.
+- Because x52 split input was runtime-only, cold boot clears PB2
+  linked/independent state.  The x53 persistence follow-up stores only a
+  sanitized PB2 input setting and keeps it pending until PB2 is rediscovered.
 
 ## Acceptance Criteria
 
@@ -1189,6 +1216,12 @@ Hardware closure evidence must include:
   must receive/select `0x04`;
 - PB1/PB2 diagnostics still healthy after the action.
 
+Use a tracked evidence note or template such as
+`artifacts/probes/multi_pb_input_persistence_evidence_TEMPLATE.md` for future
+hardware runs.  The run-specific artifact should record the required fields
+above plus explicit pass/fail for PB2 DOWN, audio-routing, and persistence
+closure, with raw HID paths and EEPROM dumps kept local/redacted.
+
 Without that hardware evidence, final status must say "simulator/release-gated,
 not hardware-validated/field-closed".
 
@@ -1416,6 +1449,15 @@ final post-test SHA-256:
     131d4e7a078cbfd3eb43a202b34cf3a93f15c2f3059bdb1f53ba05d0dcda6eed
   src/dlcp_fw/asm/dlcp_control_ram.inc
     67ec799d18c45634e0204ed38ce8d969ec13832196223f46711e3d90c3891943
+
+post-commit x52 provenance:
+  git HEAD: 1fe8cae0d26075991f1d8039456e7dae145894a1
+  scoped x52 implementation/release paths: clean in `git status --short`
+  current docs-only follow-up paths:
+    M docs/MULTI_PB_INPUT_SELECTION_IMPL.md
+    M docs/MULTI_PB_INPUT_SELECTION_SPEC.md
+    ?? docs/MULTI_PB_INPUT_SELECTION.md
+    ?? docs/MULTI_PB_INPUT_SELECTION_PERSISTENCE_IMPL.md
 ```
 
 No live hardware flash or smoke was performed in this pass.  The issue is
@@ -1452,9 +1494,8 @@ therefore simulator/release-gated, not hardware-validated, and not field-closed.
   never rendered.
 - No emitted `cmd 0x06` carries a sentinel or out-of-range data byte, and each
   displayed concrete label maps to the exact expected byte.
-- IR input previous/next under invalid/boot-sentinel raw status is either
-  hardened with the same full-input semantics or explicitly proved unable to hit
-  the stale-limit/out-of-range class.
+- IR input previous/next under invalid/boot-sentinel raw status is hardened
+  with the same full-input semantics and covered by the named regression tests.
 - Existing valid raw-status behavior for `0x00..0x03` still passes.
 - Existing linked broadcast and independent addressed behavior still passes.
 - `check_ram_access_safety.py --target control-v173` passes after any assembly
@@ -1539,8 +1580,8 @@ Initial 8-reviewer gate:
   - Health-loss plus standby/wake route-style behavior is covered; a true
     current-loop reconnect/WAITING recovery test is not claimed by the focused
     simulator gate.
-  - New spec/test files remain untracked until the next intentional commit;
-    no commit was requested in this pass.
+  - New persistence docs are intent-to-add and uncommitted until the next
+    intentional commit; no commit was requested in this pass.
 - Release blockers outside simulator/release IMPL completion:
   - Live hardware field closure remains pending and must use the exact
     approval-gated x52 flash/smoke evidence above.

@@ -2807,6 +2807,12 @@ impl Chain {
             .trace_host_eeprom_seed(self.i_ctl, addr, old, value);
     }
 
+    /// Read a single byte of CONTROL's EEPROM peripheral
+    /// at the given 8-bit address.
+    fn read_control_eeprom_byte(&self, addr: u8) -> u8 {
+        self.inner.cores[self.i_ctl].peripherals.eeprom.get_byte(addr)
+    }
+
     /// Read a single byte of one MAIN's EEPROM peripheral
     /// at the given 8-bit address (MAIN EEPROM is 256
     /// bytes per PIC18F2455 datasheet).  ``unit`` selects

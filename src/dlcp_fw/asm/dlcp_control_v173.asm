@@ -430,6 +430,10 @@ eeprom_write_byte__wait_write_complete:                                         
         incf    EEADR, F, A                                 ; reg: 0xfa9
         return  0x0
 
+EEPROM_PB2_INPUT_ADDR      equ     0x5F
+PB2_INPUT_EEPROM_LINKED    equ     0xA0
+PB2_INPUT_EEPROM_CONCRETE_BASE equ 0xB0
+
 
 ; ===========================================================================
 ; delay_short @ 0x0001BC — delay_short
@@ -2642,6 +2646,79 @@ settings_save_eeprom__write_bl_timeout:                                         
         movwf   EEADR, A                                    ; reg: 0xfa9
         movf    backlight_timeout_selection_b0, W, B                                  ; reg: 0x0eb
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
+        call    input_pb2_persist_save_if_dirty, 0x0
+        return  0x0
+
+input_pb2_persist_load:
+        movlw   EEPROM_PB2_INPUT_ADDR
+        call    eeprom_read_byte, 0x0
+        movwf   tx_data_staging_acc, A
+        movlb   0x01
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE, BANKED
+        clrf    input_pending_pb2_b1, BANKED
+        movlb   0x00
+        movf    tx_data_staging_acc, W, A
+        xorlw   PB2_INPUT_EEPROM_LINKED
+        bz      input_pb2_persist_load_done
+        movf    tx_data_staging_acc, W, A
+        andlw   0xF0
+        xorlw   PB2_INPUT_EEPROM_CONCRETE_BASE
+        bnz     input_pb2_persist_load_done
+        movf    tx_data_staging_acc, W, A
+        andlw   0x0F
+        movlb   0x01
+        movwf   input_pending_pb2_b1, BANKED
+        movlw   0x09
+        cpfslt  input_pending_pb2_b1, BANKED
+        bra     input_pb2_persist_load_invalid
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE, BANKED
+        bra     input_pb2_persist_load_done_b0
+input_pb2_persist_load_invalid:
+        clrf    input_pending_pb2_b1, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE, BANKED
+input_pb2_persist_load_done_b0:
+        movlb   0x00
+input_pb2_persist_load_done:
+        movlb   0x00
+        return  0x0
+
+input_pb2_persist_encode_current:
+        movlb   0x01
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bra     input_pb2_persist_encode_linked
+        movlw   0x09
+        cpfslt  input_intent_pb2_b1, BANKED
+        bra     input_pb2_persist_encode_linked
+        movf    input_intent_pb2_b1, W, BANKED
+        iorlw   PB2_INPUT_EEPROM_CONCRETE_BASE
+        movlb   0x00
+        return  0x0
+input_pb2_persist_encode_linked:
+        movlw   PB2_INPUT_EEPROM_LINKED
+        movlb   0x00
+        return  0x0
+
+input_pb2_persist_save_if_dirty:
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY, BANKED
+        bra     input_pb2_persist_save_done_b0
+        call    input_pb2_persist_encode_current, 0x0
+        movwf   (Common_RAM + 10), A
+        movlw   EEPROM_PB2_INPUT_ADDR
+        call    eeprom_read_byte, 0x0
+        xorwf   (Common_RAM + 10), W, A
+        bz      input_pb2_persist_save_clear_dirty
+        movlw   EEPROM_PB2_INPUT_ADDR
+        movwf   EEADR, A
+        movf    (Common_RAM + 10), W, A
+        call    eeprom_write_byte, 0x0
+input_pb2_persist_save_clear_dirty:
+        movlb   0x01
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY, BANKED
+input_pb2_persist_save_done_b0:
+        movlb   0x00
         return  0x0
 
 
@@ -2752,6 +2829,7 @@ settings_load_eeprom__read_bl_timeout:                                          
 settings_load_eeprom__apply_bl_timeout_runtime_seed:                                                  ; address: 0x000b10
 
         call    backlight_timeout_load_threshold, 0x0                           ; dest: 0x001478
+        call    input_pb2_persist_load, 0x0
         return  0x0
 
 
@@ -3130,7 +3208,7 @@ input_frame_send_targeted_aborted:
 volume_frame_send:                                               ; address: 0x000c40
 
         ; V1.72 atomic 3-byte frame (see tx_ring_reserve_3 header).
-        rcall   tx_ring_reserve_3
+        call    tx_ring_reserve_3, 0x0
         bc      volume_frame_send_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging_acc, A                        ; reg: 0x027
@@ -3162,7 +3240,7 @@ volume_frame_send_aborted:
 cmd1d_setting_frame_send:                                               ; address: 0x000c5e
 
         ; V1.72 atomic 3-byte frame (see tx_ring_reserve_3 header).
-        rcall   tx_ring_reserve_3
+        call    tx_ring_reserve_3, 0x0
         bc      cmd1d_setting_frame_send_aborted
         movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
         movwf   tx_data_staging_acc, A                        ; reg: 0x027
@@ -6069,10 +6147,45 @@ input_split_latch_pb2_seen:
         btfss   v171_diag_present_b1, 1, BANKED
         bra     input_split_latch_done
 input_split_latch_enable:
-        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
         bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_SYNC_TARGET, BANKED
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE, BANKED
+        bra     input_split_latch_enable_linked
+        movff   input_pending_pb2_b1_phys, rx_parsed_data_b0_phys
+        movlb   0x00
+        call    map_cmd06_input_select_to_menu_index, 0x0
+        call    input_screen_compute_menu_max, 0x0
+        movf    menu_option_max_index_b0, W, BANKED
+        cpfsgt  rx_ring_staging_b0, BANKED
+        bra     input_split_latch_pending_row_in_range
+        bra     input_split_latch_enable_fallback
+input_split_latch_pending_row_in_range:
+        call    map_input_menu_index_to_cmd06_input_select, 0x0
+        movlb   0x01
+        movf    input_pending_pb2_b1, W, BANKED
+        movlb   0x00
+        xorwf   tx_data_staging_acc, W, A
+        bz      input_split_latch_enable_concrete
+        bra     input_split_latch_enable_fallback
+input_split_latch_enable_concrete:
+        movlb   0x01
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE, BANKED
+        movff   input_pending_pb2_b1_phys, input_intent_pb2_b1_phys
+        bra     input_split_latch_remap_menu_state
+input_split_latch_enable_fallback:
+        movlb   0x01
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
         bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE, BANKED
         movff   input_select_cache_b0_phys, input_intent_pb2_b1_phys
+        bra     input_split_latch_remap_menu_state
+input_split_latch_enable_linked:
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE, BANKED
+        movff   input_select_cache_b0_phys, input_intent_pb2_b1_phys
+input_split_latch_remap_menu_state:
         movlb   0x00
         movlw   0x03
         cpfslt  display_state_index_b0, BANKED
@@ -6643,6 +6756,7 @@ app_cold_init__zero_next_diag_cache_cell:
         clrf    input_split_flags_b1, BANKED
         clrf    input_intent_pb2_b1, BANKED
         clrf    input_send_target_b1, BANKED
+        clrf    input_pending_pb2_b1, BANKED
         call    v172_fname_cold_clear, 0x0
         movlb   0x00                                        ; restore default bank
         ; --- end Bug #44 fix ---
@@ -8475,6 +8589,9 @@ input_screen_prepare_selected_row:
         bra     input_screen_prepare_selected_row_pb2_concrete
         movlb   0x01
         bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE, BANKED
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY, BANKED
         movff   input_select_cache_b0_phys, input_intent_pb2_b1_phys
         movlb   0x00
         bsf     STATUS, C, A
@@ -8483,6 +8600,8 @@ input_screen_prepare_selected_row_pb2_concrete:
         decf    rx_ring_staging_b0, F, BANKED
         movlb   0x01
         bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE, BANKED
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY, BANKED
         movlb   0x00
         bcf     STATUS, C, A
         return  0x0
@@ -8549,6 +8668,8 @@ input_screen:                                               ; address: 0x001912
 
 input_screen__render_option_row:                                                  ; address: 0x00192a
 
+        call    input_screen_compute_menu_max, 0x0
+        call    input_screen_clamp_staged_row, 0x0
         call    input_screen_prepare_option_label, 0x0
         movff   0x0b7, 0x0a5
         movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
@@ -8746,7 +8867,7 @@ input_pb2_same_as_pb1_table:
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x32, 0x00 ; "Rev x52 20260622"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x33, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x32, 0x00 ; "Rev x53 20260622"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -8754,7 +8875,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x52                    ; V1.73 + monotonic release revision
+        db      0x01, 0x07, 0x33, 0x53                    ; V1.73 + monotonic release revision
         db      0x20, 0x26, 0x06, 0x22                    ; build date 20260622 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---

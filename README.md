@@ -4,12 +4,13 @@ Drop-in replacement firmware for the **Hypex DLCP**.  The current
 non-hardware-gated candidate pair is:
 
 - MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0090`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x52 / build 20260622`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x53 / build 20260622`)
 
-CONTROL `rev 0x52` includes the PB2 `Same as PB1` + `DOWN` fix and the
-follow-up BF/08 ACKSTAT-only stale-`!` fix found by the broad simulator gate.
-Non-hardware gates are green; the live PB2 DOWN field gate is still required
-before calling the hardware reboot closed on the real unit.
+CONTROL `rev 0x53` includes the PB2 `Same as PB1` + `DOWN` fix, the
+follow-up BF/08 ACKSTAT-only stale-`!` fix found by the broad simulator gate,
+and persistent PB2 input settings with `Same as PB1` as the erased/unknown
+EEPROM default.  Non-hardware gates are green; live PB2 DOWN, audio-routing,
+and persistence field gates are still required before hardware field closure.
 
 This README focuses on the current V3.5 + V1.73 candidate deployment.  All
 user-facing comparisons below use stock MAIN V2.3 + CONTROL V1.6b as the
@@ -97,11 +98,14 @@ shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 PB2 initially shows `Same as PB1`, preserving the stock-style broadcast input
 behavior for both MAINs.  Selecting a concrete PB2 source makes PB1 and PB2
 independent and sends addressed input frames; selecting `Same as PB1` again
-returns to broadcast behavior.  The Volume page always shows PB1's source.
+returns to broadcast behavior.  CONTROL `rev 0x53` persists the PB2 input
+choice in a guarded CONTROL EEPROM byte and keeps it pending until PB2 is
+rediscovered after boot.  The Volume page always shows PB1's source.
 If PB2 health ages out, the PB2 input title can show `old` or `lost`, but the
 page remains available after PB2 has been discovered.  The reported PB2
 `Same as PB1` + `DOWN` reboot is simulator/canonical-HEX fixed in CONTROL
-`rev 0x52`, but not live field-closed until the hardware gate in
+`rev 0x52` and retained in `rev 0x53`, but not live field-closed until the
+hardware gate in
 [`docs/HARDWARE_TEST.md`](docs/HARDWARE_TEST.md) passes.
 
 **Coordinated switching.**  Stock firmware has one active DSP configuration and
@@ -366,24 +370,22 @@ Full simulator gate:
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
 ```
 
-Current non-hardware x52 verification snapshot:
+Current non-hardware x53 verification snapshot:
 
-- V1.73 focused multi-PB/compatibility/control-flash slice:
-  `83 passed in 632.40s`
-- V1.73 targeted broad-gate failure slice after BF/08 ACKSTAT-only fix:
-  `6 passed in 187.87s`
-- V3.4/V1.73 compatibility: `8 passed`
-- V1.73 atomic/listing focused gate: `5 passed`
+- Full multi-PB persistence file:
+  `111 passed in 164.64s`
 - CONTROL RAM-bank safety: `OK (control-v173)`
-- full simulator gate: `1934 passed, 2 skipped, 4 xfailed, 7 warnings`
+- collect-only: `2003 tests collected`
+- full simulator gate:
+  `1978 passed, 2 skipped, 4 xfailed, 1 warning in 1665.78s`
 - Phase 5 gate: `P5.gate GREEN`
 - gpsim excision gate: `gpsim retirement clean: no live references found`
-- collect-only: `1959 tests collected`
-- CONTROL x52 SHA-256:
-  `66ab68c47d4737fb72b6a1232ea6cd34592fab407dba6515e5a5a97906f2e5f6`
+- CONTROL x53 SHA-256:
+  `3a7dd25e29c3ce731a2783d1370fb5f2b387ba4a4be7c6a48b3bb19dfb207302`
 
-This is not live field closure for `BUG-V173-MPB-PB2-DOWN-RAW`; run the
-dedicated hardware gate before calling the field reboot fixed on hardware.
+This is not live field closure for PB2 DOWN, multi-PB audio routing, or PB2
+input persistence; run the dedicated hardware gates before calling those field
+closed on hardware.
 
 Recent adjacent non-hardware verification snapshot:
 
