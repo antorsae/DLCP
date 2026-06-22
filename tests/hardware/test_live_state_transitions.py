@@ -1381,11 +1381,10 @@ def test_live_ir_legacy_command_stress_from_volume(tmp_path: Path) -> None:
 # intentionally does not include menu-navigation actions).  This test
 # therefore requires the operator to manually navigate before running:
 #
-#   1. From Volume, press the RIGHT physical button on CONTROL FOUR
-#      times to walk Volume(0) → Preset(1) → Input(2) → Setup(3) →
-#      PB1Diag(4).  V1.71 Tier-1 menu ring is documented at
-#      `dlcp_control_v171.asm:4805+` -- 6 states with PB1 Diag at
-#      state 4 (a separate page from PB2 Diag at state 5).
+#   1. From Volume, use the RIGHT physical button until row 0 starts
+#      with `PB1`.  Legacy/pre-discovery rings place PB1 Diag at state
+#      4; V1.73 split mode inserts Input PB2 and places PB1 Diag at
+#      state 5.
 #   2. Set DLCP_HW_LAYER5_AT_DIAG=1 in the environment
 #   3. Run this test
 #
@@ -1399,7 +1398,7 @@ def test_live_ir_legacy_command_stress_from_volume(tmp_path: Path) -> None:
 @pytest.mark.hardware
 def test_live_diagnostics_page_renders_pb1_layout(tmp_path: Path) -> None:
     """Layer 5 live-rig validation: confirm CONTROL's PB1 Diag page
-    (V1.71 Tier-1 menu state 4) renders the spec'd ``PB1`` /
+    (legacy state 4 or V1.73 split state 5) renders the spec'd ``PB1`` /
     ``n/a|OK|PB1:...`` layout when the operator has navigated to it.
 
     This validates that V1.71 CONTROL's Tier-1 per-PB Diag layout
@@ -1409,8 +1408,8 @@ def test_live_diagnostics_page_renders_pb1_layout(tmp_path: Path) -> None:
     test checks layout rendering only (the `PB1` prefix), not counter
     convergence.  Strict convergence is covered by the opt-in PB1/PB2
     data gates below.  This test fails only if
-    V1.71 Tier-1 layout rendering is broken or the operator did
-    not navigate to state 4.
+    V1.71+ Tier-1 layout rendering is broken or the operator did
+    not navigate to the PB1-titled page.
 
     Pre-2026-05-04 (and pre-Tier-1) versions of this test asserted
     ``line1.startswith("1:")`` / ``line2.startswith("2:")`` against
@@ -1424,8 +1423,9 @@ def test_live_diagnostics_page_renders_pb1_layout(tmp_path: Path) -> None:
     if os.environ.get("DLCP_HW_LAYER5_AT_DIAG") != "1":
         pytest.skip(
             "set DLCP_HW_LAYER5_AT_DIAG=1 once operator has manually "
-            "navigated CONTROL to PB1 Diag (V1.71 Tier-1 state 4) via "
-            "FOUR physical RIGHT button presses from Volume; see "
+            "navigated CONTROL to the PB1-titled Diagnostics page; use "
+            "title-driven navigation because V1.73 split mode shifts the "
+            "page from legacy state 4 to state 5; see "
             "docs/HARDWARE_TEST.md §Diagnostics page for the full "
             "walk-through"
         )
@@ -1465,8 +1465,8 @@ def test_live_diagnostics_page_renders_pb1_layout(tmp_path: Path) -> None:
     assert line1.startswith("PB1"), (
         f"line1 must start with 'PB1' on the PB1 Diag page; got "
         f"{line1!r}.  Either the operator did not navigate to PB1 Diag "
-        f"(state 4 -- press RIGHT FOUR times from Volume) before "
-        f"setting DLCP_HW_LAYER5_AT_DIAG=1, or V1.71 CONTROL is not "
+        f"(row 0 starts with PB1) before "
+        f"setting DLCP_HW_LAYER5_AT_DIAG=1, or V1.71+ CONTROL is not "
         f"flashed correctly."
     )
 
@@ -1711,11 +1711,10 @@ def test_live_diagnostics_pb1_data_lands_on_real_silicon(tmp_path: Path) -> None
 
     Operator workflow:
         1. Manually navigate CONTROL from the Volume screen to the
-           PB1 Diag page (state 4).  V1.71 Tier-1 6-state menu ring
-           is 0=Volume, 1=Preset, 2=Input, 3=Setup, 4=PB1Diag,
-           5=PB2Diag (per `dlcp_control_v171.asm:4805+`), so RIGHT
-           must be pressed FOUR times from the Volume default to
-           reach PB1 Diag.
+           PB1 Diag page by LCD title.  Legacy/pre-discovery rings use
+           state 4 for PB1 Diag; V1.73 split mode inserts Input PB2 and
+           uses state 5.  Stop when row 0 starts with "PB1" rather than
+           relying only on a fixed RIGHT-press count.
         2. Wait about 1 second on the PB1 Diag page.  Post
            BUG-DIAG-01/02, static wait is the required pass condition;
            LEFT/RIGHT cycling must not be necessary to populate the
@@ -1745,11 +1744,10 @@ def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None
 
     Operator workflow:
         1. Manually navigate CONTROL from the Volume screen to the
-           PB2 Diag page (state 5).  V1.71 Tier-1 6-state menu ring
-           is 0=Volume, 1=Preset, 2=Input, 3=Setup, 4=PB1Diag,
-           5=PB2Diag (per `dlcp_control_v171.asm:4805+`), so RIGHT
-           must be pressed FIVE times from the Volume default to
-           reach PB2 Diag.
+           PB2 Diag page by LCD title.  Legacy/pre-discovery rings use
+           state 5 for PB2 Diag; V1.73 split mode inserts Input PB2 and
+           uses state 6.  Stop when row 0 starts with "PB2" rather than
+           relying only on a fixed RIGHT-press count.
         2. Wait about 1 second on the PB2 Diag page.  Post
            BUG-DIAG-01/02, static wait is the required pass condition;
            LEFT/RIGHT cycling must not be necessary to populate the
@@ -1762,7 +1760,7 @@ def test_live_diagnostics_pb2_data_lands_on_real_silicon(tmp_path: Path) -> None
 
     Operator should ALSO run the PB1 sibling
     `test_live_diagnostics_pb1_data_lands_on_real_silicon` (after
-    navigating to state 4) to fill in the PB1 x PB2 decision
+    navigating to the PB1-titled Diagnostics page) to fill in the PB1 x PB2 decision
     matrix.  See section header comment above for the matrix and
     actions per outcome.
 

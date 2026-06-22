@@ -406,7 +406,12 @@ def test_corrupt_pb2_a_row_header_retries_muted_and_recovers_after_repair() -> N
         row_addr=PRESET_A_ROW_25,
         header=original,
     )
-    _assert_final_preset_image(chain, preset_b=False, expected_images=expected_a)
+    _assert_final_preset_image(
+        chain,
+        preset_b=False,
+        expected_images=expected_a,
+        expect_lcd_suffix=False,
+    )
     assert _tas_writes(chain, 1, 0x59), "PB2 must emit TAS 0x59 after header repair"
 
 

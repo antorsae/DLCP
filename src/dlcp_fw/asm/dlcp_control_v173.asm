@@ -1150,6 +1150,13 @@ rx_parser_entry__check_input_select_cmd:                                        
         movlw   0x09
         cpfslt  rx_parsed_data_acc, A                        ; reg: 0x030
         goto    rx_parser_entry__input_select_done                                   ; dest: 0x0005a8
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     rx_parser_entry__input_select_accept_legacy
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bra     rx_parser_entry__input_select_quarantined_split
+rx_parser_entry__input_select_accept_legacy:
+        movlb   0x00
         movf    input_select_cache_b0, W, B                                  ; reg: 0x0b8
         subwf   rx_parsed_data_acc, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -1157,6 +1164,10 @@ rx_parser_entry__check_input_select_cmd:                                        
         movff   rx_parsed_data_b0_phys, 0x0b8                    ; reg1: 0x030
         bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         call    map_cmd06_input_select_to_menu_index, 0x0                           ; dest: 0x00061c
+        bra     rx_parser_entry__input_select_done
+
+rx_parser_entry__input_select_quarantined_split:
+        movlb   0x00
 
 rx_parser_entry__input_select_done:                                                  ; address: 0x0005a8
 
@@ -1214,12 +1225,16 @@ v171_bf08_case_check:
         goto    v172_bf4f_identity_case_check             ; not BF/08 — try V1.72 identity, then BF/2N
 
         movff   rx_parsed_data_b0_phys, bf08_fault_byte_b0_phys         ; store payload byte
-        movf    rx_parsed_data_acc, W, A
-        bnz     v171_bf08_set_fault
+        ; V3.x MAINs send dsp_fault_flags & 0x44: bit6 is the persistent
+        ; DSP-fault latch, bit2 is an ACKSTAT evidence bit.  Do not let an
+        ; ACKSTAT-only 0x04 report create a sticky LCD '!' with no later clear.
+        btfsc   rx_parsed_data_acc, 6, A
+        bra     v171_bf08_set_fault
 
-        ; Payload == 0 — clear fault.  If the bit was already clear this
-        ; is a no-op; if it was set, force a full-sync resync so MAIN
-        ; gets a fresh status burst on the next loop iteration.
+        ; Payload bit6 clear (0x00 or ACKSTAT-only 0x04) — clear the user
+        ; fault indicator.  If the bit was already clear this is a no-op; if
+        ; it was set, force a full-sync resync so MAIN gets a fresh status
+        ; burst on the next loop iteration.
         btfss   control_flags_acc, DSP_FAULT_BIT, A
         bra     rx_parser_entry__restart_after_frame                 ; already clear
         bcf     control_flags_acc, DSP_FAULT_BIT, A
@@ -1903,9 +1918,9 @@ tx_byte_enqueue__wait_for_ring_room:                                            
         ; (it never bumps tx_ring_wr) and will be overwritten on the
         ; next successful enqueue.
         movlb   0x01
-        incfsz  v171_tx_saturate_count_b1, F, BANKED           ; reg: 0x0ad
+        incfsz  v171_tx_saturate_count_b1, F, BANKED           ; phys: 0x1ad
         bra     v171_tx_enq_saturate_done
-        setf    v171_tx_saturate_count_b1, BANKED              ; reg: 0x0ad (clamp at 0xFF)
+        setf    v171_tx_saturate_count_b1, BANKED              ; phys: 0x1ad (clamp at 0xFF)
 v171_tx_enq_saturate_done:
         movlb   0x00
         bsf     STATUS, C, A                                ; reg: 0xfd8, bit: 0 (C=1 = saturated)
@@ -1918,8 +1933,29 @@ tx_byte_enqueue__commit_success:                                                
         bcf     STATUS, C, A                                ; reg: 0xfd8, bit: 0 (C=0 = success)
         return  0x0
 
+; Temporarily coerces unknown raw-status values to full-input semantics for
+; the legacy map helpers below.  The raw_status_cache byte remains authoritative
+; BF/05 evidence, so callers restore it at the shared map return labels.
+; Uses v171_tx_enq_retry_acc_phys only across straight-line mapping code; do
+; not add calls between save/restore without auditing that scratch byte.  Do
+; not use Common_RAM+40/0x028 here: that slot overlaps live IR timer state.
+input_raw_status_full_fallback_save:
+        movff   raw_status_cache_b0_phys, v171_tx_enq_retry_acc_phys
+        movlb   0x00
+        movlw   0x03
+        cpfsgt  raw_status_cache_b0, BANKED
+        return  0x0
+        movwf   raw_status_cache_b0, BANKED
+        return  0x0
+
+input_raw_status_restore:
+        movff   v171_tx_enq_retry_acc_phys, raw_status_cache_b0_phys
+        return  0x0
+
 map_cmd06_input_select_to_menu_index:                                               ; address: 0x00061c
 
+        call    input_raw_status_full_fallback_save, 0x0
+        clrf    rx_ring_staging_b0, B                                     ; default invalid input_select to Auto
         movf    rx_parsed_data_acc, F, A                     ; reg: 0x030
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    map_cmd06_input_select_to_menu_index__check_input_01                                   ; dest: 0x00062a
@@ -2137,14 +2173,18 @@ map_cmd06_input_select_to_menu_index__check_input_08:                           
 
 map_cmd06_input_select_to_menu_index__return:                                                  ; address: 0x000768
 
+        call    input_raw_status_restore, 0x0
         return  0x0
 
+; Returns the cmd-0x06 input value in tx_data_staging.  The caller owns the
+; PB-specific commit so split-mode PB2 edits cannot overwrite PB1 intent.
 map_input_menu_index_to_cmd06_input_select:                                               ; address: 0x00076a
 
+        call    input_raw_status_full_fallback_save, 0x0
         movf    rx_ring_staging_b0, F, B                                  ; reg: 0x0b7
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    map_input_menu_index_to_cmd06_input_select__check_menu_index_01                                   ; dest: 0x000778
-        clrf    input_select_cache_b0, B                                     ; reg: 0x0b8
+        clrf    tx_data_staging_acc, A                        ; map result
         goto    map_input_menu_index_to_cmd06_input_select__return                                   ; dest: 0x0008aa
 
 map_input_menu_index_to_cmd06_input_select__check_menu_index_01:                                                  ; address: 0x000778
@@ -2157,7 +2197,7 @@ map_input_menu_index_to_cmd06_input_select__check_menu_index_01:                
         decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_01_check_raw_status_02                                   ; dest: 0x000790
         movlw   0x03
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_01_check_raw_status_02:                                                  ; address: 0x000790
 
@@ -2165,7 +2205,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_01_check_raw_status_02:  
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_01_check_raw_status_03                                   ; dest: 0x00079c
         movlw   0x04
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_01_check_raw_status_03:                                                  ; address: 0x00079c
 
@@ -2173,7 +2213,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_01_check_raw_status_03:  
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_01_nonzero_raw_status_done                                   ; dest: 0x0007a8
         movlw   0x05
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_01_nonzero_raw_status_done:                                                  ; address: 0x0007a8
 
@@ -2182,7 +2222,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_01_nonzero_raw_status_don
 map_input_menu_index_to_cmd06_input_select__menu_index_01_raw_status_00:                                                  ; address: 0x0007ac
 
         movlw   0x02
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_01_done:                                                  ; address: 0x0007b0
 
@@ -2199,7 +2239,7 @@ map_input_menu_index_to_cmd06_input_select__check_menu_index_02:                
         decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_02_check_raw_status_02                                   ; dest: 0x0007ce
         movlw   0x04
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_02_check_raw_status_02:                                                  ; address: 0x0007ce
 
@@ -2207,7 +2247,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_02_check_raw_status_02:  
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_02_check_raw_status_03                                   ; dest: 0x0007da
         movlw   0x05
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_02_check_raw_status_03:                                                  ; address: 0x0007da
 
@@ -2215,7 +2255,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_02_check_raw_status_03:  
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_02_nonzero_raw_status_done                                   ; dest: 0x0007e6
         movlw   0x06
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_02_nonzero_raw_status_done:                                                  ; address: 0x0007e6
 
@@ -2224,7 +2264,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_02_nonzero_raw_status_don
 map_input_menu_index_to_cmd06_input_select__menu_index_02_raw_status_00:                                                  ; address: 0x0007ea
 
         movlw   0x03
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_02_done:                                                  ; address: 0x0007ee
 
@@ -2241,7 +2281,7 @@ map_input_menu_index_to_cmd06_input_select__check_menu_index_03:                
         decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_03_check_raw_status_02                                   ; dest: 0x00080c
         movlw   0x05
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_03_check_raw_status_02:                                                  ; address: 0x00080c
 
@@ -2249,7 +2289,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_03_check_raw_status_02:  
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_03_check_raw_status_03                                   ; dest: 0x000818
         movlw   0x06
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_03_check_raw_status_03:                                                  ; address: 0x000818
 
@@ -2257,7 +2297,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_03_check_raw_status_03:  
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_03_nonzero_raw_status_done                                   ; dest: 0x000824
         movlw   0x07
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_03_nonzero_raw_status_done:                                                  ; address: 0x000824
 
@@ -2266,7 +2306,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_03_nonzero_raw_status_don
 map_input_menu_index_to_cmd06_input_select__menu_index_03_raw_status_00:                                                  ; address: 0x000828
 
         movlw   0x04
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_03_done:                                                  ; address: 0x00082c
 
@@ -2283,7 +2323,7 @@ map_input_menu_index_to_cmd06_input_select__check_menu_index_04:                
         decfsz  raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_04_check_raw_status_02                                   ; dest: 0x00084a
         movlw   0x06
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_04_check_raw_status_02:                                                  ; address: 0x00084a
 
@@ -2291,7 +2331,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_04_check_raw_status_02:  
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_04_check_raw_status_03                                   ; dest: 0x000856
         movlw   0x07
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_04_check_raw_status_03:                                                  ; address: 0x000856
 
@@ -2299,7 +2339,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_04_check_raw_status_03:  
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
         goto    map_input_menu_index_to_cmd06_input_select__menu_index_04_nonzero_raw_status_done                                   ; dest: 0x000862
         movlw   0x08
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_04_nonzero_raw_status_done:                                                  ; address: 0x000862
 
@@ -2308,7 +2348,7 @@ map_input_menu_index_to_cmd06_input_select__menu_index_04_nonzero_raw_status_don
 map_input_menu_index_to_cmd06_input_select__menu_index_04_raw_status_00:                                                  ; address: 0x000866
 
         movlw   0x05
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__menu_index_04_done:                                                  ; address: 0x00086a
 
@@ -2320,7 +2360,7 @@ map_input_menu_index_to_cmd06_input_select__check_menu_index_05:                
         cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    map_input_menu_index_to_cmd06_input_select__check_menu_index_06                                   ; dest: 0x00087e
         movlw   0x01
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
         goto    map_input_menu_index_to_cmd06_input_select__return                                   ; dest: 0x0008aa
 
 map_input_menu_index_to_cmd06_input_select__check_menu_index_06:                                                  ; address: 0x00087e
@@ -2329,7 +2369,7 @@ map_input_menu_index_to_cmd06_input_select__check_menu_index_06:                
         cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    map_input_menu_index_to_cmd06_input_select__check_menu_index_07                                   ; dest: 0x00088e
         movlw   0x02
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
         goto    map_input_menu_index_to_cmd06_input_select__return                                   ; dest: 0x0008aa
 
 map_input_menu_index_to_cmd06_input_select__check_menu_index_07:                                                  ; address: 0x00088e
@@ -2338,7 +2378,7 @@ map_input_menu_index_to_cmd06_input_select__check_menu_index_07:                
         cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    map_input_menu_index_to_cmd06_input_select__check_menu_index_08                                   ; dest: 0x00089e
         movlw   0x03
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
         goto    map_input_menu_index_to_cmd06_input_select__return                                   ; dest: 0x0008aa
 
 map_input_menu_index_to_cmd06_input_select__check_menu_index_08:                                                  ; address: 0x00089e
@@ -2347,10 +2387,11 @@ map_input_menu_index_to_cmd06_input_select__check_menu_index_08:                
         cpfseq  rx_ring_staging_b0, B                                     ; reg: 0x0b7
         goto    map_input_menu_index_to_cmd06_input_select__return                                   ; dest: 0x0008aa
         movlw   0x04
-        movwf   input_select_cache_b0, B                                     ; reg: 0x0b8
+        movwf   tx_data_staging_acc, A                        ; map result
 
 map_input_menu_index_to_cmd06_input_select__return:                                                  ; address: 0x0008aa
 
+        call    input_raw_status_restore, 0x0
         return  0x0
 
 
@@ -2498,6 +2539,34 @@ settings_save_eeprom:                                               ; address: 0
 
         clrf    EEADR, A                                    ; reg: 0xfa9
         movf    display_state_index_b0, W, B                                  ; reg: 0x0bf
+        movwf   tx_data_staging_acc, A
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     settings_save_eeprom__legacy_menu_state
+        movlb   0x00
+        movlw   0x03
+        cpfslt  tx_data_staging_acc, A
+        bra     settings_save_eeprom__split_menu_state_ge3
+        movf    tx_data_staging_acc, W, A
+        bra     settings_save_eeprom__write_display_state
+settings_save_eeprom__split_menu_state_ge3:
+        movlw   0x07
+        cpfslt  tx_data_staging_acc, A
+        bra     settings_save_eeprom__clamp_runtime_state
+        decf    tx_data_staging_acc, F, A                      ; split 3..6 -> legacy EEPROM 2..5
+        movf    tx_data_staging_acc, W, A
+        bra     settings_save_eeprom__write_display_state
+settings_save_eeprom__legacy_menu_state:
+        movlb   0x00
+        movlw   0x06
+        cpfslt  tx_data_staging_acc, A                        ; runtime PB2 Input is not persistent
+        bra     settings_save_eeprom__clamp_runtime_state
+        movf    tx_data_staging_acc, W, A
+        bra     settings_save_eeprom__write_display_state
+settings_save_eeprom__clamp_runtime_state:
+        movlw   0x02                                        ; legacy-safe Input state
+settings_save_eeprom__write_display_state:
+        movlb   0x00
         call    eeprom_write_byte, 0x0                           ; dest: 0x0001a2
         movlw   0x01
         movwf   EEADR, A                                    ; reg: 0xfa9
@@ -2592,7 +2661,16 @@ settings_load_eeprom:                                               ; address: 0
 
         movlw   0x00
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
+        movwf   tx_data_staging_acc, A
+        movlw   0x06
+        cpfslt  tx_data_staging_acc, A
+        bra     settings_load_eeprom__clamp_display_state
+        movff   tx_data_staging_b0_phys, display_state_index_b0_phys
+        bra     settings_load_eeprom__read_setup_state
+settings_load_eeprom__clamp_display_state:
+        movlw   0x02                                        ; clamp erased/foreign runtime states to Input
         movwf   display_state_index_b0, B                                     ; reg: 0x0bf
+settings_load_eeprom__read_setup_state:
         movlw   0x01
         call    eeprom_read_byte, 0x0                           ; dest: 0x000196
         movwf   setup_submenu_index_b0, B                                     ; reg: 0x0ba
@@ -2786,7 +2864,7 @@ v171_fs_step_in_range:
 v171_fs_try_step_2:
         addlw   0xFF                                        ; Z if step was 2
         bnz     v171_fs_try_step_3
-        goto    input_frame_send                            ; step 2: input
+        goto    input_frame_send_split_sync                 ; step 2: input
 v171_fs_try_step_3:
         addlw   0xFF                                        ; Z if step was 3
         bnz     v171_fs_try_step_4
@@ -2921,15 +2999,24 @@ poll_frame_send__orphan_unreachable_tail_send_frame:                            
 ; ===========================================================================
 ; input_frame_send @ 0x000C22 — input_frame_send  (V1.6b refactor)
 ; ---------------------------------------------------------------------------
-; Emits [B0, 0x06, <0x0B8>] — broadcast input selection. 0x0B8 is the
-; cached input value (also one of the boot handshake sentinels; MAIN
-; overwrites it during status burst response). NOTE: in V1.4 this same
-; address held a *channel_17_config* sender — refactor moved to dedicated
-; helpers per cmd in V1.5b+.
+; Emits legacy [B0, 0x06, <0x0B8>] before PB2 is discovered, and keeps that
+; broadcast behavior while PB2 is linked as "Same as PB1".  Independent split
+; mode emits addressed PB1 [B1,0x06,<PB1 intent>]; PB2 uses
+; input_frame_send_pb2_targeted.  0x0B8 remains PB1 intent and the boot
+; handshake sentinel. NOTE: in V1.4 this same address held a
+; *channel_17_config* sender — refactor moved to dedicated helpers per cmd in
+; V1.5b+.
 ; ===========================================================================
 ; input_frame_send:
 input_frame_send:                                               ; address: 0x000c22
 
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_frame_send_broadcast
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bra     input_frame_send_pb1_targeted
+input_frame_send_broadcast:
+        movlb   0x00
         ; V1.72 atomic 3-byte frame (see tx_ring_reserve_3 header).
         rcall   tx_ring_reserve_3
         bc      input_frame_send_aborted
@@ -2946,6 +3033,89 @@ input_frame_send:                                               ; address: 0x000
         return  0x0
 
 input_frame_send_aborted:
+        return  0x0
+
+input_frame_send_pb1_targeted:
+        movlb   0x01
+        bcf     input_send_target_b1, 0, BANKED
+        bra     input_frame_send_targeted
+
+input_frame_send_pb2_targeted:
+        movlb   0x01
+        bsf     input_send_target_b1, 0, BANKED
+        bra     input_frame_send_targeted
+
+input_frame_send_split_sync:
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_frame_send_split_sync_legacy
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bra     input_frame_send_split_sync_legacy
+        bcf     input_send_target_b1, 0, BANKED
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_SYNC_TARGET, BANKED
+        bsf     input_send_target_b1, 0, BANKED
+        rcall   input_frame_send_targeted
+        bc      input_frame_send_split_sync_done
+        movlb   0x01
+        btg     input_split_flags_b1, INPUT_SPLIT_FLAG_SYNC_TARGET, BANKED
+input_frame_send_split_sync_done:
+        movlb   0x00
+        return  0x0
+input_frame_send_split_sync_legacy:
+        movlb   0x00
+        goto    input_frame_send
+
+input_frame_send_current_input_page:
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        goto    input_frame_send
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        goto    input_frame_send
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        goto    input_frame_send
+        goto    input_frame_send_pb2_targeted
+
+input_frame_send_targeted:
+        movlb   0x00
+        call    tx_ring_reserve_3, 0x0
+        bc      input_frame_send_targeted_aborted
+        movlw   0xB1
+        movlb   0x01
+        btfsc   input_send_target_b1, 0, BANKED
+        movlw   0xB2
+        movlb   0x00
+        movwf   tx_data_staging_acc, A
+        call    tx_byte_enqueue, 0x0
+        movlw   0x06
+        movwf   tx_data_staging_acc, A
+        call    tx_byte_enqueue, 0x0
+        movlb   0x01
+        btfsc   input_send_target_b1, 0, BANKED
+        bra     input_frame_send_targeted_pb2_data
+        movlb   0x00
+        movf    input_select_cache_b0, W, B
+        bra     input_frame_send_targeted_stage_data
+input_frame_send_targeted_pb2_data:
+        movlw   0x09
+        cpfslt  input_intent_pb2_b1, BANKED
+        bra     input_frame_send_targeted_pb2_data_clamp
+        movf    input_intent_pb2_b1, W, BANKED
+        bra     input_frame_send_targeted_stage_data
+input_frame_send_targeted_pb2_data_clamp:
+        clrf    input_intent_pb2_b1, BANKED
+        movlw   0x00
+input_frame_send_targeted_stage_data:
+        movlb   0x00
+        movwf   tx_data_staging_acc, A
+        call    tx_byte_enqueue, 0x0
+        clrf    full_sync_lo_b0, B
+        clrf    full_sync_hi_b0, B
+        bcf     STATUS, C, A
+        return  0x0
+input_frame_send_targeted_aborted:
+        movlb   0x00
         return  0x0
 
 
@@ -3251,6 +3421,7 @@ display_loop_iteration__service_tick:                                           
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0                     ; legacy-link parser stall guard
         call    v171_health_service, 0x0                          ; link-health ping/age tick
+        call    input_split_latch_pb2_seen, 0x0                   ; runtime PB2 input-page enable
         call    v172_preset_filename_service, 0x0                 ; Preset filename query/timeout/LCD tick
         call    v171_health_patch_suffix, 0x0                     ; top-level LCD row-2 suffix
         movf    idle_timeout_hi_b0, W, B                                  ; reg: 0x09e
@@ -3379,6 +3550,27 @@ display_loop_iteration__modal_wait_predicates:                                  
         btfsc   control_flags_acc, 0x3, A                   ; reg: 0x01f
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
+        ; Input PB2 uses the health dirty bit to redraw its title as
+        ; "old"/"lost" while parked in display_loop_iteration.  Keep this
+        ; predicate state-specific so ordinary menu pages stay stock-like.
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     display_loop_iteration__modal_predicate_ready
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     display_loop_iteration__modal_predicate_ready_b0
+        movlb   0x01
+        btfss   v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bra     display_loop_iteration__modal_predicate_ready_b0
+        movlb   0x00
+        movlw   0x01
+        iorwf   (Common_RAM + 24), F, A
+        bra     display_loop_iteration__modal_predicate_ready
+display_loop_iteration__modal_predicate_ready_b0:
+        movlb   0x00
+display_loop_iteration__modal_predicate_ready:
+        movf    (Common_RAM + 24), F, A
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     display_loop_iteration__service_tick                                   ; dest: 0x000cb4
         movlw   0x00
@@ -3549,9 +3741,14 @@ ir_dispatch_configured_or_fixed_shortcuts__input_previous_limit_for_status_three
 
         movlw   0x03
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
-        goto    ir_dispatch_configured_or_fixed_shortcuts__input_previous_wrap_or_decrement                                   ; dest: 0x000ebe
+        goto    ir_dispatch_configured_or_fixed_shortcuts__input_previous_limit_unknown_full
         movlw   0x08                                        ; CMD dsp_fault (V1.63b+ BF/08 payload)
         movwf   tx_data_staging_acc, A                        ; reg: 0x027
+        goto    ir_dispatch_configured_or_fixed_shortcuts__input_previous_wrap_or_decrement
+
+ir_dispatch_configured_or_fixed_shortcuts__input_previous_limit_unknown_full:
+        movlw   0x08
+        movwf   tx_data_staging_acc, A
 
 ir_dispatch_configured_or_fixed_shortcuts__input_previous_wrap_or_decrement:                                                  ; address: 0x000ebe
 
@@ -3574,6 +3771,7 @@ ir_dispatch_configured_or_fixed_shortcuts__input_previous_emit_frame:           
         movlw   0x1b                                        ; CMD channel_src_5
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         call    map_input_menu_index_to_cmd06_input_select, 0x0                           ; dest: 0x00076a
+        movff   tx_data_staging_b0_phys, input_select_cache_b0_phys
         rcall   input_frame_send                                ; dest: 0x000c22
         goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
 
@@ -3610,9 +3808,14 @@ ir_dispatch_configured_or_fixed_shortcuts__input_next_limit_for_status_three:   
 
         movlw   0x03
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
-        goto    ir_dispatch_configured_or_fixed_shortcuts__input_next_wrap_or_increment                                   ; dest: 0x000f28
+        goto    ir_dispatch_configured_or_fixed_shortcuts__input_next_limit_unknown_full
         movlw   0x08                                        ; CMD dsp_fault (V1.63b+ BF/08 payload)
         movwf   tx_data_staging_acc, A                        ; reg: 0x027
+        goto    ir_dispatch_configured_or_fixed_shortcuts__input_next_wrap_or_increment
+
+ir_dispatch_configured_or_fixed_shortcuts__input_next_limit_unknown_full:
+        movlw   0x08
+        movwf   tx_data_staging_acc, A
 
 ir_dispatch_configured_or_fixed_shortcuts__input_next_wrap_or_increment:                                                  ; address: 0x000f28
 
@@ -3635,6 +3838,7 @@ ir_dispatch_configured_or_fixed_shortcuts__input_next_emit_frame:               
         movlw   0x1b                                        ; CMD channel_src_5
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         call    map_input_menu_index_to_cmd06_input_select, 0x0                           ; dest: 0x00076a
+        movff   tx_data_staging_b0_phys, input_select_cache_b0_phys
         rcall   input_frame_send                                ; dest: 0x000c22
         goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
 
@@ -3991,7 +4195,9 @@ v171_preset_exit_keep_valid_filename:
 ; Rewritten in Phase 3.4 (V32_DIAG_TIER1_SPEC.md §"LCD layouts") to replace
 ; the dual-PB legacy renderer that displayed
 ; both PBs simultaneously on a single screen.  The new design renders
-; ONE PB per page (state 4 = PB1, state 5 = PB2) so that:
+; ONE PB per page.  Legacy/PB2-unknown pages are state 4 = PB1 and
+; state 5 = PB2; after PB2 discovery inserts Input PB2, the split pages
+; shift to state 5 = PB1 and state 6 = PB2 so that:
 ;   * Per-PB layout has 32 chars to spend on at most 11 cells per PB
 ;     -- enough room for sparse rendering of all 7 runtime + 4 reset-
 ;     cause cells WITHOUT prefix overhead eating the available width.
@@ -5854,6 +6060,33 @@ v171_diag_send_query_aborted_done:
 ; query, ages that PB, and advances to the other target.  Replies are handled
 ; by the exact BF/2C parser case.
 ; ---------------------------------------------------------------------------
+input_split_latch_pb2_seen:
+        movlb   0x01
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_split_latch_done
+        btfsc   v171_health_seen_mask_b1, 1, BANKED
+        bra     input_split_latch_enable
+        btfss   v171_diag_present_b1, 1, BANKED
+        bra     input_split_latch_done
+input_split_latch_enable:
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_SYNC_TARGET, BANKED
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        movff   input_select_cache_b0_phys, input_intent_pb2_b1_phys
+        movlb   0x00
+        movlw   0x03
+        cpfslt  display_state_index_b0, BANKED
+        bra     input_split_latch_check_remap_upper
+        bra     input_split_latch_done
+input_split_latch_check_remap_upper:
+        movlw   0x06
+        cpfslt  display_state_index_b0, BANKED
+        bra     input_split_latch_done
+        incf    display_state_index_b0, F, BANKED
+input_split_latch_done:
+        movlb   0x00
+        return  0x0
+
 v171_health_service:
         movlb   0x01
         incf    v171_health_tick_div_b1, F, BANKED
@@ -5869,10 +6102,20 @@ v171_health_tick:
         ; BF/27 completions refresh link age, and runtime timeouts age
         ; the visible PB.
         movlb   0x00
-        movlw   0x04
-        cpfslt  display_state_index_b0, BANKED
-        return  0x0
-        movlb   0x01
+v171_health_check_top_level_page:
+	        movlw   0x04
+	        cpfslt  display_state_index_b0, BANKED
+	        bra     v171_health_check_split_setup_page
+	        bra     v171_health_allow_for_page
+v171_health_check_split_setup_page:
+	        movlw   0x04
+	        cpfseq  display_state_index_b0, BANKED
+	        return  0x0
+	        movlb   0x01
+	        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+	        bra     v171_health_done_b0
+v171_health_allow_for_page:
+	        movlb   0x01
         btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_PENDING, BANKED
         bra     v171_health_pending_timeout
         ; Filename acquisition needs a short quiet link window.  Do not start
@@ -6042,14 +6285,15 @@ v171_health_send_query_busy:
 ; ---------------------------------------------------------------------------
 ; v171_health_patch_suffix -- patch top-level row-2 tail with link status.
 ; ---------------------------------------------------------------------------
-; Only Volume/Preset/Input/Setup (display_state_index 0..3) opt in.  The
-; routine writes four tail characters at row 2 cols 13..16 only when the
-; health state marks the display dirty, so a previous longer suffix is cleared
-; before shorter/empty states without adding LCD work to every foreground tick.
-; The BL Timeout editor is still display_state_index 3 but sets 0x0A4 while
-; active.  Skip that live editor state so a dirty health flag cannot overwrite
-; editor text such as the final "out)" of "Off (no timeout)".  Do not key this
-; from 0x0A3:0x0A2; the menu helper leaves that pointer cached after exit.
+; Volume, legacy/PB1 Input, legacy Setup, and split Setup opt in.  Split PB2
+; Input is excluded because its title row has dedicated old/lost labels.  The
+; routine writes four tail characters at row 2 cols 13..16 only when the health
+; state marks the display dirty, so a previous longer suffix is cleared before
+; shorter/empty states without adding LCD work to every foreground tick.
+; The BL Timeout editor shares the Setup page but sets 0x0A4 while active.
+; Skip that live editor state so a dirty health flag cannot overwrite editor
+; text such as the final "out)" of "Off (no timeout)".  Do not key this from
+; 0x0A3:0x0A2; the menu helper leaves that pointer cached after exit.
 ; ---------------------------------------------------------------------------
 v171_health_patch_suffix:
         movlb   0x01
@@ -6066,14 +6310,33 @@ v171_health_patch_suffix_dirty:
         bra     v171_health_patch_suffix_not_preset
         return  0x0
 v171_health_patch_suffix_not_preset:
-        movlw   0x04
+        movlw   0x03
         cpfslt  display_state_index_b0, BANKED
-        return  0x0
+        bra     v171_health_patch_suffix_check_state3
+        bra     v171_health_patch_suffix_top_level
+v171_health_patch_suffix_check_state3:
         movlw   0x03
         cpfseq  display_state_index_b0, BANKED
-        bra     v171_health_patch_suffix_top_level
+        bra     v171_health_patch_suffix_check_state4
+        movlb   0x01
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     v171_health_patch_suffix_return_b0
+        movlb   0x00
+        bra     v171_health_patch_suffix_setup_gate
+v171_health_patch_suffix_check_state4:
+        movlw   0x04
+        cpfseq  display_state_index_b0, BANKED
+        return  0x0
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     v171_health_patch_suffix_return_b0
+        movlb   0x00
+v171_health_patch_suffix_setup_gate:
         movf    menu_option_max_index_b0, F, B
         bz      v171_health_patch_suffix_top_level
+        return  0x0
+v171_health_patch_suffix_return_b0:
+        movlb   0x00
         return  0x0
 v171_health_patch_suffix_top_level:
         movlb   0x01
@@ -6377,6 +6640,9 @@ app_cold_init__zero_next_diag_cache_cell:
         clrf    v171_health_flags_b1, BANKED
         clrf    v171_health_poll_target_b1, BANKED
         clrf    v171_health_tick_div_b1, BANKED
+        clrf    input_split_flags_b1, BANKED
+        clrf    input_intent_pb2_b1, BANKED
+        clrf    input_send_target_b1, BANKED
         call    v172_fname_cold_clear, 0x0
         movlb   0x00                                        ; restore default bank
         ; --- end Bug #44 fix ---
@@ -6752,32 +7018,15 @@ post_connect_init__dispatch_current_page:                                       
 post_connect_init__non_volume_page_dispatch:                                                  ; address: 0x0011f0
 
         ; ---------------------------------------------------------------
-        ; V1.72 inline (V1.61b + Layer 5 + Tier-1): 6-way menu dispatch
+        ; V1.73 menu dispatch.  Before PB2 discovery this keeps the legacy
+        ; 6-state V1.72 ring; after PB2 discovery it inserts Input PB2 as
+        ; split state 3 and shifts Setup/PB1 Diag/PB2 Diag to 4/5/6.
         ; ---------------------------------------------------------------
-        ; Stock V1.6b had 3 menu states (0 = Volume, 1 = Input, 2 = Setup).
-        ; V1.72 inlined V1.61b (Preset as state 1) and then Layer 5
-        ; (Diagnostics as state 2 between Preset and Input).  V1.72
-        ; Tier-1 (V32_DIAG_TIER1_SPEC.md, 2026-04-20) reworks the menu:
-        ;
-        ; - Diagnostics moves from state 2 to states 4-5 (deepest menu),
-        ;   with one PB per state.  Operators reach the diag pages
-        ;   intentionally during troubleshooting, not by accident
-        ;   during routine browsing.
-        ; - Input shifts back to state 2; Setup shifts to state 3.
-        ; - PB2 Diag is ALWAYS in the menu cycle.  If only PB1 is wired
-        ;   (or PB2 is silent), the renderer shows "n/a" for PB2 — see
-        ;   v171_diag_pb_screen.
-        ;
-        ; New ring:
-        ;   0 = Volume       (default fall-through)
-        ;   1 = Preset       -> v171_preset_screen
-        ;   2 = Input        -> input_screen
-        ;   3 = Setup        -> setup_screen
-        ;   4 = PB1 Diag     -> v171_diag_pb_screen with PB-index 0
-        ;   5 = PB2 Diag     -> v171_diag_pb_screen with PB-index 1
-        ;
-        ; Nav wrap literals downstream are bumped from 0x04 (5-state ring)
-        ; to 0x05 (6-state ring).
+        ; Legacy/PB2-unknown ring:
+        ;   0 Volume, 1 Preset, 2 Input, 3 Setup, 4 PB1 Diag, 5 PB2 Diag.
+        ; Split/PB2-seen ring:
+        ;   0 Volume, 1 Preset, 2 Input PB1, 3 Input PB2, 4 Setup,
+        ;   5 PB1 Diag, 6 PB2 Diag.
         movlb   0x00
         decfsz  display_state_index_b0, W, B                                  ; state - 1 == 0?
         goto    v171_menu_ck_state_2
@@ -6787,36 +7036,69 @@ post_connect_init__non_volume_page_dispatch:                                    
 v171_menu_ck_state_2:
         movlw   0x02
         cpfseq  display_state_index_b0, B
-        goto    v171_menu_ck_state_3                        ; not 2 -- try Setup
+        goto    v171_menu_ck_state_3                        ; not 2 -- try state 3
         ; Tier-1: state 2 is now Input (was Diagnostics).
         call    input_screen, 0x0              ; state == 2 -> Input
         goto    display_state_entry__handle_menu_next
 
 v171_menu_ck_state_3:
-        movlw   0x03
-        cpfseq  display_state_index_b0, B
-        goto    v171_menu_ck_state_4                        ; not 3 -- try PB1 Diag
-        ; Tier-1: state 3 is now Setup (was Input).
-        call    setup_screen, 0x0              ; state == 3 -> Setup
-        goto    display_state_entry__handle_menu_next
+	        movlw   0x03
+	        cpfseq  display_state_index_b0, B
+	        goto    v171_menu_ck_state_4                        ; not 3 -- try state 4
+	        movlb   0x01
+	        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+	        bra     v171_menu_state_3_legacy_setup
+	        movlb   0x00
+	        call    input_screen, 0x0                           ; split state 3 -> Input PB2
+	        goto    display_state_entry__handle_menu_next
+v171_menu_state_3_legacy_setup:
+	        movlb   0x00
+	        ; Tier-1: legacy state 3 is Setup (was Input).
+	        call    setup_screen, 0x0              ; state == 3 -> Setup
+	        goto    display_state_entry__handle_menu_next
 
 v171_menu_ck_state_4:
-        movlw   0x04
-        cpfseq  display_state_index_b0, B
-        goto    post_connect_init__maybe_pb2_diag_page      ; not 4 -- try PB2 Diag
-        ; Tier-1: state 4 = PB1 Diag (W = PB index 0).
-        movlw   0x00
-        call    v171_diag_pb_screen, 0x0
-        goto    display_state_entry__handle_menu_next
+	        movlw   0x04
+	        cpfseq  display_state_index_b0, B
+	        goto    v171_menu_ck_state_5                       ; not 4 -- try state 5
+	        movlb   0x01
+	        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+	        bra     v171_menu_state_4_legacy_pb1_diag
+	        movlb   0x00
+	        call    setup_screen, 0x0                            ; split state 4 -> Setup
+	        goto    display_state_entry__handle_menu_next
+v171_menu_state_4_legacy_pb1_diag:
+	        movlb   0x00
+	        ; Tier-1: legacy state 4 = PB1 Diag (W = PB index 0).
+	        movlw   0x00
+	        call    v171_diag_pb_screen, 0x0
+	        goto    display_state_entry__handle_menu_next
 
-post_connect_init__maybe_pb2_diag_page:                                                  ; address: 0x0011fe
+v171_menu_ck_state_5:                                                  ; address: 0x0011fe
 
-        movlw   0x05
-        cpfseq  display_state_index_b0, B                                     ; reg: 0x0bf
-        goto    display_state_entry__handle_menu_next                                   ; dest: 0x00120a
-        ; Tier-1: state 5 = PB2 Diag (W = PB index 1).
-        movlw   0x01
-        call    v171_diag_pb_screen, 0x0
+	        movlw   0x05
+	        cpfseq  display_state_index_b0, B                                     ; reg: 0x0bf
+	        goto    v171_menu_ck_state_6
+	        movlb   0x01
+	        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+	        bra     v171_menu_state_5_split_pb1_diag
+	        movlb   0x00
+	        ; Tier-1: legacy state 5 = PB2 Diag (W = PB index 1).
+	        movlw   0x01
+	        call    v171_diag_pb_screen, 0x0
+	        goto    display_state_entry__handle_menu_next
+v171_menu_state_5_split_pb1_diag:
+	        movlb   0x00
+	        movlw   0x00
+	        call    v171_diag_pb_screen, 0x0                     ; split state 5 -> PB1 Diag
+	        goto    display_state_entry__handle_menu_next
+
+v171_menu_ck_state_6:
+	        movlw   0x06
+	        cpfseq  display_state_index_b0, B
+	        goto    display_state_entry__handle_menu_next
+	        movlw   0x01
+	        call    v171_diag_pb_screen, 0x0                     ; split state 6 -> PB2 Diag
 
 display_state_entry__handle_menu_next:                                                  ; address: 0x00120a
 
@@ -6826,11 +7108,10 @@ display_state_entry__handle_menu_next:                                          
         bsf     STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         btfsc   STATUS, OV, A                               ; reg: 0xfd8, bit: 3
         goto    display_state_entry__handle_menu_previous                                   ; dest: 0x001226
-        ; V1.72: nav DOWN upper-bound bumped from 2 -> 3 (V1.61b ring),
-        ; then Layer 5 bumped 3 -> 4 (5-state ring).  Tier-1 bumps it
-        ; 4 -> 5 so the 6-state Vol/Preset/Input/Setup/PB1Diag/PB2Diag
-        ; ring wraps cleanly (DOWN at state 5 -> state 0).
-        movlw   0x05
+        ; Dynamic menu max: legacy/PB2-unknown wraps the 6-state
+        ; Vol/Preset/Input/Setup/PB1Diag/PB2Diag ring at state 5.
+        ; Split/PB2-seen inserts Input PB2 and wraps at state 6.
+        call    input_menu_max_state_to_w
         cpfseq  display_state_index_b0, B                                     ; reg: 0x0bf
         goto    display_state_entry                                   ; dest: 0x001224
         clrf    display_state_index_b0, B                                     ; reg: 0x0bf
@@ -6854,7 +7135,7 @@ display_state_entry__handle_menu_previous:                                      
         ; then Layer 5 bumped 3 -> 4 (5-state ring).  Tier-1 bumps it
         ; 4 -> 5 so the 6-state ring wraps cleanly (UP at state 0 ->
         ; state 5 = PB2 Diag).
-        movlw   0x05
+        call    input_menu_max_state_to_w
         movwf   display_state_index_b0, B                                     ; reg: 0x0bf
         goto    display_state_entry__rescan_and_route                                   ; dest: 0x001244
 
@@ -7123,6 +7404,14 @@ reconnect_wait_loop__wake_frame_queued:
         movwf   (Common_RAM + 50), A                        ; 0x032
         bra     post_connect_init                                   ; dest: 0x0011d8
 
+input_menu_max_state_to_w:
+        movlw   0x05
+        movlb   0x01
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        movlw   0x06
+        movlb   0x00
+        return  0x0
+
 volume_screen__draw_current_menu_title:                                               ; address: 0x0012d0
 
         movlw   0x80
@@ -7198,6 +7487,8 @@ volume_screen__write_mute_label:                                                
 
 volume_screen__draw_input_row_and_status_cell:                                                  ; address: 0x001360
 
+        movff   input_select_cache_b0_phys, rx_parsed_data_b0_phys
+        call    map_cmd06_input_select_to_menu_index, 0x0
         movff   0x0b7, tx_data_staging_b0_phys                    ; reg2: 0x027
         movlw   HIGH(menu_input_auto_detect_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
@@ -7318,13 +7609,10 @@ setup_screen:                                               ; address: 0x0013fe
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
-        ; V1.72 Tier-1 menu rework remap: see input_screen.
-        ; Setup is now state 3 in the new ring but the legacy table has
-        ; Setup at index 2.  Without this remap, state 3 reads
-        ; table[3] = past-end (raw code bytes) and the LCD shows
-        ; gibberish for the Setup title row -- the user-reported
-        ; "garbled chars over BL Timeout" symptom.  Force the Setup
-        ; title to read from table[2] (the legacy Setup slot).
+        ; Setup title renderer is shared by legacy state 3 and split
+        ; state 4.  The title table still has Setup at index 2; without
+        ; this remap, the state value can read past the title table and
+        ; render raw code bytes on row 0.
         movlw   0x02                                      ; legacy Setup table index
         movwf   tx_data_staging_acc, A                        ; reg: 0x027
         movlw   HIGH(menu_title_table)                          ; shifted via label
@@ -8032,33 +8320,236 @@ menu_input_auto_detect_table:                                                  ;
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
         addwfc  (Common_RAM + 32), W, A                     ; reg: 0x020
 
-input_screen:                                               ; address: 0x001912
+input_screen_stage_selected_index:
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     input_screen_stage_pb1_index
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_stage_pb1_index_b0
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bra     input_screen_stage_pb2_linked_index
+        movff   input_intent_pb2_b1_phys, rx_parsed_data_b0_phys
+        movlb   0x00
+        call    map_cmd06_input_select_to_menu_index, 0x0
+        incf    rx_ring_staging_b0, F, BANKED                  ; PB2 row 0 is Same as PB1
+        return  0x0
+input_screen_stage_pb2_linked_index:
+        movlb   0x00
+        clrf    rx_ring_staging_b0, BANKED
+        return  0x0
+input_screen_stage_pb1_index_b0:
+        movlb   0x00
+        bra     input_screen_stage_pb1_index
+input_screen_stage_pb1_index:
+        movlb   0x00
+        movff   input_select_cache_b0_phys, rx_parsed_data_b0_phys
+input_screen_stage_map_done:
+        call    map_cmd06_input_select_to_menu_index, 0x0
+        movlb   0x00
+        return  0x0
 
-        movlw   0x80
-        movwf   (Common_RAM + 1), A                         ; reg: 0x001
-        call    lcd_command, 0x0                           ; dest: 0x000066
-        ; V1.72 Tier-1 menu rework remap: menu_title_table is the
-        ; stock V1.6b 3-entry table (Vol=0, Input=1, Setup=2).  After
-        ; Phase 3.3 reshuffled the ring (Vol=0, Preset=1, Input=2,
-        ; Setup=3, PB1Diag=4, PB2Diag=5), state index 2 (Input) used
-        ; to read table[state]=table[2]="Setup" -- garbled title.
-        ; Force the Input title to read from table[1] (the legacy
-        ; Input slot) regardless of where Input lives in the new ring.
+input_screen_write_title:
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     input_screen_title_state_2
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_title_legacy
+        bsf     v171_diag_render_pb_index_b1, 0, BANKED
+        call    v171_health_diag_check_stale, 0x0
+        movf    (Common_RAM + 4), F, A
+        bz      input_screen_title_pb2_normal
+        movlw   0x01
+        cpfseq  (Common_RAM + 4), A
+        bra     input_screen_title_pb2_lost
+        movlw   0x02                                      ; Input PB2 old
+        bra     input_screen_title_pb2_stage
+input_screen_title_pb2_lost:
+        movlw   0x03                                      ; Input PB2 lost
+        bra     input_screen_title_pb2_stage
+input_screen_title_pb2_normal:
+        movlw   0x01                                      ; Input PB2
+input_screen_title_pb2_stage:
+        movlb   0x01
+        bcf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        movlb   0x00
+        movwf   tx_data_staging_acc, A
+        bra     input_screen_title_pb_table
+input_screen_title_state_2:
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_title_legacy
+        movlb   0x00
+        clrf    tx_data_staging_acc, A                    ; Input PB1
+input_screen_title_pb_table:
+        movlw   HIGH(input_pb_title_table)
+        movwf   (Common_RAM + 42), A
+        movlw   LOW(input_pb_title_table)
+        movwf   (Common_RAM + 41), A
+        call    lcd_write_16char_rom_entry, 0x0
+        return  0x0
+input_screen_title_legacy:
+        movlb   0x00
         movlw   0x01                                      ; legacy Input table index
-        movwf   tx_data_staging_acc, A                        ; reg: 0x027
+        movwf   tx_data_staging_acc, A
         movlw   HIGH(menu_title_table)                          ; shifted via label
         movwf   (Common_RAM + 42), A                        ; reg: 0x02a
         movlw   LOW(menu_title_table)                           ; shifted via label
         movwf   (Common_RAM + 41), A                        ; reg: 0x029
-        call    lcd_write_16char_rom_entry, 0x0                           ; dest: 0x000940
+        call    lcd_write_16char_rom_entry, 0x0
+        return  0x0
+
+input_commit_selected_input_intent:
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     input_commit_selected_pb1
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_commit_selected_pb1_b0
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        movff   tx_data_staging_b0_phys, input_intent_pb2_b1_phys
+        movlb   0x00
+        return  0x0
+input_commit_selected_pb1_b0:
+        movlb   0x00
+        bra     input_commit_selected_pb1
+input_commit_selected_pb1:
+        movff   tx_data_staging_b0_phys, input_select_cache_b0_phys
+        movlb   0x00
+        return  0x0
+
+input_screen_compute_menu_max:
+        movlb   0x00
+        movlw   0x03
+        cpfsgt  raw_status_cache_b0, BANKED
+        bra     input_screen_compute_menu_max_known
+        movlw   0x08
+        bra     input_screen_compute_menu_max_store
+input_screen_compute_menu_max_known:
+        movf    raw_status_cache_b0, F, BANKED
+        btfss   STATUS, Z, A
+        bra     input_screen_compute_menu_max_status_one
+        movlw   0x05
+        bra     input_screen_compute_menu_max_store
+input_screen_compute_menu_max_status_one:
+        decfsz  raw_status_cache_b0, W, BANKED
+        bra     input_screen_compute_menu_max_status_two
+        movlw   0x06
+        bra     input_screen_compute_menu_max_store
+input_screen_compute_menu_max_status_two:
+        movlw   0x02
+        cpfseq  raw_status_cache_b0, BANKED
+        bra     input_screen_compute_menu_max_status_three
+        movlw   0x07
+        bra     input_screen_compute_menu_max_store
+input_screen_compute_menu_max_status_three:
+        movlw   0x08
+input_screen_compute_menu_max_store:
+        movwf   menu_option_max_index_b0, BANKED
+        call    input_screen_adjust_pb2_max_index, 0x0
+        return  0x0
+
+input_screen_clamp_staged_row:
+        movlb   0x00
+        movf    menu_option_max_index_b0, W, BANKED
+        cpfsgt  rx_ring_staging_b0, BANKED
+        return  0x0
+        movff   menu_option_max_index_b0_phys, rx_ring_staging_b0_phys
+        return  0x0
+
+input_screen_prepare_selected_row:
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     input_screen_prepare_selected_row_not_pb2
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_prepare_selected_row_not_pb2_b0
+        movlb   0x00
+        movf    rx_ring_staging_b0, F, BANKED
+        btfss   STATUS, Z, A
+        bra     input_screen_prepare_selected_row_pb2_concrete
+        movlb   0x01
+        bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        movff   input_select_cache_b0_phys, input_intent_pb2_b1_phys
+        movlb   0x00
+        bsf     STATUS, C, A
+        return  0x0
+input_screen_prepare_selected_row_pb2_concrete:
+        decf    rx_ring_staging_b0, F, BANKED
+        movlb   0x01
+        bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        movlb   0x00
+        bcf     STATUS, C, A
+        return  0x0
+input_screen_prepare_selected_row_not_pb2_b0:
+        movlb   0x00
+input_screen_prepare_selected_row_not_pb2:
+        bcf     STATUS, C, A
+        return  0x0
+
+input_screen_prepare_option_label:
+        movlb   0x00
+        movff   rx_ring_staging_b0_phys, tx_data_staging_b0_phys
+        movlw   HIGH(menu_input_auto_detect_table)
+        movwf   (Common_RAM + 42), A
+        movlw   LOW(menu_input_auto_detect_table)
+        movwf   (Common_RAM + 41), A
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        return  0x0
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_prepare_option_label_b0
+        movlb   0x00
+        movf    rx_ring_staging_b0, F, BANKED
+        btfss   STATUS, Z, A
+        bra     input_screen_prepare_option_label_pb2_concrete
+        clrf    tx_data_staging_acc, A
+        movlw   HIGH(input_pb2_same_as_pb1_table)
+        movwf   (Common_RAM + 42), A
+        movlw   LOW(input_pb2_same_as_pb1_table)
+        movwf   (Common_RAM + 41), A
+        return  0x0
+input_screen_prepare_option_label_pb2_concrete:
+        decf    tx_data_staging_acc, F, A
+        return  0x0
+input_screen_prepare_option_label_b0:
+        movlb   0x00
+        return  0x0
+
+input_screen_adjust_pb2_max_index:
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        return  0x0
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_adjust_pb2_max_index_b0
+        movlb   0x00
+        incf    menu_option_max_index_b0, F, BANKED
+        return  0x0
+input_screen_adjust_pb2_max_index_b0:
+        movlb   0x00
+        return  0x0
+
+input_screen:                                               ; address: 0x001912
+
+        call    input_screen_stage_selected_index, 0x0
+        call    input_screen_compute_menu_max, 0x0
+        call    input_screen_clamp_staged_row, 0x0
+        movlw   0x80
+        movwf   (Common_RAM + 1), A                         ; reg: 0x001
+        call    lcd_command, 0x0                           ; dest: 0x000066
+        call    input_screen_write_title, 0x0
 
 input_screen__render_option_row:                                                  ; address: 0x00192a
 
-        movff   0x0b7, tx_data_staging_b0_phys                    ; reg2: 0x027
-        movlw   HIGH(menu_input_auto_detect_table)                          ; shifted via label
-        movwf   (Common_RAM + 42), A                        ; reg: 0x02a
-        movlw   LOW(menu_input_auto_detect_table)                           ; shifted via label
-        movwf   (Common_RAM + 41), A                        ; reg: 0x029
+        call    input_screen_prepare_option_label, 0x0
         movff   0x0b7, 0x0a5
         movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -8088,12 +8579,18 @@ input_screen__status_three_sets_limit:                                          
 
         movlw   0x03
         cpfseq  raw_status_cache_b0, B                                     ; reg: 0x0a1
-        goto    input_screen__draw_option_and_service                                   ; dest: 0x001974
+        goto    input_screen__status_unknown_sets_limit
         movlw   0x08
         movwf   menu_option_max_index_b0, B                                     ; reg: 0x0a4
+        goto    input_screen__draw_option_and_service
+
+input_screen__status_unknown_sets_limit:
+        movlw   0x08
+        movwf   menu_option_max_index_b0, B
 
 input_screen__draw_option_and_service:                                                  ; address: 0x001974
 
+        call    input_screen_adjust_pb2_max_index, 0x0
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0xc0
@@ -8113,7 +8610,41 @@ input_screen__draw_option_and_service:                                          
         movlb   0x00
         movlw   0x02
         cpfseq  display_state_index_b0, BANKED
+        bra     input_screen__check_state_3
+        bra     input_screen__state_still_active
+input_screen__check_state_3:
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
         return  0x0
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen__return_b0
+        movlb   0x00
+input_screen__state_still_active:
+        movlb   0x00
+        movf    button_event_latch_b0, F, B
+        btfss   STATUS, Z, A
+        bra     input_screen__check_control_redraw
+        movlb   0x01
+        btfss   v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bra     input_screen__check_control_redraw
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     input_screen__check_control_redraw
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen__check_control_redraw_b0
+        movlb   0x00
+        bra     input_screen
+input_screen__check_control_redraw_b0:
+        movlb   0x00
+        bra     input_screen__check_control_redraw
+input_screen__return_b0:
+        movlb   0x00
+        return  0x0
+input_screen__check_control_redraw:
+        movlb   0x00
         btfss   control_flags_acc, 0x3, A                   ; reg: 0x01f
         goto    input_screen__handle_option_up                                   ; dest: 0x001996
         bcf     control_flags_acc, 0x3, A                   ; reg: 0x01f
@@ -8141,8 +8672,15 @@ input_screen__commit_option_after_up:                                           
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         movff   0x0a5, 0x0b7
+        call    input_screen_compute_menu_max, 0x0
+        call    input_screen_clamp_staged_row, 0x0
+        movff   0x0b7, 0x0a5
+        call    input_screen_prepare_selected_row, 0x0
+        bc      input_screen__send_option_after_up
         call    map_input_menu_index_to_cmd06_input_select, 0x0                           ; dest: 0x00076a
-        call    input_frame_send, 0x0                           ; dest: 0x000c22
+        call    input_commit_selected_input_intent, 0x0
+input_screen__send_option_after_up:
+        call    input_frame_send_current_input_page, 0x0
 
 input_screen__handle_option_down:                                                  ; address: 0x0019c0
 
@@ -8165,8 +8703,15 @@ input_screen__commit_option_after_down:                                         
 
         call    button_scan_debounce, 0x0                           ; dest: 0x0008ac
         movff   0x0a5, 0x0b7
+        call    input_screen_compute_menu_max, 0x0
+        call    input_screen_clamp_staged_row, 0x0
+        movff   0x0b7, 0x0a5
+        call    input_screen_prepare_selected_row, 0x0
+        bc      input_screen__send_option_after_down
         call    map_input_menu_index_to_cmd06_input_select, 0x0                           ; dest: 0x00076a
-        call    input_frame_send, 0x0                           ; dest: 0x000c22
+        call    input_commit_selected_input_intent, 0x0
+input_screen__send_option_after_down:
+        call    input_frame_send_current_input_page, 0x0
 
 input_screen__loop_or_return:                                                  ; address: 0x0019ee
 
@@ -8186,13 +8731,22 @@ input_screen__loop_or_return:                                                  ;
         bra     input_screen__render_option_row                                   ; dest: 0x00192a
         return  0x0
 
+input_pb_title_table:
+        db      0x49, 0x6E, 0x70, 0x75, 0x74, 0x20, 0x50, 0x42, 0x31, 0x3A, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20 ; "Input PB1:      "
+        db      0x49, 0x6E, 0x70, 0x75, 0x74, 0x20, 0x50, 0x42, 0x32, 0x3A, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20 ; "Input PB2:      "
+        db      0x49, 0x6E, 0x70, 0x75, 0x74, 0x20, 0x50, 0x42, 0x32, 0x20, 0x6F, 0x6C, 0x64, 0x20, 0x20, 0x20 ; "Input PB2 old   "
+        db      0x49, 0x6E, 0x70, 0x75, 0x74, 0x20, 0x50, 0x42, 0x32, 0x20, 0x6C, 0x6F, 0x73, 0x74, 0x20, 0x20 ; "Input PB2 lost  "
+
+input_pb2_same_as_pb1_table:
+        db      0x53, 0x61, 0x6D, 0x65, 0x20, 0x61, 0x73, 0x20, 0x50, 0x42, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20 ; "Same as PB1     "
+
 ; --- V1.73 boot splash release strings ---
 ; Row 2 is rewritten by scripts/build_v173_release.py together with the
 ; monotonic release revision and build-date metadata below.
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x34, 0x39, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x31, 0x36, 0x00 ; "Rev x49 20260616"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x32, 0x00 ; "Rev x52 20260622"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -8200,8 +8754,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x49                    ; V1.73 + monotonic release revision
-        db      0x20, 0x26, 0x06, 0x16                    ; build date 20260616 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x33, 0x52                    ; V1.73 + monotonic release revision
+        db      0x20, 0x26, 0x06, 0x22                    ; build date 20260622 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

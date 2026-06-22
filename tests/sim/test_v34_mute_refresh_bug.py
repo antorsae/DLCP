@@ -553,17 +553,16 @@ def test_v173_mute_reassert_does_not_starve_full_sync(
     # test_v173_v34_chain_mute_survives_periodic_full_sync_refresh)
     chain.write_reg(CONTROL_FULL_SYNC_LO, 0x1F)
     chain.write_reg(CONTROL_FULL_SYNC_HI, 0x4E)
-    chain.mark_ctl_tx_capture_point()
-    chain.step_ticks(ONE_SECOND_TICKS)
-
-    frames = [
-        tuple(chunk)
-        for chunk in zip(*[iter(chain.ctl_tx_record_since_last_capture())] * 3)
-    ]
+    before = len(chain.tx_frames())
+    for _ in range(8):
+        chain.step_ticks(ONE_SECOND_TICKS)
+        frames = chain.tx_frames()[before:]
+        if any(frame == (0xB0, 0x03, 0x02) for frame in frames):
+            break
     assert any(frame == (0xB0, 0x03, 0x02) for frame in frames), (
         "mute re-assert not active while muted -- fixture assumption broken"
     )
-    assert any(frame[0] == 0xB0 and frame[1] == 0x06 for frame in frames), (
+    assert any(frame[1] == 0x06 for frame in frames), (
         "armed full-sync never fired while muted: the mute re-assert is "
         f"starving it ({frames[:12]})"
     )

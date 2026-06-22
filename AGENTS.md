@@ -1,6 +1,6 @@
 # DLCP Firmware Analysis — Master Index (Migrated Layout)
 
-Last updated: 2026-06-19
+Last updated: 2026-06-22
 Scope: `/Users/antor/gh/XTC/third_party/vendor_binaries/DLCP_firmware/analysis`
 
 ## Purpose
@@ -134,7 +134,7 @@ Use these locations only:
   - Previous recommended MAIN release when paired with V1.73 CONTROL; keeps V3.3 diagnostics identity and adds RAM-bank safety hardening, preset-LCD lifecycle fixes, chain-TX arbitration, and I2C recovery classification.
   - Canonical build path: `scripts/build_v34_release.py` bumps the EEPROM revision byte at `eeprom_data[0x82]`, updates the boot-time runtime identity literal, updates the cmd `0x25` identity revision nibbles, runs RAM-bank safety for `main-v34`, then assembles/publishes the canonical filename. Do not mint ad-hoc suffixed release names for V3.4.
 - Main V3.5 (V3.4 source-line promotion): `firmware/patched/releases/DLCP_Firmware_V3.5.hex`
-  - **Recommended MAIN release** when paired with V1.73 CONTROL; source lives in `src/dlcp_fw/asm/dlcp_main_v35.asm` so V3.4 remains a stable historical source/release line.
+  - Current MAIN release line for the V1.73 CONTROL candidate; source lives in `src/dlcp_fw/asm/dlcp_main_v35.asm` so V3.4 remains a stable historical source/release line.
   - Canonical build path: `scripts/build_v35_release.py` bumps the EEPROM revision byte at `eeprom_data[0x82]`, updates the boot-time runtime identity literal, updates the cmd `0x25` identity revision nibbles, runs RAM-bank safety for `main-v35`, then assembles/publishes the canonical filename. Do not mint ad-hoc suffixed release names for V3.5.
 - Control V1.71 (feature-bearing source rewrite + Layer 1/2/5): `firmware/patched/releases/DLCP_Control_V1.71.hex`
   - Previous recommended CONTROL release when paired with V3.2 MAIN (operator runbook: `docs/V171_RELEASE.md`).
@@ -143,7 +143,7 @@ Use these locations only:
   - Previous recommended CONTROL release when paired with V3.3 MAIN for PB1/PB2 Diagnostics MAIN version/revision display.
   - Canonical build path: `scripts/build_v172_release.py` bumps `control_release_metadata[11]`, bakes the build date into `control_release_metadata[12..15]` plus the LCD boot splash, then assembles the release back into the same canonical filename.
 - Control V1.73 (V1.72 + refactoring release): `firmware/patched/releases/DLCP_Control_V1.73.hex`
-  - **Recommended CONTROL release** when paired with V3.5 MAIN; `scripts/flash_control_safe.sh` defaults to this canonical V1.73 hex.
+  - Current CONTROL release line when paired with V3.5 MAIN; `scripts/flash_control_safe.sh` defaults to this canonical V1.73 hex.  As of rev `0x52`, this artifact is non-hardware gated for BUG-V173-MPB-PB2-DOWN-RAW plus the BF/08 ACKSTAT-only stale-indicator follow-up, but still requires the live PB2 DOWN field gate before hardware field closure.
   - Canonical build path: `scripts/build_v173_release.py` bumps `control_release_metadata[11]`, bakes the build date into `control_release_metadata[12..15]` plus the LCD boot splash, runs RAM-bank safety for `control-v173`, then assembles/publishes the canonical filename.
 - Source: `src/dlcp_fw/asm/dlcp_main_v30.asm`, `src/dlcp_fw/asm/dlcp_main_v31.asm`, `src/dlcp_fw/asm/dlcp_main_v32.asm`, `src/dlcp_fw/asm/dlcp_main_v33.asm`, `src/dlcp_fw/asm/dlcp_main_v34.asm`, `src/dlcp_fw/asm/dlcp_main_v35.asm`, `src/dlcp_fw/asm/dlcp_control_v17.asm`, `src/dlcp_fw/asm/dlcp_control_v171.asm`, `src/dlcp_fw/asm/dlcp_control_v172.asm`, `src/dlcp_fw/asm/dlcp_control_v173.asm`
 - gpasm byproducts such as `.cod` / `.lst` may exist beside source-assembled outputs; only the `.hex` files above are canonical release payloads.
@@ -175,10 +175,11 @@ Regenerate after any semantic map update: `python3 scripts/annotate_disasm.py`
 ### Dumps and references
 
 - Dumps: `firmware/dumps/{firmware.bin,code_only.bin,eeprom.bin,dlcp_flash_0800_7fff.bin,dlcp_probe_1000.bin}`
-- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,dlcp.md,DLCP-manual-R3.pdf,tas3108.pdf,tas3108.md,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md,40001303h.pdf,40001303h.md}`
+- Reference docs: `firmware/reference/{DLCP-datasheet-R3.pdf,dlcp.md,DLCP-manual-R3.pdf,tas3108.pdf,tas3108.md,sleu067a.pdf,DLCP-control-intro.pdf,39632e.pdf,39632e.md,40001303h.pdf,40001303h.md,src4382.pdf,src4382.md}`
   - For the PIC18F2455 datasheet, `39632e.pdf` is authoritative. Use `39632e.md` as the line-stable converted companion for repo citations.
   - For the PIC18F25K20 datasheet, `40001303h.pdf` is authoritative. Use `40001303h.md` as the line-stable converted companion for repo citations.
   - For the TAS3108 datasheet, `tas3108.pdf` is authoritative. Use `tas3108.md` as the line-stable converted companion when repo citations are needed.
+  - For the SRC4382 datasheet, `src4382.pdf` is authoritative. Use `src4382.md` as the line-stable converted companion when repo citations are needed.
 
 ## Source Code Map (`src/dlcp_fw`)
 
@@ -249,6 +250,8 @@ Always prefer these constants over hardcoded paths.
 - Preset query/switch helper: `dlcp_preset.py`
 - V3.2 Tier-1 cmd 0x44 diag-snapshot reader: `dlcp_diag.py`
   (operator runbook: `scripts/dlcp_diag.py`; spec: `docs/V32_DIAG_TIER1_SPEC.md`)
+- V3.5 SRC4382 USB cmd 0x45 signal diagnostics reader: `dlcp_src4382_diag.py`
+  (operator runbook: `scripts/dlcp_src4382_diag.py`; spec: `docs/PROPOSAL_1_SRC4382_USB_DIAGNOSTICS_SPEC.md`)
 - EP0 flash window reader: `dlcp_ep0_flash_probe.py`
 - EEPROM shadow dump: `dlcp_ep0_eeprom_shadow_dump.py`
 - DSP filename A/B probe: `dsp_filename_ab_probe.py`
@@ -277,6 +280,7 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/run_v171_v32_ledger_hardware_gate.py`
 - `scripts/dlcp_preset.py`
 - `scripts/dlcp_diag.py`
+- `scripts/dlcp_src4382_diag.py`
 - `scripts/build_v171_release.py`
 - `scripts/build_v172_release.py`
 - `scripts/build_v32_release.py`
@@ -296,6 +300,7 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/sim_presets_ab.py`
 - `scripts/sim_link_control_main_presets_ab.py`
 - `scripts/sim_control_ui_presets.py`
+- `scripts/sim_src4382_autodetect_matrix.py`
 - `scripts/flash_control_safe.sh`
 - `scripts/bake_preset_capture.py`
 - `scripts/word_dump_to_ihex.py`
@@ -321,10 +326,10 @@ Contains migrated analysis scripts and utilities including:
 
 ## Tests (`tests`)
 
-Current suite (1767 tests collected after PF.4 phase 1 deletions and current
+Current suite (1959 tests collected after PF.4 phase 1 deletions and current
 V1.72/V3.3 Diagnostics identity, Preset filename LCD, V3.4/V1.73, and
-V3.5/V1.73 release additions per
-`.venv/bin/python -m pytest tests --collect-only -q`).
+V3.5/V1.73 release additions, plus V3.5 SRC4382 USB diagnostics, per
+`.venv_ep0/bin/python -m pytest tests --collect-only -q`).
 
 Pytest markers:
 
@@ -374,7 +379,7 @@ Hardware-loop tooling:
 - `test_hardware_flipper_ir.py`, `test_hardware_loop.py`, `test_hardware_state_test.py`
 
 Live hardware (optional):
-- `tests/hardware/test_live_state_transitions.py` (17 live tests: MAIN V3.2 release identity + A/B filename RAM confirmation; release-flash settings preservation; SRC4382 Auto Detect acoustic confirmation; physical front-panel A/B confirmation; physical front-panel STBY/WAKE confirmation; preset convergence; rapid-toggle convergence; preset→mute timing sweep; preset→standby/wake timing sweep; reconnect responsiveness soak; IR receiver profile sweep; real-IR legacy stress for V1.6b-vs-V1.71 comparison; and the V1.71+V3.2 Layer 5 PB1/PB2 Diagnostics gates on the real DLCP rig — release identity gates on `DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`; settings preservation gates on `DLCP_HW_RELEASE_SETTINGS_CONFIRM=1` plus `DLCP_HW_EXPECTED_VOLUME_LOW`, `DLCP_HW_EXPECTED_INPUT`, and `DLCP_HW_EXPECTED_SETUP_PROFILE`; SRC4382 acoustic confirmation gates on `DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1`, `DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1`, `DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1`, `DLCP_HW_SRC4382_USER_ACTIONS_OK=1`, and `DLCP_HW_SRC4382_SOAK_OK=1`; the front-panel preset gate uses `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1 DLCP_HW_EXPECTED_PRESET=A|B`; the front-panel standby/wake gate uses `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`; the IR receiver sweep gates on `DLCP_HW_IR_RECEIVER_SWEEP=1`; the cross-version IR stress gate uses `DLCP_HW_IR_LEGACY_STRESS=1`; the diag tests gate on `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to PB1/PB2 Diag and waits for the static cadence; the diag physical-button test additionally gates on `DLCP_HW_LAYER5_BUTTON_ACTIONS=1`, and the diag IR-actions test additionally gates on `DLCP_HW_LAYER5_IR_ACTIONS=1`, with `DLCP_HW_EXPECTED_DIAG_PAGE=PB1|PB2` for per-page runs; see `docs/HARDWARE_TEST.md` §"Diagnostics page" for the full operator walk-through)
+- `tests/hardware/test_live_state_transitions.py` (19 live tests: MAIN V3.2 release identity + A/B filename RAM confirmation; release-flash settings preservation; SRC4382 Auto Detect acoustic confirmation; physical front-panel A/B confirmation; preset filename LCD reconstruction/scroll confirmation; physical front-panel STBY/WAKE confirmation; preset convergence; rapid-toggle convergence; preset→mute timing sweep; preset→standby/wake timing sweep; reconnect responsiveness soak; IR receiver profile sweep; real-IR legacy stress for V1.6b-vs-V1.71 comparison; and the V1.71+V3.2 Layer 5 PB1/PB2 Diagnostics gates on the real DLCP rig — release identity gates on `DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`; settings preservation gates on `DLCP_HW_RELEASE_SETTINGS_CONFIRM=1` plus `DLCP_HW_EXPECTED_VOLUME_LOW`, `DLCP_HW_EXPECTED_INPUT`, and `DLCP_HW_EXPECTED_SETUP_PROFILE`; SRC4382 acoustic confirmation gates on `DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1`, `DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1`, `DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1`, `DLCP_HW_SRC4382_USER_ACTIONS_OK=1`, and `DLCP_HW_SRC4382_SOAK_OK=1`; the front-panel preset gate uses `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1 DLCP_HW_EXPECTED_PRESET=A|B`; the front-panel standby/wake gate uses `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`; the IR receiver sweep gates on `DLCP_HW_IR_RECEIVER_SWEEP=1`; the cross-version IR stress gate uses `DLCP_HW_IR_LEGACY_STRESS=1`; the diag tests gate on `DLCP_HW_LAYER5_AT_DIAG=1` after the operator manually navigates CONTROL to PB1/PB2 Diag and waits for the static cadence; the diag physical-button test additionally gates on `DLCP_HW_LAYER5_BUTTON_ACTIONS=1`, and the diag IR-actions test additionally gates on `DLCP_HW_LAYER5_IR_ACTIONS=1`, with `DLCP_HW_EXPECTED_DIAG_PAGE=PB1|PB2` for per-page runs; see `docs/HARDWARE_TEST.md` §"Diagnostics page" for the full operator walk-through)
 
 V3.0 source rewrite:
 - `test_v30_equivalence.py` (hex integrity + source quality)
@@ -412,6 +417,9 @@ V3.2 SRC4382 Auto Detect:
 - `test_v32_src4382_audio_path_regression.py` (SRC route/TAS3108 refresh contract, exact route-pair guard, negative mutation proof for route/TAS refresh breaks)
 - `test_v32_src4382_autodetect_polling.py` (reduced SRC4382 Auto Detect traffic, one receiver-select write per candidate change, worst-position source detection, explicit-input preemption, mute/unmute, standby/wake, preset-select, SRC4382 NACK/no-stall behavior, and V1.71 + two-V3.2 chain liveness)
 
+V3.5 SRC4382 USB diagnostics:
+- `test_dlcp_src4382_diag.py` (host parser/CLI guards plus V3.5 MAIN USB cmd `0x45` pending/OK, optional ratio/PC-PD, unsupported page-1/cmd `0x46`, and I2C NACK status behavior)
+
 V1.71/V3.2 Diagnostics fault matrix:
 - `test_v171_v32_diag_fault_matrix_manifest.py` (required-test manifest for PB1/PB2 runtime/reset diagnostics fault-surfacing coverage)
 - `test_v171_v32_layer5_diag_chain.py` (Layer 5 chain tests, including real-stimulus LCD surfacing for `I/D/S/B/R/A/P`, reset-cause `O/V/W/X`, stale-pending `n/a`, static PB page freshness, and Diagnostics foreground service responsiveness)
@@ -437,7 +445,7 @@ V3.4/V1.73 historical refactoring release:
 - `test_v34_autodetect_loss_debounce.py` (rev 0x88 K=6 loss debounce: a ~1 s RXCKR status blip must not confirm a source loss or drop the held route; sustained absence still confirms and re-detects)
 - `test_ram_bank_safety.py` covers old+new RAM-safety targets: `main-v33`, `control-v172`, `main-v34`, `main-v35`, and `control-v173`.
 
-V3.5/V1.73 recommended MAIN promotion:
+V3.5/V1.73 current candidate MAIN promotion:
 - `test_v35_v173_release_builders.py` (V3.5 builder updates identity metadata, runs RAM-bank safety for `main-v35` before publishing HEX, and rolls back source/listing/old HEX on assembly or RAM-safety failure; includes V1.73 builder parity coverage)
 - `test_dlcp_v35_release_flash.py` (V3.5 release-flash wrapper argument forwarding, no-local-captures warning path, info-only passthrough, explicit-route requirement)
 - `test_firmware_version_label.py` covers canonical V3.5 USB HID + EEPROM version bytes.
@@ -446,19 +454,24 @@ V3.5/V1.73 recommended MAIN promotion:
 Version labels:
 - `test_firmware_version_label.py` (USB HID + EEPROM version bytes in HEX)
 
-Recent verification (latest 2026-06-21):
+Recent verification (latest 2026-06-22):
 
 - `.venv_ep0/bin/python scripts/build_v35_release.py` -> canonical `DLCP_Firmware_V3.5.hex` built with release rev `0x008F -> 0x0090` for the TBLPTR-safe EEPROM walker bugfix. Focused gates passed: `tests/sim/test_memory_corruption_instrumentation.py` -> `8 passed in 164.26s`; `scripts/memory_corruption_trace.py --expect-clean` -> first violation `none`, corrupt preset-B units `none`; V3.5 release/identity focused tests -> `11 passed in 21.17s`. Current `DLCP_Firmware_V3.5.hex` reports EEPROM tuple `3.5 / rev 0x90` and cmd `0x25` identity rev `0090`.
 - `.venv/bin/python scripts/build_v35_release.py` -> canonical `DLCP_Firmware_V3.5.hex` built with release rev `0x0083 -> 0x0084`; follow-up direct reassembly after local helper-label cleanup kept rev `0x0084` and RAM safety passed for `main-v35`. The filename-EEPROM NUL fix later rebuilt canonical V3.5 with release rev `0x0084 -> 0x0085`; the SRC4382 USB diagnostics work bumped through `0x0086` to `0x0088`; the compact raw-read V1a rebuilt canonical V3.5 with release rev `0x008E -> 0x008F`.
+- `.venv_ep0/bin/python -m pytest tests/sim/test_dlcp_src4382_diag.py -q` -> `65 passed in 38.85s`; `.venv_ep0/bin/python -m pytest tests/sim/test_dlcp_diag.py tests/sim/test_v35_v173_release_builders.py -q` -> `54 passed, 3 warnings in 0.21s`; `.venv_ep0/bin/python -m pytest -q tests/sim/test_ram_bank_safety.py` -> `19 passed in 0.93s`; `.venv_ep0/bin/python scripts/check_ram_access_safety.py --target main-v35` -> `RAM bank safety: OK (main-v35)`; `cargo test -p dlcp-sim --release` -> passed.
+- Previous adjacent SRC gates: `.venv_ep0/bin/python -m pytest tests/sim/test_v32_src4382_autodetect_polling.py -q` -> `51 passed in 72.24s`; `.venv_ep0/bin/python -m pytest tests/sim/test_v32_src4382_audio_path_regression.py -q` -> `9 passed in 8.06s`.
+- `.venv_ep0/bin/python -m pytest -q tests/sim/test_ram_bank_safety.py` -> `19 passed in 0.96s`.
+- `.venv_ep0/bin/python -m pytest tests/sim -n 16 -q` -> `1824 passed, 2 skipped, 4 xfailed, 7 warnings in 682.97s`.
+- `.venv_ep0/bin/python -m pytest tests --collect-only -q` -> `1959 tests collected in 0.59s`.
 - `.venv/bin/python -m pytest -q -n 8 tests/sim/test_v35_v173_release_builders.py tests/sim/test_dlcp_v35_release_flash.py tests/sim/test_firmware_version_label.py::test_v35_usb_and_eeprom_version_match_release_identity tests/sim/test_v172_v33_diag_identity.py::test_v35_cmd25_identity_handler_emits_16bit_revision_nibbles tests/sim/test_v172_v33_diag_identity.py::test_v173_v35_diag_ok_title_shows_visible_main_identity tests/sim/test_ram_bank_safety.py::test_current_targets_pass_ram_bank_safety_checker tests/sim/test_ram_bank_safety.py::test_v34_v173_targets_are_registered tests/sim/test_sim_chain_exploratory_preset_safety.py::test_golden_image_learner_returns_distinct_stable_a_b_images_per_pb` -> `19 passed in 16.67s`
-- `.venv/bin/python -m pytest tests --collect-only -q` -> `1767 tests collected in 0.41s`
 - `.venv/bin/python -m pytest -q -n 16` -> `1744 passed, 20 skipped, 3 xfailed, 1 warning in 709.26s`
 - `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v34_release.py` (2026-06-12) -> canonical `DLCP_Firmware_V3.4.hex` rebuilt; current canonical release identity is `V3.4 / rev 0x8A` (SRC/DSP forensic counters + extended cmd 0x44; detect-cycle volume-excursion fix at the per-route trim selector; Auto-Detect loss debounce widened to 6 consecutive samples); MAIN listing margin before `0x4C00` is ~28 bytes (headroom gate floor ratcheted 96 -> 24 in `test_v34_v173_refactoring_contracts.py`; size-reclaim pass required before further MAIN features)
-- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v173_release.py --build-date 20260608` -> canonical `DLCP_Control_V1.73.hex` rebuilt; current canonical release identity is `V1.73 / rev 0x40 / build 20260608`
+- `PYTHONPATH=src .venv_ep0/bin/python scripts/build_v173_release.py --build-date 20260608` -> historical canonical `DLCP_Control_V1.73.hex` rebuild at `V1.73 / rev 0x40 / build 20260608`.
+- `.venv_ep0/bin/python scripts/build_v173_release.py` (2026-06-22) -> canonical `DLCP_Control_V1.73.hex` rebuilt for BUG-V173-MPB-PB2-DOWN-RAW, the raw-status scratch collision fix, and the BF/08 ACKSTAT-only stale-indicator follow-up; current non-hardware-gated identity is `V1.73 / rev 0x52 / build 20260622`, HEX SHA-256 `66ab68c47d4737fb72b6a1232ea6cd34592fab407dba6515e5a5a97906f2e5f6`. Gates passed: focused multi-PB/compat/control-flash slice -> `83 passed`; targeted broad-gate failure slice -> `6 passed`; `tests/sim -n 16` -> `1934 passed, 2 skipped, 4 xfailed, 7 warnings`; `scripts/check_phase5_gate.py` -> `P5.gate GREEN`; `scripts/check_gpsim_excision.py` -> clean. Hardware PB2 DOWN field gate was not run.
 - V3.4/V1.73 listing headroom after the 2026-06-12 size-reclaim S-series (chain_copy S1/S2/S4 + S3 dedup subroutines, `docs/V34_SIZE_OPTIMIZATION_FINDINGS.md`): MAIN `app_end=0x4B06`, `byte_margin=250` (gate measure; floor ratcheted to 200), `free_object_words=125` before `0x4C00`; CONTROL `app_end=0x2DC0`, `byte_margin=18928`, `free_object_words=9464` before `0x77B0`.
 - 2026-06-12 sim fidelity/harness fixes landed with the size series: rust core TOS write-through for `movwf` to TOSL/TOSH/TOSU (`tos_sw_write_pending`, pinned by `movwf_tos_write_through_patches_computed_return`), and `Chain.inject_main_frames_fifo` now defers injection while MAIN0 is mid-ISR (GIEH=0) or RCIF=1 — the un-deferred injector could race the RX ISR's cached write index and corrupt the injected route byte.
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v34_v173_release_builders.py tests/sim/test_dlcp_v34_release_flash.py tests/sim/test_ram_bank_safety.py tests/sim/test_dlcp_control_flash_safety.py::test_detect_static_hex_control_release_info_v173 tests/sim/test_dlcp_control_flash_safety.py::test_preflight_reports_v173_target_release tests/sim/test_dlcp_control_flash_safety.py::test_safe_control_wrapper_defaults_to_v173_release tests/sim/test_firmware_version_label.py::test_v34_usb_and_eeprom_version_match_release_identity tests/sim/test_v34_v173_refactoring_contracts.py tests/sim/test_v34_v173_i2c_recovery_contract.py` -> `44 passed in 1.04s`
-- `scripts/flash_control_safe.sh --preflight-only` -> target release `V1.73 / rev 0x40 / build 20260608`, CRC `0x25D0`, no USB writes.
+- `scripts/flash_control_safe.sh --preflight-only` -> historical target release `V1.73 / rev 0x40 / build 20260608`, CRC `0x25D0`, no USB writes.
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_v34_v173_compatibility.py tests/sim/test_v172_v33_diag_identity.py::test_v173_v34_diag_ok_title_shows_visible_main_identity` -> `7 passed in 52.33s`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_preset_filename_lcd_spec.py::test_v173_v34_full_native_chain_filename_feature tests/sim/test_preset_filename_lcd_spec.py::test_v173_v34_full_native_chain_filename_preset_state_matrix tests/sim/test_preset_filename_lcd_spec.py::test_v173_v34_full_native_chain_filename_preset_reentry_matrix tests/sim/test_preset_filename_lcd_spec.py::test_v173_v34_full_native_chain_preset_reentry_immediate_left_never_blanks_row0 tests/sim/test_preset_filename_lcd_spec.py::test_v173_native_preset_entry_paint_precedes_filename_cache_reuse tests/sim/test_preset_filename_lcd_spec.py::test_v173_v34_full_native_chain_preset_b_survives_next_menu_standby_wake tests/sim/test_preset_filename_lcd_spec.py::test_v34_v173_refactoring_layout_labels_are_pinned` -> `17 passed in 155.76s`
 - `PYTHONPATH=src .venv_ep0/bin/python scripts/check_ram_access_safety.py --target main-v33 --target control-v172 --target main-v34 --target main-v35 --target control-v173` -> `RAM bank safety: OK (main-v33, control-v172, main-v34, main-v35, control-v173)`
@@ -473,9 +486,9 @@ Recent verification (latest 2026-06-21):
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_dlcp_main_flash.py tests/sim/test_dlcp_v32_release_flash.py tests/sim/test_dlcp_diag.py tests/sim/test_v32_no_pop_flash_entry.py` -> `77 passed`
 - `PYTHONPATH=src .venv_ep0/bin/python -m pytest -q tests/sim/test_read_coeffs.py tests/sim/test_dlcp_preset.py tests/sim/test_hardware_state_test.py tests/sim/test_dlcp_hfd_upload.py` -> `57 passed`
 - `.venv_ep0/bin/python scripts/build_v32_release.py` -> canonical `DLCP_Firmware_V3.2.hex` rebuilt with EEPROM rev bump `0x6D -> 0x6E`
-- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `17 tests collected` (MAIN release identity/A-B filename RAM, release-flash settings preservation, SRC4382 Auto Detect acoustic confirmation, physical front-panel A/B confirmation, physical front-panel STBY/WAKE confirmation, preset convergence, rapid-toggle convergence, preset timing sweeps, reconnect soak, IR receiver sweep, real-IR legacy stress, and five V1.71/V3.2 Layer 5 Diagnostics tests)
-- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> `17 skipped` without the required live-rig attachments/env (`DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`, `DLCP_HW_RELEASE_SETTINGS_CONFIRM=1` plus `DLCP_HW_EXPECTED_VOLUME_LOW` / `DLCP_HW_EXPECTED_INPUT` / `DLCP_HW_EXPECTED_SETUP_PROFILE`, `DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1`, `DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1`, `DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1`, `DLCP_HW_SRC4382_USER_ACTIONS_OK=1`, `DLCP_HW_SRC4382_SOAK_OK=1`, `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`, `DLCP_HW_IR_RECEIVER_SWEEP=1`, `DLCP_HW_IR_LEGACY_STRESS=1`, Flipper serial, camera, `DLCP_HW_LAYER5_AT_DIAG=1`, and `DLCP_HW_LAYER5_BUTTON_ACTIONS=1` / `DLCP_HW_LAYER5_IR_ACTIONS=1`)
-- `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --collect --phase all` -> `17 tests collected`, then printed the hardware phase command manifest
+- `.venv_ep0/bin/python -m pytest tests/hardware/test_live_state_transitions.py --collect-only -q` -> `19 tests collected` (MAIN release identity/A-B filename RAM, release-flash settings preservation, SRC4382 Auto Detect acoustic confirmation, physical front-panel A/B confirmation, physical front-panel STBY/WAKE confirmation, preset convergence, rapid-toggle convergence, preset timing sweeps, reconnect soak, IR receiver sweep, real-IR legacy stress, and V1.71+ diagnostics/data/actions tests)
+- `.venv_ep0/bin/python -m pytest -q tests/hardware/test_live_state_transitions.py --run-hardware` -> not rerun after current 19-test inventory; live tests still require the live-rig attachments/env (`DLCP_HW_RELEASE_IDENTITY_CONFIRM=1`, `DLCP_HW_RELEASE_SETTINGS_CONFIRM=1` plus `DLCP_HW_EXPECTED_VOLUME_LOW` / `DLCP_HW_EXPECTED_INPUT` / `DLCP_HW_EXPECTED_SETUP_PROFILE`, `DLCP_HW_SRC4382_AD_ACOUSTIC_CONFIRM=1`, `DLCP_HW_SRC4382_FIXED_INPUT_AUDIO_OK=1`, `DLCP_HW_SRC4382_AUTODETECT_AUDIO_OK=1`, `DLCP_HW_SRC4382_USER_ACTIONS_OK=1`, `DLCP_HW_SRC4382_SOAK_OK=1`, `DLCP_HW_FRONT_PANEL_PRESET_CONFIRM=1`, `DLCP_HW_FRONT_PANEL_STBY_WAKE_CONFIRM=1`, `DLCP_HW_IR_RECEIVER_SWEEP=1`, `DLCP_HW_IR_LEGACY_STRESS=1`, Flipper serial, camera, `DLCP_HW_LAYER5_AT_DIAG=1`, and `DLCP_HW_LAYER5_BUTTON_ACTIONS=1` / `DLCP_HW_LAYER5_IR_ACTIONS=1`)
+- `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --collect --phase all` -> historical `17 tests collected`, then printed the hardware phase command manifest
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --phase diag-ir-actions` -> dry-run printed separate PB1 and PB2 Diagnostics IR hardware phase commands with `DLCP_HW_EXPECTED_DIAG_PAGE=PB1|PB2`
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --bug BUG-DIAG-02` -> dry-run expands the ledger bug to `diag-pb1`, `diag-pb2`, `diag-buttons-pb1`, `diag-buttons-pb2`, `diag-ir-pb1`, and `diag-ir-pb2`
 - `.venv_ep0/bin/python scripts/run_v171_v32_ledger_hardware_gate.py --list --bug BUG-DIAG-02` -> listed all phase/alias/bug selectors and selected `diag-pb1`, `diag-pb2`, `diag-buttons-pb1`, `diag-buttons-pb2`, `diag-ir-pb1`, `diag-ir-pb2` without probing hardware
@@ -512,7 +525,7 @@ Full test gate (all versions, parallel):
 Top-level docs:
 
 - `docs/AB_PRESETS.md` (A/B preset patch design, flashing, checks)
-- `docs/RELEASE_ARCHIVE.md` (historical MAIN/CONTROL release table; root README focuses on V3.4 + V1.73)
+- `docs/RELEASE_ARCHIVE.md` (historical MAIN/CONTROL release table; root README focuses on V3.5 + V1.73)
 - `docs/HARDWARE_TEST.md` (real-hardware state-transition validation runbook for two MAINs, CONTROL, IR, and LCD capture)
 - `docs/HARDWARE_LOOP.md` (real-hardware audio playback/capture workflow and firmware comparison matrix)
 - `docs/RECOVERY.md` (PICkit 5 readback recombination and full MAIN recovery image workflow)
@@ -548,7 +561,8 @@ Top-level docs:
 - `docs/V31_SOURCE_REWRITE_SPEC.md` (V3.1 MAIN source rewrite specification)
 - `docs/IMPL_V31_SOURCE_REWRITE_SPEC.md` (V3.1 source rewrite implementation prompt)
 - `docs/V163B_DIAGNOSTICS_MENU_SPEC.md` (Layer 5 Diagnostics page / counter protocol; implemented in the committed V1.71 CONTROL + V3.2 MAIN pair)
-- `docs/SRC4382_USB_DIAGNOSTICS_SPEC.md` (draft V3.2+ MAIN USB HID endpoints for SRC4382 selected-signal diagnostics)
+- `docs/PROPOSAL_1_SRC4382_USB_DIAGNOSTICS_SPEC.md` / `docs/PROPOSAL_1_SRC4382_USB_DIAGNOSTICS_IMPL.md` (V3.5 MAIN USB cmd `0x45` SRC4382 selected-signal diagnostics; V1a implemented, CONTROL/LCD/page-1/raw-window work deferred)
+- `docs/SRC4382_USB_DIAGNOSTICS_SPEC.md` (older draft V3.2+ MAIN USB HID endpoints for SRC4382 selected-signal diagnostics)
 - `docs/SRC4382_AUTODETECT_POLLING_SPEC.md` (V3.2+ MAIN SRC4382 Auto Detect polling spec; current V3.2 candidate reduces Auto Detect traffic while preserving the SRC route/TAS contract, with closure still blocked on acoustic hardware evidence)
 - `docs/IMPL_SRC4382_AUTODETECT_POLLING_SPEC.md` (test-first implementation plan and hardware-blocked ledger for SRC4382 Auto Detect polling on canonical V3.2 MAIN + V1.71 CONTROL)
 - `docs/SRC4382_AD_MANUAL_EVIDENCE_TEMPLATE.md` (manual hardware evidence template for closing `BUG-SRC4382-AD-01` without running the live pytest hardware gate)
@@ -721,8 +735,12 @@ Notes:
 Safe control flash preflight/live:
 
 ```bash
-scripts/flash_control_safe.sh --preflight-only
-scripts/flash_control_safe.sh
+.venv_ep0/bin/python scripts/hardware_state_test.py detect
+.venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
+export CONTROL_RELAY_MAIN_HID='<MAIN HID path physically connected to CONTROL>'
+: "${CONTROL_RELAY_MAIN_HID:?set relay MAIN HID path}"
+scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID" --preflight-only
+scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID"
 ```
 
 ## V3.2 Release Ceremony
@@ -744,14 +762,14 @@ scripts/flash_control_safe.sh
 - Canonical MAIN release output is always `firmware/patched/releases/DLCP_Firmware_V3.4.hex`.
 - Each canonical `V3.4` build must increment the EEPROM revision byte in `src/dlcp_fw/asm/dlcp_main_v34.asm` at `eeprom_data[0x82]`, update the boot-time runtime identity literal, update the cmd `0x25` identity revision nibbles, and pass RAM-bank safety for `main-v34`; `scripts/build_v34_release.py` is the required path because it keeps all of those gates in sync before publishing the HEX.
 - `scripts/dlcp_v34_release_flash.py` is the canonical operator wrapper for V3.4 MAIN flashing. It preserves the V3.2/V3.3 baked-preset/no-local-captures behavior and forwards to `scripts/dlcp_main_flash.py`.
-- V3.4 is a previous MAIN release line; use V3.5 for the current recommended MAIN when paired with V1.73 CONTROL.
+- V3.4 is a previous MAIN release line; use V3.5 for the current MAIN release line when paired with the V1.73 CONTROL candidate.
 
 ## V3.5 Release Ceremony
 
 - Canonical MAIN release output is always `firmware/patched/releases/DLCP_Firmware_V3.5.hex`.
 - Each canonical `V3.5` build must increment the EEPROM revision byte in `src/dlcp_fw/asm/dlcp_main_v35.asm` at `eeprom_data[0x82]`, update the boot-time runtime identity literal, update the cmd `0x25` identity revision nibbles, and pass RAM-bank safety for `main-v35`; `scripts/build_v35_release.py` is the required path because it keeps all of those gates in sync before publishing the HEX.
 - `scripts/dlcp_v35_release_flash.py` is the canonical operator wrapper for V3.5 MAIN flashing. It preserves the V3.2/V3.3/V3.4 baked-preset/no-local-captures behavior and forwards to `scripts/dlcp_main_flash.py`.
-- V3.5 is the recommended MAIN release when paired with V1.73 CONTROL. Keep V3.4 source and release paths intact for historical rebuilds and compatibility testing.
+- V3.5 is the current MAIN release line when paired with the V1.73 CONTROL candidate. Keep V3.4 source and release paths intact for historical rebuilds and compatibility testing.
 
 ## V1.71 Release Ceremony
 
@@ -772,7 +790,7 @@ scripts/flash_control_safe.sh
 - Canonical CONTROL release output is always `firmware/patched/releases/DLCP_Control_V1.73.hex`.
 - Each canonical `V1.73` build must increment the flashed release-metadata byte in `src/dlcp_fw/asm/dlcp_control_v173.asm` at `control_release_metadata[11]`, bake the build date into `control_release_metadata[12..15]` plus the LCD boot splash, and pass RAM-bank safety for `control-v173`; `scripts/build_v173_release.py` is the required path because it updates and verifies those fields before publishing the HEX.
 - `scripts/flash_control_safe.sh` defaults to the canonical `V1.73` hex.
-- V1.73 is the recommended CONTROL release when paired with V3.5 MAIN and remains backward compatible with V3.4/V3.3/V3.2 staged or rollback combinations covered by the V3.4/V3.5 compatibility and identity tests.
+- V1.73 is the current CONTROL release line when paired with V3.5 MAIN and remains backward compatible with V3.4/V3.3/V3.2 staged or rollback combinations covered by the V3.4/V3.5 compatibility and identity tests.  The current rev `0x52` PB2 DOWN bugfix candidate is non-hardware gated; the live PB2 DOWN field gate remains required before claiming hardware field closure.
 
 ## Simulator Rewrite (`feature/sim-rewrite-rust`)
 

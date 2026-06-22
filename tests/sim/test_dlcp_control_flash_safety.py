@@ -334,6 +334,12 @@ def test_safe_control_wrapper_defaults_to_v173_release() -> None:
     assert 'DEFAULT_HEX="${ROOT_DIR}/firmware/patched/releases/DLCP_Control_V1.71.hex"' not in text
 
 
+def test_safe_control_wrapper_requires_explicit_path_for_live_flash() -> None:
+    text = Path("scripts/flash_control_safe.sh").read_text(encoding="utf-8")
+    assert 'live control flash requires --path with the relay MAIN HID path' in text
+    assert 'PREFLIGHT_ONLY} -ne 1 && -z "${HID_PATH}"' in text
+
+
 def test_safe_control_wrapper_does_not_own_main_ir_profile_restore() -> None:
     text = Path("scripts/flash_control_safe.sh").read_text(encoding="utf-8")
     assert "--profile hypex|rc5" not in text

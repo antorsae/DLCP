@@ -18,6 +18,7 @@ Options:
   --vid INT               USB VID (decimal or 0x...)
   --pid INT               USB PID (decimal or 0x...)
   --path STR              hidapi path for specific device selection
+                          (required for live flash; optional for preflight)
   --pace-ms INT           Inter-report delay in ms (default: 0, ACK-paced like HFD)
   --init-delay-ms INT     Delay before first 0x42 data report in ms (default: 0)
   --report-timeout-ms INT Timeout waiting for each 0x42 ACK (default: 5000)
@@ -140,6 +141,11 @@ fi
 
 [[ -f "${HEX}" ]] || { echo "error: control HEX not found: ${HEX}" >&2; exit 2; }
 [[ -f "${BOOT_REF}" ]] || { echo "error: bootloader reference HEX not found: ${BOOT_REF}" >&2; exit 2; }
+if [[ ${PREFLIGHT_ONLY} -ne 1 && -z "${HID_PATH}" ]]; then
+  echo "error: live control flash requires --path with the relay MAIN HID path" >&2
+  echo "hint: run scripts/hardware_state_test.py identify-mains --require-left-right and pass the MAIN path physically connected to CONTROL" >&2
+  exit 2
+fi
 
 common_cmd=("${PYTHON}" "-m" "dlcp_fw.flash.dlcp_control_flash" "--hex" "${HEX}" "--bootloader-ref" "${BOOT_REF}")
 [[ -n "${VID}" ]] && common_cmd+=("--vid" "${VID}")

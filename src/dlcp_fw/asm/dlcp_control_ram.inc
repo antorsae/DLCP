@@ -51,7 +51,7 @@ button_debounce_counter    equ  0x0BB    ; threshold = 4
 button_last_scan           equ  0x0BC    ; raw button sample
 button_debounced_prev      equ  0x0BD    ; previous debounced button snapshot
 button_debounced           equ  0x0BE    ; debounced state
-display_state_index        equ  0x0BF    ; menu screen 0..3 (Vol/Preset/Input/Setup)
+display_state_index        equ  0x0BF    ; menu screen; legacy 0..5, split PB2-seen 0..6
 source_channel_menu_index  equ  0x0C0    ; source/channel settings bank row index
 saved_settings_base        equ  0x0C1    ; loaded by eeprom_settings_load (0x0C1..0x0CC)
 backlight_timeout_selection equ  0x0EB   ; persisted backlight timeout menu selection
@@ -214,9 +214,10 @@ v171_preset_bit_snapshot  equ  0x072
 ; to tx_ring_wr), v171_tx_saturate_count is bumped (saturating at
 ; 0xFF), and tx_byte_enqueue returns C=1 so callers can react.
 ;
-; v171_tx_enq_retry — ACCESS-bank scratch byte used only inside the
-;   bounded retry loop.  Caller must not depend on its value across
-;   the call.  Address chosen as the only free slot in the v1.71
+; v171_tx_enq_retry — ACCESS-bank scratch byte used inside the
+;   bounded retry loop and briefly by input_raw_status_full_fallback_save /
+;   input_raw_status_restore.  Caller must not depend on its value across
+;   either borrow.  Address chosen as the only free slot in the v1.71
 ;   0x028..0x02F scratch range (0x028..0x02C and 0x02E..0x02F are
 ;   live; 0x02D has no live reference).
 v171_tx_enq_retry          equ  0x02D
@@ -435,6 +436,18 @@ v171_health_age_tmp        equ  0x0B9  ; physical 0x1B9; Diag stale/lost classif
 V171_HEALTH_PENDING_TICKS  equ  0x20
 V171_HEALTH_STALE_AGE      equ  0x03
 V171_HEALTH_LOST_AGE       equ  0x0A
+
+; --- V1.73 multi-PB input selection (BANK 1) ---
+; Runtime-only PB split state.  PB1 reuses the legacy
+; input_select_cache byte (0x0B8) because it is already the boot sentinel
+; and legacy single-PB source of truth; PB2 needs a second CONTROL-owned
+; intent byte once a second MAIN has been discovered.
+input_split_flags          equ  0x0BA  ; physical 0x1BA
+INPUT_SPLIT_FLAG_PB2_SEEN  equ  0x00   ; latched until cold boot
+INPUT_SPLIT_FLAG_SYNC_TARGET equ 0x01  ; next full-sync target: 0 PB1, 1 PB2
+INPUT_SPLIT_FLAG_PB2_LINKED equ 0x02   ; PB2 input follows PB1 via broadcast
+input_intent_pb2           equ  0x0BB  ; physical 0x1BB
+input_send_target          equ  0x0BC  ; physical 0x1BC; scratch: 0 PB1, 1 PB2
 
 ; Cadence-cycle reload for the cmd 0x22 timeout.  Each cadence cycle
 ; is ~1 s (set by V171_DIAG_POLL_RELOAD_LO/HI).  A reload of 4 gives
@@ -1086,6 +1099,15 @@ v171_diag_effective_target_b1_phys EQU  0x1B8    ; physical address for movff/lf
 v171_health_age_tmp_b1           EQU  0x1B9    ; phys 0x1B9, bank 1, owner v171_health_age_tmp
 v171_health_age_tmp_b1_op        EQU  0xB9     ; 8-bit f operand for v171_health_age_tmp_b1
 v171_health_age_tmp_b1_phys      EQU  0x1B9    ; physical address for movff/lfsr
+input_split_flags_b1             EQU  0x1BA    ; phys 0x1BA, bank 1, owner input_split_flags
+input_split_flags_b1_op          EQU  0xBA     ; 8-bit f operand for input_split_flags_b1
+input_split_flags_b1_phys        EQU  0x1BA    ; physical address for movff/lfsr
+input_intent_pb2_b1              EQU  0x1BB    ; phys 0x1BB, bank 1, owner input_intent_pb2
+input_intent_pb2_b1_op           EQU  0xBB     ; 8-bit f operand for input_intent_pb2_b1
+input_intent_pb2_b1_phys         EQU  0x1BB    ; physical address for movff/lfsr
+input_send_target_b1             EQU  0x1BC    ; phys 0x1BC, bank 1, owner input_send_target
+input_send_target_b1_op          EQU  0xBC     ; 8-bit f operand for input_send_target_b1
+input_send_target_b1_phys        EQU  0x1BC    ; physical address for movff/lfsr
 v171_diag_render_pb_index_b1     EQU  0x1CD    ; phys 0x1CD, bank 1, owner v171_diag_render_pb_index
 v171_diag_render_pb_index_b1_op  EQU  0xCD     ; 8-bit f operand for v171_diag_render_pb_index_b1
 v171_diag_render_pb_index_b1_phys EQU  0x1CD    ; physical address for movff/lfsr

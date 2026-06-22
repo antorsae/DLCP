@@ -328,7 +328,8 @@ def test_mixed_new_old_filename_pairs_preserve_query_cache_and_reentry(
     )
 
     _press(chain, "RIGHT")
-    _wait_for_lcd(chain, lambda lcd: lcd == ("Input:          ", "Auto Detect     "))
+    input_title = "Input PB1:      " if case_id == "v173-v33" else "Input:          "
+    _wait_for_lcd(chain, lambda lcd: lcd == (input_title, "Auto Detect     "))
     chain.mark_ctl_tx_capture_point()
     _press(chain, "LEFT")
     # Rotation-tolerant: background chain traffic (e.g. the V1.73 periodic

@@ -1,11 +1,17 @@
 # DLCP Firmware: V3.5 MAIN + V1.73 CONTROL
 
-Drop-in replacement firmware for the **Hypex DLCP**.  The recommended release pair is:
+Drop-in replacement firmware for the **Hypex DLCP**.  The current
+non-hardware-gated candidate pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0085`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x49 / build 20260616`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0090`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x52 / build 20260622`)
 
-This README focuses on the recommended V3.5 + V1.73 deployment.  All
+CONTROL `rev 0x52` includes the PB2 `Same as PB1` + `DOWN` fix and the
+follow-up BF/08 ACKSTAT-only stale-`!` fix found by the broad simulator gate.
+Non-hardware gates are green; the live PB2 DOWN field gate is still required
+before calling the hardware reboot closed on the real unit.
+
+This README focuses on the current V3.5 + V1.73 candidate deployment.  All
 user-facing comparisons below use stock MAIN V2.3 + CONTROL V1.6b as the
 baseline.  Against that stock baseline, V3.5/V1.73 adds A/B presets, PB1/PB2
 diagnostics, MAIN identity display, bounded I2C and chain recovery, RAM-bank
@@ -86,6 +92,18 @@ shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 - `0x3A`: standby
 - `0x3B`: wake
 
+**Per-PB input selection.**  Once CONTROL has seen PB2, the menu order becomes
+`Volume -> Preset -> Input PB1 -> Input PB2 -> Setup -> PB1 Diag -> PB2 Diag`.
+PB2 initially shows `Same as PB1`, preserving the stock-style broadcast input
+behavior for both MAINs.  Selecting a concrete PB2 source makes PB1 and PB2
+independent and sends addressed input frames; selecting `Same as PB1` again
+returns to broadcast behavior.  The Volume page always shows PB1's source.
+If PB2 health ages out, the PB2 input title can show `old` or `lost`, but the
+page remains available after PB2 has been discovered.  The reported PB2
+`Same as PB1` + `DOWN` reboot is simulator/canonical-HEX fixed in CONTROL
+`rev 0x52`, but not live field-closed until the hardware gate in
+[`docs/HARDWARE_TEST.md`](docs/HARDWARE_TEST.md) passes.
+
 **Coordinated switching.**  Stock firmware has one active DSP configuration and
 no coordinated A/B preset handoff.  In a two-MAIN chain, V3.5 uses a
 mute/wait/apply sequence so left and right switch together instead of one side
@@ -107,7 +125,12 @@ V3.5 additionally treats `RXCKR=0` with `UNLOCK=0` as a locked estimator hole
 instead of hard source loss, keeps route refresh from dirtying master volume
 while unmuted, records SRC/DSP forensic counters over USB (`N/L/C/T/M`), and
 classifies bounded SEN/PEN timeout exits through the same visible I2C recovery
-path.
+path.  V3.5 also exposes USB `cmd 0x45` as a tiny SRC4382 page-0 raw register
+read for operator diagnostics.  The host tool assembles selected receiver,
+lock/payload/error evidence, `0x32..0x33` ratio bytes, and IEC61937 PC/PD bytes
+from multiple reads.  V1a is read-only, page-0-only, has no firmware-side
+register whitelist/decode/cache, and does not add CONTROL/LCD/current-loop
+behavior.
 
 **Wake/reconnect DSP safety.**  The wake path now keeps audio muted, drains
 route/channel sync before the final selected-preset writer, runs the final
@@ -123,19 +146,41 @@ auto-labels with semantic labels across the high-value control flow and RAM
 roles, with rename decisions tracked in
 `artifacts/reanalysis/dlcp_main_v34_rename_ledger.tsv`.  The same engineering
 pass reclaimed the MAIN app region from the edge of the fixed `0x4C00` preset
-table wall to roughly 2 KB of contiguous space; the current V3.5 listing ends
-at `0x4432`, leaving `1998` bytes before `0x4C00`.  That reserve is deliberate
+table wall to controlled feature budget; the current V3.5 listing leaves
+`1826` bytes before `0x4C00`.  That reserve is deliberate
 feature budget for future diagnostics, safety checks, and controlled UI/audio
 behavior changes.
 
 **Live diagnostics.**  CONTROL adds PB1/PB2 diagnostics pages.  On the
-recommended V1.73 + V3.5 pair, each healthy Diagnostics page also shows that
-MAIN's live identity, for example `PB1 OK v3.5 0085` and `PB2 OK v3.5 0085`.
+current V1.73 + V3.5 candidate pair, each healthy Diagnostics page also shows that
+MAIN's live identity, for example `PB1 OK v3.5 0090` and `PB2 OK v3.5 0090`.
 The full MAIN counter set, including USB-only SRC/DSP counters, is available
 over USB:
 
 ```bash
 .venv_ep0/bin/python scripts/dlcp_diag.py --json --watch --interval 1
+```
+
+The selected-source SRC4382 signal snapshot is available over USB `cmd 0x45`.
+By default it queries every attached MAIN and prints a human-readable ASCII
+table.  Use an explicit HID path when you want a single unit; paths are
+redacted by default in command output.  The default snapshot includes the
+ratio and PC/PD bytes, decoded lock, payload, route consistency, SRC4382
+status bits, and input/output sample-rate evidence.  The firmware command
+itself only reads one requested page-0 register; all register selection and
+decode lives in the host tool.  Exact output rates are derived from the exposed
+clock/divider registers only when they prove the path is clocked from the DLCP
+24 MHz MCLK:
+
+```bash
+.venv_ep0/bin/python scripts/dlcp_src4382_diag.py
+.venv_ep0/bin/python scripts/dlcp_src4382_diag.py --path "$MAIN_PATH"
+```
+
+Machine-readable output remains available with `--json`:
+
+```bash
+.venv_ep0/bin/python scripts/dlcp_src4382_diag.py --json --path "$MAIN_PATH"
 ```
 
 LCD status format:
@@ -216,24 +261,36 @@ artifacts/LX521.4/LX521.4_22MG10F-v7.json
 
 The `.json` sidecars carry the config-name metadata used after flashing.
 These files are local operator artifacts and may be absent in a fresh clone.
-If they are missing, `scripts/dlcp_v35_release_flash.py --left/--right` prints
-a warning and flashes the canonical V3.5 MAIN without baking A/B preset
-captures.  In that mode, upload the desired DSP project/settings afterward
-with Hypex Filter Design, or capture local preset tables into
+If they are missing, `scripts/dlcp_v35_release_flash.py` prints a warning and
+flashes the canonical V3.5 MAIN without baking A/B preset captures.  In that
+mode, upload the desired DSP project/settings afterward with Hypex Filter
+Design, or capture local preset tables into
 `artifacts/LX521.4/` and rerun the CLI wrapper.
 
-### Recommended: CLI
+### CLI Validation Flash
+
+Inventory and identify the two MAIN roles first.  USB order is not a safe role
+selector.
+
+```bash
+.venv_ep0/bin/python scripts/hardware_state_test.py detect
+.venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
+export LEFT_HID='<hid path reported for LEFT/PB1>'
+export RIGHT_HID='<hid path reported for RIGHT/PB2>'
+```
 
 Flash MAIN PB1 / left:
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_v35_release_flash.py --left
+: "${LEFT_HID:?set LEFT_HID from identify-mains output}"
+.venv_ep0/bin/python scripts/dlcp_v35_release_flash.py --path "$LEFT_HID" --left
 ```
 
 Flash MAIN PB2 / right:
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_v35_release_flash.py --right
+: "${RIGHT_HID:?set RIGHT_HID from identify-mains output}"
+.venv_ep0/bin/python scripts/dlcp_v35_release_flash.py --path "$RIGHT_HID" --right
 ```
 
 When the LX521.4 capture files are not present, expect this warning:
@@ -245,22 +302,32 @@ WARNING: local A/B preset captures are incomplete; flashing canonical V3.5 witho
 Flash CONTROL:
 
 ```bash
-scripts/flash_control_safe.sh --preflight-only
-scripts/flash_control_safe.sh
+# Use the MAIN HID relay physically connected to CONTROL, normally LEFT/PB1.
+: "${LEFT_HID:?set LEFT_HID from identify-mains output}"
+export CONTROL_RELAY_MAIN_HID="$LEFT_HID"
+: "${CONTROL_RELAY_MAIN_HID:?set relay MAIN HID path}"
+scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID" --preflight-only
+scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID"
 ```
 
 `scripts/flash_control_safe.sh` defaults to
-`firmware/patched/releases/DLCP_Control_V1.73.hex`. CONTROL must be in its
-bootloader before the live flash.  Power-cycle while holding **UP + DOWN** for
-about 6 seconds; do not press SELECT.  After CONTROL flashing, power-cycle once
-so V1.73 starts cleanly from cold boot.
+`firmware/patched/releases/DLCP_Control_V1.73.hex`. CONTROL flashing is
+relayed through a MAIN USB HID path; refresh `LEFT_HID`/`RIGHT_HID` after any
+MAIN USB re-enumeration and pass the relay MAIN path explicitly. CONTROL must
+be in its bootloader before the live flash. Power-cycle while holding
+**UP + DOWN** for about 6 seconds; do not press SELECT. After CONTROL flashing,
+power-cycle once so V1.73 starts cleanly from cold boot.
 
 Useful post-flash checks:
 
 ```bash
-.venv_ep0/bin/python scripts/dlcp_main_flash.py --info-only
-.venv_ep0/bin/python scripts/dlcp_preset.py --info-only
-.venv_ep0/bin/python scripts/dlcp_diag.py --json
+.venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
+.venv_ep0/bin/python scripts/dlcp_main_flash.py --path "$LEFT_HID" --info-only
+.venv_ep0/bin/python scripts/dlcp_main_flash.py --path "$RIGHT_HID" --info-only
+.venv_ep0/bin/python scripts/dlcp_preset.py --path "$LEFT_HID" --info-only
+.venv_ep0/bin/python scripts/dlcp_preset.py --path "$RIGHT_HID" --info-only
+.venv_ep0/bin/python scripts/dlcp_diag.py --path "$LEFT_HID" --json
+.venv_ep0/bin/python scripts/dlcp_diag.py --path "$RIGHT_HID" --json
 ```
 
 ### Alternative: HFD
@@ -299,12 +366,32 @@ Full simulator gate:
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
 ```
 
-Current non-hardware verification snapshot:
+Current non-hardware x52 verification snapshot:
 
+- V1.73 focused multi-PB/compatibility/control-flash slice:
+  `83 passed in 632.40s`
+- V1.73 targeted broad-gate failure slice after BF/08 ACKSTAT-only fix:
+  `6 passed in 187.87s`
+- V3.4/V1.73 compatibility: `8 passed`
+- V1.73 atomic/listing focused gate: `5 passed`
+- CONTROL RAM-bank safety: `OK (control-v173)`
+- full simulator gate: `1934 passed, 2 skipped, 4 xfailed, 7 warnings`
+- Phase 5 gate: `P5.gate GREEN`
+- gpsim excision gate: `gpsim retirement clean: no live references found`
+- collect-only: `1959 tests collected`
+- CONTROL x52 SHA-256:
+  `66ab68c47d4737fb72b6a1232ea6cd34592fab407dba6515e5a5a97906f2e5f6`
+
+This is not live field closure for `BUG-V173-MPB-PB2-DOWN-RAW`; run the
+dedicated hardware gate before calling the field reboot fixed on hardware.
+
+Recent adjacent non-hardware verification snapshot:
+
+- SRC4382 USB diagnostics focused tests: `65 passed`
+- Adjacent SRC4382 Auto Detect/audio-path regressions: `51 passed`, `9 passed`
 - V3.5/V1.73 release-path focused tests: `19 passed`
 - V3.4/V1.73 FIELD-10 focused regressions: `2 passed`
 - V3.4/V1.73 historical focused bug/regression set: `95 passed, 3 xfailed`
-- full non-hardware gate: `1744 passed, 20 skipped, 3 xfailed, 1 warning`
 - 1-hour exploratory hunt and targeted replay triage against MAIN V3.4 rev
   `0x0083` + CONTROL V1.73: no live wrong coefficient image and no
   unreconciled HIGH/MEDIUM safety finding

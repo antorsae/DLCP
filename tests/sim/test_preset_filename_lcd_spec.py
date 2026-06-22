@@ -342,6 +342,13 @@ def _row1_has_filename_cache_text(line1: str, expected_window: str) -> bool:
     )
 
 
+def _is_input_auto_detect_lcd(lcd: tuple[str, str]) -> bool:
+    return lcd in {
+        ("Input:          ", "Auto Detect     "),
+        ("Input PB1:      ", "Auto Detect     "),
+    }
+
+
 def _drive_b_a_b_to_input_and_trace_immediate_left(
     v172_v33_filename_hexes: tuple[Path, Path],
 ) -> dict[str, object]:
@@ -370,10 +377,10 @@ def _drive_b_a_b_to_input_and_trace_immediate_left(
     _press(chain, "RIGHT")
     input_lines, input_visible_tick = _wait_for_lcd(
         chain,
-        lambda lcd: lcd == ("Input:          ", "Auto Detect     "),
+        _is_input_auto_detect_lcd,
         ticks=PRESET_REENTRY_POLL_TICKS,
     ), chain.current_tick()
-    assert input_lines == ("Input:          ", "Auto Detect     ")
+    assert _is_input_auto_detect_lcd(input_lines)
 
     expected = (
         _preset_row0("B"),
@@ -856,10 +863,10 @@ def _run_full_native_chain_preset_reentry_matrix(
     _press(chain, "RIGHT")
     input_lines = _wait_for_lcd(
         chain,
-        lambda lcd: lcd == ("Input:          ", "Auto Detect     "),
+        _is_input_auto_detect_lcd,
         ticks=PRESET_REENTRY_POLL_TICKS,
     )
-    assert input_lines == ("Input:          ", "Auto Detect     ")
+    assert _is_input_auto_detect_lcd(input_lines)
 
     chain.mark_ctl_tx_capture_point()
     chain.mark_ctl_rx_capture_point()
@@ -906,8 +913,8 @@ def _run_full_native_chain_preset_b_survives_next_menu_standby_wake(
     )
 
     _press(chain, "RIGHT")
-    input_lines = _wait_for_lcd(chain, lambda lcd: lcd[0].startswith("Input:"))
-    assert input_lines == ("Input:          ", "Auto Detect     ")
+    input_lines = _wait_for_lcd(chain, _is_input_auto_detect_lcd)
+    assert _is_input_auto_detect_lcd(input_lines)
 
     chain.press("STBY")
     chain.step_many(80)

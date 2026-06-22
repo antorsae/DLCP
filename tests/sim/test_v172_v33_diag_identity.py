@@ -42,6 +42,8 @@ _CONTROL_BUTTON_PINS = {
 
 STATE_PB1_DIAG = 4
 STATE_PB2_DIAG = 5
+STATE_PB1_DIAG_SPLIT = 5
+STATE_PB2_DIAG_SPLIT = 6
 DISPLAY_STATE_INDEX_PHYS = 0x0BF
 
 V171_DIAG_PB1_BASE_PHYS = 0x180
@@ -161,15 +163,33 @@ def _tap_key(chain, key: str) -> None:  # type: ignore[no-untyped-def]
     chain.step_ticks(5_000_000)
 
 
+def _diag_state_candidates(pb_idx: int) -> tuple[int, int]:
+    if pb_idx == 0:
+        return (STATE_PB1_DIAG, STATE_PB1_DIAG_SPLIT)
+    return (STATE_PB2_DIAG, STATE_PB2_DIAG_SPLIT)
+
+
+def _is_diag_page(chain, pb_idx: int, lcd=None) -> bool:  # type: ignore[no-untyped-def]
+    lines = chain.lcd_lines() if lcd is None else lcd
+    return (
+        chain.read_reg(DISPLAY_STATE_INDEX_PHYS) in _diag_state_candidates(pb_idx)
+        and lines[0].startswith(f"PB{pb_idx + 1}")
+    )
+
+
 def _navigate_to_diag_page(chain, pb_idx: int) -> None:  # type: ignore[no-untyped-def]
-    for _ in range(4):
+    for _ in range(8):
+        if _is_diag_page(chain, pb_idx):
+            return
         _tap_key(chain, "RIGHT")
         for _ in range(8):
             chain.step()
-    if pb_idx == 1:
-        _tap_key(chain, "RIGHT")
-        for _ in range(8):
-            chain.step()
+    if not _is_diag_page(chain, pb_idx):
+        pytest.fail(
+            f"did not reach PB{pb_idx + 1} Diag; "
+            f"lcd={chain.lcd_lines()!r}; "
+            f"state=0x{chain.read_reg(DISPLAY_STATE_INDEX_PHYS):02X}"
+        )
 
 
 def _connected_chain(control_hex: Path, main_hex: Path):  # type: ignore[no-untyped-def]
@@ -440,11 +460,7 @@ def test_v172_v33_diag_ok_title_shows_visible_main_identity(
     expected = _expected_v33_diag_title(pb_idx)
     lines = _wait_for_lcd(
         chain,
-        lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
-            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
-            and lcd[0] == expected
-        ),
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
         limit=700,
     )
     assert lines[0] == expected
@@ -461,11 +477,7 @@ def test_v173_v34_diag_ok_title_shows_visible_main_identity(
     expected = _expected_v34_diag_title(pb_idx)
     lines = _wait_for_lcd(
         chain,
-        lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
-            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
-            and lcd[0] == expected
-        ),
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
         limit=700,
     )
     assert lines[0] == expected
@@ -482,11 +494,7 @@ def test_v173_v35_diag_ok_title_shows_visible_main_identity(
     expected = _expected_v35_diag_title(pb_idx)
     lines = _wait_for_lcd(
         chain,
-        lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
-            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
-            and lcd[0] == expected
-        ),
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
         limit=700,
     )
     assert lines[0] == expected
@@ -507,8 +515,7 @@ def test_v173_v34_auto_detect_live_route_survives_diag_identity_happy_path(
     expected_pb1 = _expected_v34_diag_title(0)
     lines = _wait_for_lcd(
         chain,
-        lambda lcd: chain.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
-        and lcd[0] == expected_pb1,
+        lambda lcd: _is_diag_page(chain, 0, lcd) and lcd[0] == expected_pb1,
         limit=700,
     )
     assert lines[0] == expected_pb1
@@ -522,8 +529,7 @@ def test_v173_v34_auto_detect_live_route_survives_diag_identity_happy_path(
     expected_pb2 = _expected_v34_diag_title(1)
     lines = _wait_for_lcd(
         chain,
-        lambda lcd: chain.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB2_DIAG
-        and lcd[0] == expected_pb2,
+        lambda lcd: _is_diag_page(chain, 1, lcd) and lcd[0] == expected_pb2,
         limit=700,
     )
     assert lines[0] == expected_pb2
@@ -550,11 +556,7 @@ def test_v172_v33_diag_page_dispatches_ir_volume_mute_and_preset(
     expected = _expected_v33_diag_title(pb_idx)
     _wait_for_lcd(
         chain,
-        lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
-            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
-            and lcd[0] == expected
-        ),
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
         limit=700,
     )
 
@@ -595,11 +597,7 @@ def test_v173_v34_diag_page_dispatches_hypex_ir_volume_mute_and_preset(
     expected = _expected_v34_diag_title(pb_idx)
     _wait_for_lcd(
         chain,
-        lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
-            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
-            and lcd[0] == expected
-        ),
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
         limit=700,
     )
 
@@ -635,11 +633,7 @@ def test_v172_v33_diag_page_dispatches_ir_standby_and_wake(
     expected = _expected_v33_diag_title(pb_idx)
     _wait_for_lcd(
         chain,
-        lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
-            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
-            and lcd[0] == expected
-        ),
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
         limit=700,
     )
 
@@ -675,11 +669,7 @@ def test_v173_v34_diag_page_dispatches_ir_standby_and_wake(
     expected = _expected_v34_diag_title(pb_idx)
     _wait_for_lcd(
         chain,
-        lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS)
-            == (STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG)
-            and lcd[0] == expected
-        ),
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
         limit=700,
     )
 
@@ -759,7 +749,7 @@ def test_v172_v33_diag_issue_title_suppresses_identity_suffix(
     lines = _wait_for_lcd(
         chain,
         lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
+            _is_diag_page(chain, 0, lcd)
             and chain.read_reg(V171_DIAG_PB1_BASE_PHYS) == 0x02
             and lcd[0].startswith("PB1!")
         ),
@@ -781,7 +771,7 @@ def test_v172_v32_diag_is_backward_compatible_without_identity_reply(
     lines = _wait_for_lcd(
         chain,
         lambda lcd: (
-            chain.read_reg(DISPLAY_STATE_INDEX_PHYS) == STATE_PB1_DIAG
+            _is_diag_page(chain, 0, lcd)
             and (chain.read_reg(V171_DIAG_PRESENT_PHYS) & 0x01)
             and lcd[0] == "PB1 OK          "
         ),

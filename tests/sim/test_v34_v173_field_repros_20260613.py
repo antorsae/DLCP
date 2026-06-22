@@ -23,6 +23,8 @@ CONTROL_IR_PROFILE_MUTE = 0x026
 
 STATE_PB1_DIAG = 4
 STATE_PB2_DIAG = 5
+STATE_PB1_DIAG_SPLIT = 5
+STATE_PB2_DIAG_SPLIT = 6
 
 MAIN_ACTIVE_FLAGS = 0x05E
 MAIN_ACTIVE_PRESET_B = 0x04
@@ -677,14 +679,27 @@ def _tap_key(chain: Chain, key: str) -> None:
     chain.step_ticks(5_000_000)
 
 
+def _diag_state_candidates(pb_idx: int) -> tuple[int, int]:
+    if pb_idx == 0:
+        return (STATE_PB1_DIAG, STATE_PB1_DIAG_SPLIT)
+    return (STATE_PB2_DIAG, STATE_PB2_DIAG_SPLIT)
+
+
+def _is_diag_page(chain: Chain, pb_idx: int) -> bool:
+    return (
+        chain.read_reg(CONTROL_DISPLAY_STATE) in _diag_state_candidates(pb_idx)
+        and chain.lcd_lines()[0].startswith(f"PB{pb_idx + 1}")
+    )
+
+
 def _navigate_to_diag_page(chain: Chain, pb_idx: int) -> None:
-    for _ in range(4 + pb_idx):
+    for _ in range(8):
+        if _is_diag_page(chain, pb_idx):
+            break
         _tap_key(chain, "RIGHT")
-    target = STATE_PB1_DIAG if pb_idx == 0 else STATE_PB2_DIAG
     _wait_until(
         chain,
-        lambda: chain.read_reg(CONTROL_DISPLAY_STATE) == target
-        and chain.lcd_lines()[0].startswith(f"PB{pb_idx + 1}"),
+        lambda: _is_diag_page(chain, pb_idx),
         attempts=700,
         ticks=2_000_000,
     )

@@ -433,8 +433,11 @@ camera such as a MacBook camera, Desk View, or screen capture device.
 
 `--report-json <path>` writes the selected phases, exact commands, preflight
 inventory/failures, and executed phase return codes to a machine-readable JSON
-file.  Use it for live closure runs so the ledger can cite a durable artifact
-instead of only terminal scrollback.
+file.  Use it for live closure runs so the local ledger can cite a durable
+artifact instead of only terminal scrollback.  Treat the raw JSON as local-only:
+it can include HID paths/serials, camera names, Flipper serial ports, and media
+paths.  Shared or committed evidence must be a sanitized derivative with role
+labels plus redacted/hash-only identifiers.
 
 `--bug BUG-...` expands a ledger bug ID to the phase set listed in
 `docs/IMPL_V171_V32_BUG_LEDGER.md`, de-duplicating phases when multiple bugs
@@ -1110,7 +1113,10 @@ Use this flow for PB1/PB2 validation and any role-safe flash session.
 1. Run `scripts/hardware_state_test.py detect` and confirm the camera, Flipper
    transport, and two DLCP HID devices are visible.
 2. Run `scripts/hardware_state_test.py identify-mains --require-left-right` and
-   record the returned `LEFT.path` and `RIGHT.path`.
+   export the returned `LEFT.path` and `RIGHT.path` only into local shell
+   variables.  Committed/shared evidence must use roles plus redacted or
+   hash-only path identifiers; raw HID paths and serials belong only in ignored
+   local artifacts or the operator shell.
 3. Flash desired MAIN builds only by explicit `--path`, using the path that
    matches the intended `LEFT` or `RIGHT` role.
 4. Flash desired CONTROL build through the `LEFT`/PB1 MAIN path unless a test
@@ -1121,7 +1127,7 @@ Use this flow for PB1/PB2 validation and any role-safe flash session.
    `scripts/hardware_state_test.py ir-preset-roundtrip`.
 7. Poll both MAINs after each scenario.
 8. Save:
-   - HID paths used
+   - PB role plus redacted/hash-only HID identifiers used
    - firmware versions used
    - IR sequence and timing
    - LCD images/video
@@ -1215,9 +1221,9 @@ again; the unit should re-enumerate and re-flash cleanly.
 This abort/recovery test is operator-discretion — it requires power
 control on the unit and isn't part of the routine 2-cycle gate.
 
-## Diagnostics page (V1.73 + V3.4 current; V1.71 + V3.2 historical Layer 5)
+## Diagnostics page (V1.73 + V3.5 current; V1.71 + V3.2 historical Layer 5)
 
-Validates the current V1.73 CONTROL Diagnostics page against V3.4 MAIN counters.
+Validates the current V1.73 CONTROL Diagnostics page against V3.5 MAIN counters.
 The same page shape originated in V1.71 + V3.2 Layer 5, so older test names and
 some linked historical docs still use that wording.
 
@@ -1238,22 +1244,35 @@ some linked historical docs still use that wording.
 
 ### Prerequisites
 
-- both MAINs flashed with `firmware/patched/releases/DLCP_Firmware_V3.4.hex`
-  (use `scripts/dlcp_v34_release_flash.py --left` / `--right`)
+- both MAINs flashed with `firmware/patched/releases/DLCP_Firmware_V3.5.hex`
+  (use `scripts/dlcp_v35_release_flash.py --left` / `--right`)
 - CONTROL flashed with `firmware/patched/releases/DLCP_Control_V1.73.hex`
   (use `scripts/flash_control_safe.sh`, which defaults to V1.73)
-- both MAINs cold-booted at least once after flash so the V3.4 RCON-gated
+- both MAINs cold-booted at least once after flash so the V3.5 RCON-gated
   cold-init has cleared the diag block
 
 ### Operator walk-through (5 minutes)
 
 V1.71 Tier-1 (per `docs/V32_DIAG_TIER1_SPEC.md` and
 `dlcp_control_v171.asm:4805+`) splits the diagnostics page into a
-6-state menu ring with one PB per page:
+base menu ring with one PB per page:
 
 ```
 Volume(0) → Preset(1) → Input(2) → Setup(3) → PB1 Diag(4) → PB2 Diag(5) → Volume(0)
 ```
+
+Current V1.73 multi-PB input selection inserts one runtime-only PB2 Input
+state immediately after PB1 Input once PB2 has been discovered by health or
+Diagnostics replies:
+
+```
+Volume(0) → Preset(1) → Input PB1(2) → Input PB2(3) → Setup(4) → PB1 Diag(5) → PB2 Diag(6) → Volume(0)
+```
+
+State 3 (`Input PB2`) is not EEPROM-persistent.  After a cold boot with no PB2
+reply yet, the ring may temporarily be the six-state base ring. Once PB2 has
+answered, RIGHT from Input PB1 must show `Input PB2:`. PB2 initially renders
+`Same as PB1`; selecting a concrete PB2 source makes PB1/PB2 independent.
 
 Each PB Diag page is its own 16x2 LCD screen.  Layout dispatches by
 health (per `dlcp_control_v171.asm:3484+,3603+`):
@@ -1269,23 +1288,28 @@ Walk-through:
 
 1. Power-cycle both MAINs and CONTROL.  Wait for CONTROL to reach
    the Volume screen.
-2. From Volume, press the physical `RIGHT` touch button FOUR times to navigate
-   `Volume(0) → Preset(1) → Input(2) → Setup(3) → PB1 Diag(4)`.
+2. From Volume before PB2 discovery, four `RIGHT` presses reaches PB1 Diag:
+   `Volume(0) -> Preset(1) -> Input(2) -> Setup(3) -> PB1 Diag(4)`.
+   After PB2 has been discovered, five `RIGHT` presses are needed:
+   `Volume(0) -> Preset(1) -> Input PB1(2) -> Input PB2(3) -> Setup(4) ->
+   PB1 Diag(5)`.  Prefer title-driven navigation: stop only when row 0 starts
+   with `PB1`, not at a hard-coded press count.
 3. Observe the LCD for about 1 second.  The first frame after the
    4-RIGHT navigation may briefly show:
    ```
    PB1
    n/a
    ```
-   It must then update to `PB1 OK v3.4 NNNN` / optional OK-context tokens on
+   It must then update to `PB1 OK v3.5 NNNN` / optional OK-context tokens on
    the current pair, or `PB1!` + cell entries when issue counters are non-zero.
    Older MAINs may show suffixless `PB1 OK`.  If it stays `PB1` / `n/a`, PB1 is
    absent/silent or the diagnostics reply path is broken.
 4. While still on PB1 Diag, verify normal controls remain responsive:
    volume up/down, mute, preset A/B, standby, and wake IR actions must
    still dispatch.  LEFT/RIGHT physical navigation must not feel stalled.
-5. To check PB2: press the physical `RIGHT` touch button once more (PB1 Diag → PB2 Diag,
-   state 4 → 5).  PB2's page renders the same `PBn` / `n/a` /
+5. To check PB2: press the physical `RIGHT` touch button once more
+   (PB1 Diag -> PB2 Diag, legacy state 4 -> 5 before discovery or split
+   state 5 -> 6 after discovery).  PB2's page renders the same `PBn` / `n/a` /
    `OK` / `PBn!` layouts independently.  Wait about 1 second and
    require the same static update behavior.
 6. Press the physical `LEFT` touch button repeatedly to return to Volume.
@@ -1294,18 +1318,19 @@ Walk-through:
 
 ### Pass criteria
 
-Operator runs the walk-through twice (once for PB1 at state 4,
-once for PB2 at state 5):
+Operator runs the walk-through twice, once for the PB1 Diagnostics page and
+once for the PB2 Diagnostics page.  Identify pages by LCD title, not only by
+absolute state number: legacy/pre-discovery pages are PB1/PB2 state `4/5`,
+while split/post-discovery V1.73 pages are PB1/PB2 state `5/6`.
 
 | What | Expected | Failure attribution |
 |---|---|---|
-| Row 0 renders `PB1` (PB1 page) or `PB2` (PB2 page) prefix | yes | If wrong literal appears: V1.71 CONTROL not flashed correctly, or operator did not navigate to the correct state (4 or 5) |
+| Row 0 renders `PB1` (PB1 page) or `PB2` (PB2 page) prefix | yes | If wrong literal appears: CONTROL not flashed correctly, or operator did not navigate to the correct LCD-titled page |
 | Row 1 may briefly show `n/a`, then reaches `OK` or cell entries within about 1 second of static wait | yes | If row 1 stays `n/a`: that PB is genuinely absent/silent, that PB's MAIN doesn't recognize cmd 0x21 (V3.2 not flashed), or there is a real reply-path bug |
 | Row 0 flips to `PBn!` + cell entries when at least 1 issue counter is non-zero | yes | If row 0 stays bare `PBn` literal with non-zero counter activity expected: Diagnostics layout dispatch broken |
 | Physical LEFT/RIGHT navigate away from each PB page promptly | yes | If CONTROL hangs or misses the touch: diagnostics foreground service is starving normal button scan |
 | Volume, mute, preset, standby, and wake IR actions still dispatch while on PB1/PB2 pages | yes | If actions are delayed or ignored: diagnostics foreground service is starving normal UI/IR dispatch |
 | No effect on Volume/Preset/Input/Setup operation after leaving Diagnostics | yes | Diag traffic is page-local; if other features regress, send_query may be leaking outside the screen body |
-
 Automated opt-in physical-button responsiveness gate:
 
 ```bash
@@ -1391,8 +1416,8 @@ harness to bump and aren't part of the basic operator walk-through.
 
 ### What this validates (post BUG-DIAG-01/02)
 
-This walk-through validates that V1.71 CONTROL is correctly parsing
-the V3.2 BF/2N diag-reply burst without depending on user navigation
+This walk-through validates that V1.71+ CONTROL is correctly parsing
+the V3.2+/V3.5 BF/2N diag-reply burst without depending on user navigation
 to advance the diagnostics cadence.  It also validates that the
 Diagnostics foreground loop continues to service normal UI work:
 physical navigation and decoded IR commands for volume, mute, preset,
@@ -1400,10 +1425,150 @@ standby, and wake.
 
 If both per-PB pages converge to `OK` / `PB1:`+cells / `PB2:`+cells
 (or stable `PBn` / `n/a` for a genuinely silent PB) after a static
-wait, V1.71 + V3.2 are operating correctly.  If `PB2` / `n/a` is stuck
-on the PB2 page (state 5) while the PB1 page (state 4) converges, that
-points at a real V3.2 PB2 reply-path, V1.71 parser-target bug, or PB2
-wiring/absence issue.
+wait, V1.71+ / V3.2+ diagnostics are operating correctly.  If `PB2` / `n/a`
+is stuck on the PB2 page while the PB1 page converges, that points at a real
+MAIN PB2 reply-path, CONTROL parser-target bug, or PB2 wiring/absence issue.
+Use LCD title plus the legacy/split state map above when recording the page.
+
+## Multi-PB Input Selection / PB2 DOWN Field Gate
+
+Validates `BUG-V173-MPB-PB2-DOWN-RAW`: on CONTROL V1.73 `rev 0x52`, pressing
+`DOWN` on `Input PB2:` / `Same as PB1` must not reboot CONTROL and must select
+the expected concrete PB2 input.
+
+### Prerequisites
+
+- both MAINs flashed with `firmware/patched/releases/DLCP_Firmware_V3.5.hex`
+  and cold-booted
+- CONTROL flashed with `firmware/patched/releases/DLCP_Control_V1.73.hex`
+  and cold-booted; for no-flash smoke/repeated runs, power-cycle CONTROL or
+  the full DLCP and verify the boot splash reports V1.73 `Rev x52` before
+  starting the PB2 trial
+- local release evidence:
+
+  ```bash
+  shasum -a 256 firmware/patched/releases/DLCP_Control_V1.73.hex
+  # expected: 66ab68c47d4737fb72b6a1232ea6cd34592fab407dba6515e5a5a97906f2e5f6
+  ```
+
+- role-safe HID identity, refreshed after any flash or USB re-enumeration:
+
+  ```bash
+  .venv_ep0/bin/python scripts/hardware_state_test.py detect
+  .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
+  export LEFT_HID='<hid path reported for LEFT/PB1>'
+  export RIGHT_HID='<hid path reported for RIGHT/PB2>'
+  ```
+
+Raw `detect`, `identify-mains`, `dlcp_diag.py --json`, `result.json`,
+`summary.json`, camera inventories, Flipper serial ports, HID paths/serials,
+and raw media are local-only artifacts.  Shared evidence must use role labels
+plus redacted/hash-only IDs, cropped LCD-only media, and stripped metadata.
+
+### Procedure
+
+1. If this is a field-closure run, flash CONTROL in the same approved session
+   through the explicit relay MAIN path.  `--preflight-only` is static
+   HEX/bootloader-integrity evidence only; path validity and relay/CONTROL
+   connectivity are proven by the live ACK/CRC flash.
+
+   ```bash
+   : "${LEFT_HID:?set LEFT_HID from identify-mains output}"
+   export CONTROL_RELAY_MAIN_HID="$LEFT_HID"
+   : "${CONTROL_RELAY_MAIN_HID:?set relay MAIN HID path}"
+   scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID" --preflight-only
+   scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID"
+   ```
+
+   Power-cycle CONTROL or the full DLCP, verify the LCD boot splash reports
+   V1.73 `Rev x52`, rerun `identify-mains --require-left-right`, and refresh
+   `LEFT_HID`/`RIGHT_HID`.  A no-flash run is smoke-only unless an app
+   hash/readback proves the exact on-device image.
+
+2. First run the exact no-preconditioning repro path.  From the fresh Volume
+   screen, do not visit/change `Input PB1` first.  Wait until PB2 is discovered.
+   Title-driven navigation is authoritative: press `RIGHT` until row 0 shows
+   `Input PB1:`, then press `RIGHT` once more.  Row 0 must show `Input PB2:`
+   and row 1 must show `Same as PB1`.
+
+3. Capture a cropped LCD image or note the exact LCD text, then press `DOWN`
+   once.  CONTROL must stay up, row 0 must remain `Input PB2:`, and row 1 must
+   render one concrete input label from this table.  Record that first-trial
+   label and expected `cmd 0x06` byte.
+
+   | Concrete PB2 label after first DOWN | Expected PB2 `cmd 0x06` data |
+   |---|---|
+   | `Analogue 1` | `0x01` |
+   | `Analogue 2` | `0x02` |
+   | `Analogue 3` | `0x03` |
+   | `Analogue 4` | `0x04` |
+
+   Any reboot, hang, blank screen, garbage row, or row 1 staying `Same as PB1`
+   fails the field gate.  This first trial is the field-closure trial; later
+   PB1 calibration is secondary evidence only and must not replace it.
+
+4. Probe MAIN state with explicit role paths:
+
+   ```bash
+   .venv_ep0/bin/python scripts/dlcp_main_flash.py --path "$LEFT_HID" --info-only
+   .venv_ep0/bin/python scripts/dlcp_main_flash.py --path "$RIGHT_HID" --info-only
+   ```
+
+   PB2/RIGHT must report `input_select` and `mirror` equal to the first-trial
+   expected `cmd 0x06` data.  PB1/LEFT must still report `Auto Detect` (`0x00`)
+   if it was untouched before the first trial.
+
+5. Secondary calibration: determine the current source-list class from the
+   visible PB1 Input page after the first PB2 trial.  Navigate back to
+   `Input PB1:`.  If row 1 is not `Auto Detect`, use UP/DOWN until it is.
+   Press `DOWN` once, record the visible wrap label, then press `UP` once to
+   restore PB1 to `Auto Detect`.
+
+   | PB1 DOWN wrap label | Expected PB2 DOWN label | Expected PB2 `cmd 0x06` data |
+   |---|---|---|
+   | `Analogue 1` | `Analogue 1` | `0x01` |
+   | `Analogue 2` | `Analogue 2` | `0x02` |
+   | `Analogue 3` | `Analogue 3` | `0x03` |
+   | `Analogue 4` | `Analogue 4` | `0x04` |
+
+   The common V3.5 full-input/unknown raw-status case is the `Analogue 4`
+   row.  Reduced source-list classes are valid only if the PB1 wrap label
+   proves them.  The PB1 calibration label/data must match the first-trial PB2
+   label/data.
+
+6. Set a practical split-input case using title-driven navigation.  From
+   `Input PB1:`, use UP/DOWN until row 1 is `Optical`.  From `Input PB2:`, use
+   UP/DOWN until row 1 is `AES`.  Return to Volume.  The Volume source row must
+   show PB1's source (`Optical`), never PB2's `AES`.
+
+7. Optional route/audio evidence:
+
+   ```bash
+   .venv_ep0/bin/python scripts/dlcp_src4382_diag.py --path "$LEFT_HID"
+   .venv_ep0/bin/python scripts/dlcp_src4382_diag.py --path "$RIGHT_HID"
+   ```
+
+   Do not use `--show-path` in shared evidence.
+
+### Pass Criteria
+
+| What | Expected | Failure attribution |
+|---|---|---|
+| PB2 page starts as `Input PB2:` / `Same as PB1` | yes | PB2 discovery/menu insertion or linked-default regression |
+| `DOWN` from `Same as PB1` keeps CONTROL running and renders the expected concrete row | yes | If CONTROL reboots, hangs, or renders garbage, BUG-V173-MPB-PB2-DOWN-RAW is not field-closed |
+| PB2 MAIN input state equals the expected `cmd 0x06` byte | yes | PB2 commit/send path regression |
+| PB1 MAIN input state remains unchanged by PB2 DOWN | yes | PB2 command leaked as broadcast or PB1-targeted send |
+| Volume source row remains PB1-authoritative after PB1/PB2 diverge | yes | Volume render path is using PB2 intent |
+
+Rollback if the gate fails after an x52 flash:
+
+1. restore the prior known-good CONTROL HEX by exact git object/hash;
+2. run `shasum -a 256 <rollback-control.hex>`;
+3. run `flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID" --hex <rollback-control.hex> --preflight-only`;
+4. run `flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID" --hex <rollback-control.hex>`;
+5. cold power-cycle, rerun `identify-mains --require-left-right`, and repeat
+   Volume/PB1/PB2 smoke plus Diagnostics `OK` checks;
+6. record the rollback artifact path/hash and sanitized evidence.
 
 ## WAITING FOR DLCP recovery (V1.71 operator reset, 2026-04-21)
 
@@ -1493,6 +1658,62 @@ the logical gate closed with hardware latches still enabled.
   test that drives button pins in the WAITING state is an open
   workstream.
 
+## SRC4382 USB Diagnostics Gate
+
+This validates the V3.5 MAIN USB `cmd 0x45` SRC4382 selected-signal snapshot.
+It is read-only and page-0-only.  Do not flash or poll live hardware for this
+gate unless the current operator has explicitly approved live hardware access.
+
+### Prerequisites
+
+- MAIN flashed with canonical V3.5 rev `0x0090` or newer.
+- Known locked digital source on the selected input.
+- Explicit HID path for the MAIN under test.  Use `--all` only when the goal is
+  to query every attached MAIN.
+- Do not use `--show-path` in committed/shared evidence.  If raw path output is
+  needed for local troubleshooting, keep it in ignored local artifacts and
+  publish only role labels plus hash-only path identifiers.
+
+### Procedure
+
+1. Identify MAIN roles and record explicit paths:
+
+   ```bash
+   .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
+   ```
+
+2. Capture the existing MAIN diagnostic counters:
+
+   ```bash
+   .venv_ep0/bin/python scripts/dlcp_diag.py --json --cmd44-only --path "$MAIN_PATH"
+   ```
+
+3. Capture the SRC4382 snapshot:
+
+   ```bash
+   .venv_ep0/bin/python scripts/dlcp_src4382_diag.py --json --path "$MAIN_PATH"
+   ```
+
+4. Poll at the default one-second cadence for at least 60 seconds while
+   listening to the selected digital source:
+
+   ```bash
+   .venv_ep0/bin/python scripts/dlcp_src4382_diag.py --json --watch --include-ratio --path "$MAIN_PATH"
+   ```
+
+5. Re-capture command `0x44` counters and compare `I/R/N/L/C/T/M` with step 2.
+
+### Pass Criteria
+
+- `cmd 0x45` reaches status `OK` after any initial `pending`/`partial` reply.
+- Snapshot reports schema `1`, payload length `0x23`, page-1 bytes as `0xFF`,
+  and reserved tail bytes as zero.
+- Locked PCM source reports a selected receiver, `decoded_lock=locked`, and
+  `decoded_payload=PCM`; unavailable hardware cases must be recorded as not run.
+- Optional ratio bytes and optional PC/PD bytes appear only when requested.
+- The 60-second poll does not cause mute, route churn, LCD/control stall, or
+  unexplained growth in `I/R/N/L/C/T/M`.
+
 ## SRC4382 Auto Detect Acoustic Gate
 
 This closes the hardware side of `BUG-SRC4382-AD-01` after the simulator has
@@ -1505,8 +1726,9 @@ future route/TAS regressions.
 
 ### Prerequisites
 
-- CONTROL flashed with canonical V1.73, currently rev `0x47`.
-- both MAINs flashed with canonical V3.4, currently rev `0xAC`.
+- CONTROL flashed with canonical V1.73 for the target validation; the current
+  multi-PB bugfix artifact is rev `0x52`.
+- both MAINs flashed with canonical V3.5, currently rev `0x0090`.
 - known audio source available on at least one fixed digital input and through
   Auto Detect; if possible, exercise `S/PDIF`, `USB Audio`, `AES`, and
   `Optical` individually.

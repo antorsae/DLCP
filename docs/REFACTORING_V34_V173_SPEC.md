@@ -52,10 +52,11 @@ Before behavior refactoring starts, the new pair shall also be fully wired into:
 - flash-wrapper tests that allow V3.4/V1.73 flashing and pin the accepted
   CONTROL safe-flash default.
 
-Promotion status: as of 2026-06-14, V3.4/V1.73 is the recommended operator
-release pair.  `README.md` and `scripts/flash_control_safe.sh` now default to
-MAIN V3.4 rev `0xAC` plus CONTROL V1.73 rev `0x47`; V3.3/V1.72 remains the
-previous supported rollback pair.
+Promotion status: V3.4/V1.73 is now a historical refactoring baseline and
+rollback/compatibility line.  The current operator pair is MAIN V3.5 plus
+CONTROL V1.73; as of 2026-06-22 the non-hardware-gated CONTROL artifact is
+`V1.73 / rev 0x52 / build 20260622`.  V3.3/V1.72 remains the previous
+supported rollback pair.
 
 ## Goals
 
@@ -486,17 +487,25 @@ path.  Do not reuse HID paths across USB re-enumeration.
 PYTHONPATH=src .venv_ep0/bin/python scripts/hardware_state_test.py detect
 PYTHONPATH=src .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
 # refresh/export LEFT_HID and RIGHT_HID from the latest identify output
+: "${LEFT_HID:?set LEFT_HID from identify-mains output}"
+: "${RIGHT_HID:?set RIGHT_HID from identify-mains output}"
 PYTHONPATH=src .venv_ep0/bin/python scripts/dlcp_v34_release_flash.py --path "$LEFT_HID" --left
 PYTHONPATH=src .venv_ep0/bin/python scripts/dlcp_v34_release_flash.py --path "$RIGHT_HID" --right
 PYTHONPATH=src .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
 # refresh/export LEFT_HID and RIGHT_HID from the latest identify output
 # Power-cycle CONTROL while holding UP+DOWN for ~6s to enter bootloader; do not press SELECT.
-# CONTROL re-enumerates independently; do not reuse MAIN HID paths for CONTROL flashing.
-scripts/flash_control_safe.sh --hex firmware/patched/releases/DLCP_Control_V1.73.hex --preflight-only
-scripts/flash_control_safe.sh --hex firmware/patched/releases/DLCP_Control_V1.73.hex
+# CONTROL flashing is relayed through the MAIN HID path physically connected to
+# CONTROL, normally LEFT/PB1.  Refresh the path after MAIN USB re-enumeration.
+: "${LEFT_HID:?set LEFT_HID from identify-mains output}"
+CONTROL_RELAY_MAIN_HID="$LEFT_HID"
+: "${CONTROL_RELAY_MAIN_HID:?set relay MAIN HID path}"
+scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID" --hex firmware/patched/releases/DLCP_Control_V1.73.hex --preflight-only
+scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID" --hex firmware/patched/releases/DLCP_Control_V1.73.hex
 # Cold power-cycle CONTROL plus both MAINs before smoke probes.
 PYTHONPATH=src .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
 # refresh/export LEFT_HID and RIGHT_HID from the latest identify output
+: "${LEFT_HID:?set LEFT_HID from identify-mains output}"
+: "${RIGHT_HID:?set RIGHT_HID from identify-mains output}"
 ```
 
 Post-flash checks, if live deploy runs:
@@ -515,9 +524,10 @@ evidence; a blank row alone is not proof.
 If hardware smoke runs, first verify app-resident PB1/PB2 Diagnostics MAIN
 identity reports `v3.4 NNNN`, then verify Preset page A/B row0 and filename
 rows, Preset B -> next menu -> standby -> wake -> Preset, and rollback commands.
-Record exact flash commands, HID paths/routes, release identities, LCD
-probe/OCR or raw LCD captures, and a JSON/text report artifact under
-`artifacts/`.
+Record exact flash commands, PB roles with redacted/hash-only HID path
+identifiers, release identities, LCD probe/OCR or raw LCD captures, and a
+JSON/text report artifact under `artifacts/`.  Raw HID paths and serials should
+remain in ignored local artifacts or shell variables.
 
 ## Acceptance Criteria
 

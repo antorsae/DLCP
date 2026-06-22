@@ -49,6 +49,9 @@ IR_PRESET_A = 0x38
 IR_PRESET_B = 0x39
 
 ONE_S = 48_000_000
+CONTROL_FULL_SYNC_LO = 0x09F
+CONTROL_FULL_SYNC_HI = 0x0A0
+CONTROL_FULL_SYNC_STEP = 0x170
 
 
 @pytest.fixture(scope="module")
@@ -103,6 +106,13 @@ def test_nonpcm_blip_counts_episodes_not_passes(settled_chain) -> None:
     advance with the first mute write of each episode.
     """
     chain = settled_chain
+    # This test isolates the MAIN SRC monitor's edge-counting contract.
+    # CONTROL full-sync can legitimately re-issue cmd 0x06 during the one-second
+    # observation window and force a separate mute edge; that interaction is
+    # covered by source-selection/full-sync tests rather than this monitor unit.
+    chain.write_reg(CONTROL_FULL_SYNC_LO, 0x00)
+    chain.write_reg(CONTROL_FULL_SYNC_HI, 0x00)
+    chain.write_reg(CONTROL_FULL_SYNC_STEP, 0x00)
     before = _cells(chain)
 
     chain.poke_main_src4382_reg(0, SRC_REG_NON_PCM, 0x01)
