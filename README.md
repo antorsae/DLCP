@@ -101,6 +101,17 @@ independent and sends addressed input frames; selecting `Same as PB1` again
 returns to broadcast behavior.  CONTROL `rev 0x53` persists the PB2 input
 choice in a guarded CONTROL EEPROM byte and keeps it pending until PB2 is
 rediscovered after boot.  The Volume page always shows PB1's source.
+This fixes the stock MASTER/FOLLOWER digital-input problem: stock CONTROL
+broadcasts one global input selection, so choosing `Optical` makes both PB1 and
+PB2 listen to their local optical receivers even though the follower is normally
+fed by PB1 over the RJ45/CAT/AES link.  For that tandem wiring, the recommended
+setup is:
+
+```text
+Input PB1: Auto Detect   # or the real external source, e.g. Optical
+Input PB2: AES
+```
+
 If PB2 health ages out, the PB2 input title can show `old` or `lost`, but the
 page remains available after PB2 has been discovered.  The reported PB2
 `Same as PB1` + `DOWN` reboot is simulator/canonical-HEX fixed in CONTROL
