@@ -317,7 +317,12 @@ WARNING: local A/B preset captures are incomplete; flashing canonical V3.5 witho
 Flash CONTROL:
 
 ```bash
-# Use the MAIN HID relay physically connected to CONTROL, normally LEFT/PB1.
+# One visible MAIN: wrapper auto-selects it.
+scripts/flash_control_safe.sh --preflight-only
+scripts/flash_control_safe.sh
+
+# Two visible MAINs: use the MAIN HID relay physically connected to CONTROL,
+# normally LEFT/PB1.
 : "${LEFT_HID:?set LEFT_HID from identify-mains output}"
 export CONTROL_RELAY_MAIN_HID="$LEFT_HID"
 : "${CONTROL_RELAY_MAIN_HID:?set relay MAIN HID path}"
@@ -328,10 +333,11 @@ scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID"
 `scripts/flash_control_safe.sh` defaults to
 `firmware/patched/releases/DLCP_Control_V1.73.hex`. CONTROL flashing is
 relayed through a MAIN USB HID path; refresh `LEFT_HID`/`RIGHT_HID` after any
-MAIN USB re-enumeration and pass the relay MAIN path explicitly. CONTROL must
-be in its bootloader before the live flash. Power-cycle while holding
-**UP + DOWN** for about 6 seconds; do not press SELECT. After CONTROL flashing,
-power-cycle once so V1.73 starts cleanly from cold boot.
+MAIN USB re-enumeration.  With exactly one visible MAIN, the wrapper auto-picks
+that MAIN.  With multiple visible MAINs, pass the relay MAIN path explicitly.
+CONTROL must be in its bootloader before the live flash. Power-cycle while
+holding **UP + DOWN** for about 6 seconds; do not press SELECT. After CONTROL
+flashing, power-cycle once so V1.73 starts cleanly from cold boot.
 
 Useful post-flash checks:
 

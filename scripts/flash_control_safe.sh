@@ -18,7 +18,8 @@ Options:
   --vid INT               USB VID (decimal or 0x...)
   --pid INT               USB PID (decimal or 0x...)
   --path STR              hidapi path for specific device selection
-                          (required for live flash; optional for preflight)
+                          (optional when exactly one MAIN HID is visible;
+                           required when multiple MAINs are visible)
   --pace-ms INT           Inter-report delay in ms (default: 0, ACK-paced like HFD)
   --init-delay-ms INT     Delay before first 0x42 data report in ms (default: 0)
   --report-timeout-ms INT Timeout waiting for each 0x42 ACK (default: 5000)
@@ -142,9 +143,42 @@ fi
 [[ -f "${HEX}" ]] || { echo "error: control HEX not found: ${HEX}" >&2; exit 2; }
 [[ -f "${BOOT_REF}" ]] || { echo "error: bootloader reference HEX not found: ${BOOT_REF}" >&2; exit 2; }
 if [[ ${PREFLIGHT_ONLY} -ne 1 && -z "${HID_PATH}" ]]; then
-  echo "error: live control flash requires --path with the relay MAIN HID path" >&2
-  echo "hint: run scripts/hardware_state_test.py identify-mains --require-left-right and pass the MAIN path physically connected to CONTROL" >&2
-  exit 2
+  HID_PATH="$(
+    cd "${ROOT_DIR}"
+    "${PYTHON}" - "${VID}" "${PID}" <<'PY'
+import sys
+
+from dlcp_fw.flash.dlcp_control_flash import (
+    DEFAULT_PID,
+    DEFAULT_VID,
+    _parse_int_auto,
+    enumerate_devices,
+)
+
+vid_arg, pid_arg = sys.argv[1:3]
+vid = _parse_int_auto(vid_arg) if vid_arg else DEFAULT_VID
+pid = _parse_int_auto(pid_arg) if pid_arg else DEFAULT_PID
+devs = enumerate_devices(vid, pid)
+if len(devs) == 1 and devs[0].path is not None:
+    print(devs[0].path.decode("utf-8", errors="strict"))
+    raise SystemExit(0)
+if not devs:
+    print(f"error: no MAIN HID device found for {vid:04X}:{pid:04X}", file=sys.stderr)
+else:
+    print(
+        f"error: live control flash saw {len(devs)} matching MAIN HID devices; "
+        "pass --path with the relay MAIN HID path",
+        file=sys.stderr,
+    )
+    print(
+        "hint: run scripts/hardware_state_test.py identify-mains --require-left-right "
+        "and pass the MAIN path physically connected to CONTROL",
+        file=sys.stderr,
+    )
+raise SystemExit(2)
+PY
+  )" || exit 2
+  echo "[safe-flash] auto-selected only visible MAIN HID path: ${HID_PATH}"
 fi
 
 common_cmd=("${PYTHON}" "-m" "dlcp_fw.flash.dlcp_control_flash" "--hex" "${HEX}" "--bootloader-ref" "${BOOT_REF}")

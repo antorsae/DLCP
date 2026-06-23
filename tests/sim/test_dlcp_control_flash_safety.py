@@ -334,9 +334,11 @@ def test_safe_control_wrapper_defaults_to_v173_release() -> None:
     assert 'DEFAULT_HEX="${ROOT_DIR}/firmware/patched/releases/DLCP_Control_V1.71.hex"' not in text
 
 
-def test_safe_control_wrapper_requires_explicit_path_for_live_flash() -> None:
+def test_safe_control_wrapper_auto_picks_single_main_but_requires_path_for_multiple() -> None:
     text = Path("scripts/flash_control_safe.sh").read_text(encoding="utf-8")
-    assert 'live control flash requires --path with the relay MAIN HID path' in text
+    assert "auto-selected only visible MAIN HID path" in text
+    assert "live control flash saw" in text
+    assert "pass --path with the relay MAIN HID path" in text
     assert 'PREFLIGHT_ONLY} -ne 1 && -z "${HID_PATH}"' in text
 
 

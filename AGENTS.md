@@ -736,6 +736,11 @@ Notes:
 Safe control flash preflight/live:
 
 ```bash
+# One visible MAIN: auto-selects it.
+scripts/flash_control_safe.sh --preflight-only
+scripts/flash_control_safe.sh
+
+# Two visible MAINs: explicitly pass the relay MAIN path.
 .venv_ep0/bin/python scripts/hardware_state_test.py detect
 .venv_ep0/bin/python scripts/hardware_state_test.py identify-mains --require-left-right
 export CONTROL_RELAY_MAIN_HID='<MAIN HID path physically connected to CONTROL>'
