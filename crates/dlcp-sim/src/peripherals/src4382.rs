@@ -44,8 +44,11 @@
 //!   `test_v32_diag_counters_stay_zero_during_extended_idle`).
 //!
 //! * Latch register writes into a 256-byte file with
-//!   subaddress auto-increment, so subsequent reads return the
-//!   firmware's most-recently-written value.  Sufficient for
+//!   write-side subaddress auto-increment, so subsequent reads return the
+//!   firmware's most-recently-written value.  Read-side auto-increment is
+//!   intentionally not modeled: real DLCP V3.5 cmd45 hardware evidence showed
+//!   a two-byte read from ratio register `0x32` returning `0x32` twice, so
+//!   firmware must explicitly address both `0x32` and `0x33`.  Sufficient for
 //!   the layer5_diag_counters test family which only needs the
 //!   ACKSTAT-clean baseline; tests that depend on real SRC4382
 //!   audio behaviour (sample-rate detection, lock indicator)
@@ -66,10 +69,10 @@
 //!   appear to access it.  Modeled as the same 256-byte file
 //!   for simplicity; if a future test needs page-paging, this
 //!   model can be split.
-//! * Fault-injection knobs (address-NACK counter, SCL stretch,
-//!   etc.) are not implemented here.  The TAS3108 model has
-//!   them; if a future SRC4382 robustness test needs them, copy
-//!   the pattern from `tas3108.rs::set_address_nack_count`.
+//! * Address/data NACK injection is implemented for firmware
+//!   robustness tests.  SCL stretching and line-hold faults remain
+//!   outside this slave model; the shared MSSP model owns those bus-
+//!   level behaviours.
 
 #![allow(
     dead_code,
@@ -170,7 +173,7 @@ enum Phase {
     Writing { next_subaddr: u8 },
     /// Address matched with R/W = read.  The slave provides
     /// bytes via `provide_rx_byte` starting at the latched
-    /// subaddress.
+    /// subaddress.  Reads do not auto-increment on observed DLCP hardware.
     Reading { next_subaddr: u8 },
 }
 
@@ -502,9 +505,10 @@ impl Src4382 {
     }
 
     /// Provide one byte for a master-driven read.  Returns
-    /// the register-file byte at the current subaddress and
-    /// auto-increments.  Returns 0 if no read transaction is
-    /// in progress.
+    /// the register-file byte at the current subaddress.  Real DLCP hardware
+    /// evidence from SRC4382 ratio reads shows the read subaddress does not
+    /// auto-increment, so repeated bytes in one read transaction return the
+    /// same register.  Returns 0 if no read transaction is in progress.
     pub fn provide_rx_byte(&mut self) -> u8 {
         match self.phase {
             Phase::Reading { next_subaddr } => {
@@ -513,7 +517,7 @@ impl Src4382 {
                 self.read_bytes_by_subaddr[normalized] += 1;
                 self.reads_by_subaddr[normalized] += 1;
                 self.phase = Phase::Reading {
-                    next_subaddr: next_subaddr.wrapping_add(1),
+                    next_subaddr,
                 };
                 byte
             }
@@ -663,6 +667,27 @@ mod tests {
         assert_eq!(stats.read_transactions, 1);
         assert_eq!(stats.reads_by_subaddr[0x12], 1);
         assert_eq!(stats.read_bytes_by_subaddr[0x12], 1);
+    }
+
+    #[test]
+    fn multi_byte_read_repeats_latched_register_without_auto_increment() {
+        let mut s = Src4382::default();
+        s.poke_subaddr(0x32, 0x08);
+        s.poke_subaddr(0x33, 0x31);
+
+        s.on_start();
+        assert!(s.consume_tx_byte(0xE2));
+        assert!(s.consume_tx_byte(0x32));
+        s.on_repeated_start();
+        assert!(s.consume_tx_byte(0xE3));
+
+        assert_eq!(s.provide_rx_byte(), 0x08);
+        assert_eq!(s.provide_rx_byte(), 0x08);
+        s.on_stop();
+        let stats = s.stats();
+        assert_eq!(stats.read_transactions, 1);
+        assert_eq!(stats.reads_by_subaddr[0x32], 2);
+        assert_eq!(stats.reads_by_subaddr[0x33], 0);
     }
 
     /// Read-before-any-latch is rejected with NACK + Ignored

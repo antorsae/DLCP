@@ -4,7 +4,10 @@ from dataclasses import replace
 from pathlib import Path
 
 from dlcp_fw.analysis import ram_bank_safety as rbs
-from dlcp_fw.asm.ram_bank_manifest import load_manifest
+from dlcp_fw.asm.ram_bank_manifest import (
+    cells_by_source_name,
+    load_manifest,
+)
 
 
 def _codes(findings: list[rbs.Finding]) -> set[str]:
@@ -19,6 +22,11 @@ def test_v34_v173_targets_are_registered() -> None:
     assert rbs.TARGET_SPECS["main-v34"].asm_path.name == "dlcp_main_v34.asm"
     assert rbs.TARGET_SPECS["main-v35"].asm_path.name == "dlcp_main_v35.asm"
     assert rbs.TARGET_SPECS["control-v173"].asm_path.name == "dlcp_control_v173.asm"
+
+
+def test_v35_cmd45_raw_src4382_diag_has_no_dedicated_ram_cache() -> None:
+    cells = cells_by_source_name("main-v35")
+    assert not any(name.startswith(("cmd45_cache_", "cmd45_job_")) for name in cells)
 
 
 def test_raw_ram_symbol_operand_fails() -> None:

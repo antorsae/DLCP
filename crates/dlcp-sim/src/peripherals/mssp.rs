@@ -382,6 +382,21 @@ impl Mssp {
         }
     }
 
+    /// React to a firmware read from MSSP SFRs.
+    ///
+    /// In master-receive mode, SSPSTAT.BF means SSPBUF holds an unread byte.
+    /// Reading SSPBUF drains that latch and clears BF, so a subsequent RCEN
+    /// waits for a fresh byte rather than re-reading stale SSPBUF contents.
+    pub fn on_sfr_read(&mut self, addr: u16, mem: &mut Memory) {
+        if addr == SSPBUF_ADDR {
+            let stat = mem.read_raw(crate::memory::Address::from_raw(SSPSTAT_ADDR));
+            mem.write_raw(
+                crate::memory::Address::from_raw(SSPSTAT_ADDR),
+                stat & !SSPSTAT_BF,
+            );
+        }
+    }
+
     fn handle_sspcon1_write(&mut self, value: u8, _mem: &mut Memory) {
         // Firmware recovery drops SSPEN to abort an in-flight MSSP
         // transaction before re-arming the module.  Hardware does not
@@ -1032,6 +1047,29 @@ mod tests {
             mem.read_raw(Address::from_raw(SSPSTAT_ADDR)) & SSPSTAT_BF,
             SSPSTAT_BF,
             "BF must assert on SSPBUF write"
+        );
+    }
+
+    /// SSPBUF read after a master receive drains the buffer and clears BF.
+    #[test]
+    fn sspbuf_read_clears_bf() {
+        let mut mssp = Mssp::default();
+        let mut mem = fresh_mem();
+        enable_i2c_master(&mut mem, 0x77);
+        mem.write_raw(Address::from_raw(SSPSTAT_ADDR), SSPSTAT_BF);
+        mem.write_raw(Address::from_raw(SSPBUF_ADDR), 0x5A);
+
+        mssp.on_sfr_read(SSPBUF_ADDR, &mut mem);
+
+        assert_eq!(
+            mem.read_raw(Address::from_raw(SSPSTAT_ADDR)) & SSPSTAT_BF,
+            0,
+            "BF must clear after firmware reads SSPBUF"
+        );
+        assert_eq!(
+            mem.read_raw(Address::from_raw(SSPBUF_ADDR)),
+            0x5A,
+            "read side-effect must not clobber the latched byte"
         );
     }
 

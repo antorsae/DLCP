@@ -26,6 +26,52 @@ FILENAME_DIRTY = 0x20
 FILENAME_XACT_PENDING = 0x40
 PRESET_JOB_STATE = 0x02DE
 PRESET_JOB_TARGET = 0x02DF
+PRESET_JOB_INDEX = 0x02E0
+PRESET_JOB_DELAY = 0x02E1
+PRESET_JOB_FLAGS = 0x02E2
+PRESET_JOB_TBL_LO = 0x02E3
+PRESET_JOB_TBL_HI = 0x02E4
+PRESET_JOB_END = PRESET_JOB_TBL_HI
+MAIN_SRC_ROUTE_REQUEST = 0x093
+MAIN_RX_FRAME_POSITION = 0x098
+MAIN_INPUT_SELECT = 0x099
+MAIN_ROUTE_SHADOW = 0x0AB
+MAIN_INPUT_SELECT_MIRROR = 0x0B3
+MAIN_RX_RING_RD = 0x0C6
+MAIN_RX_RING_WR = 0x0C7
+MAIN_RX_RING_BASE = 0x0200
+MAIN_RX_RING_SIZE = 0xC0
+MAIN_RX_RING_END = MAIN_RX_RING_BASE + MAIN_RX_RING_SIZE - 1
+MAIN_USB_EP1_OUT_BASE = 0x011A
+MAIN_USB_EP1_OUT_END = 0x0159
+MAIN_USB_EP1_IN_BASE = 0x015A
+MAIN_USB_EP1_IN_END = 0x0199
+MAIN_HID_STATE_BASE = 0x00B5
+MAIN_HID_STATE_END = 0x00CE
+MAIN_SETTINGS_EEPROM_FIRST = 0x00
+MAIN_SETTINGS_EEPROM_LAST = 0x14
+CONTROL_FLAGS = 0x01F
+CONTROL_PRESET_EEPROM = 0x74
+CONTROL_INPUT_INDEX = 0x0B7
+CONTROL_INPUT_SELECT_CACHE = 0x0B8
+CONTROL_VOLUME_CACHE = 0x0B9
+CONTROL_DISPLAY_STATE_INDEX = 0x0BF
+CONTROL_FNAME_CACHE = 0x0220
+CONTROL_FNAME_LEN = 0x023E
+CONTROL_FNAME_EXPECTED_LEN = 0x023F
+CONTROL_FNAME_FLAGS = 0x0240
+CONTROL_FNAME_ID = 0x0242
+CONTROL_FNAME_SCROLL_OFF = 0x0243
+CONTROL_FNAME_IDENTITY_GAP_FIRST = 0x0245
+CONTROL_FNAME_IDENTITY_GAP_LAST = 0x0254
+CONTROL_FNAME_DEADLINE_LO = 0x0257
+CONTROL_FNAME_DEADLINE_HI = 0x0258
+CONTROL_FNAME_RENDER_COL = 0x0259
+CONTROL_FNAME_RENDER_OFF = 0x025A
+CONTROL_FNAME_ROW0_STATUS = 0x025B
+CONTROL_FNAME_TMP = 0x025C
+CONTROL_FNAME_END = 0x025D
+CONTROL_FNAME_RIGHT_GUARD = 0x025F
 MAIN_V35_ASM = PROJECT_ROOT / "src/dlcp_fw/asm/dlcp_main_v35.asm"
 MAIN_V35_LST = PROJECT_ROOT / "src/dlcp_fw/asm/dlcp_main_v35.lst"
 CONTROL_V173_ASM = PROJECT_ROOT / "src/dlcp_fw/asm/dlcp_control_v173.asm"
@@ -44,6 +90,78 @@ class Stimulus:
     params: dict[str, Any]
     tick_before: int
     tick_after: int
+
+
+def trace_watch(
+    *,
+    role: str,
+    space: str,
+    start: int,
+    end: int | None = None,
+    label: str | None = None,
+    protected: bool = False,
+    stop_on_write: bool = False,
+    fail_on_write: bool | None = None,
+) -> dict[str, object]:
+    """Build a native memory-trace watch with conservative defaults."""
+    if end is None:
+        end = start
+    if fail_on_write is None:
+        fail_on_write = protected
+    return {
+        "role": role,
+        "space": space,
+        "start": start,
+        "end": end,
+        "label": label or f"{role}.{space}.0x{start:03X}-0x{end:03X}",
+        "protected": protected,
+        "stop_on_write": stop_on_write,
+        "fail_on_write": fail_on_write,
+    }
+
+
+def main_range_watches(
+    start: int,
+    end: int,
+    label: str,
+    *,
+    units: tuple[int, ...] = (0, 1),
+    space: str = "DataRam",
+    protected: bool = False,
+    fail_on_write: bool | None = None,
+) -> list[dict[str, object]]:
+    return [
+        trace_watch(
+            role=f"MAIN{unit}",
+            space=space,
+            start=start,
+            end=end,
+            label=f"MAIN{unit}.{label}",
+            protected=protected,
+            fail_on_write=fail_on_write,
+        )
+        for unit in units
+    ]
+
+
+def control_range_watch(
+    start: int,
+    end: int,
+    label: str,
+    *,
+    space: str = "DataRam",
+    protected: bool = False,
+    fail_on_write: bool | None = None,
+) -> dict[str, object]:
+    return trace_watch(
+        role="CONTROL",
+        space=space,
+        start=start,
+        end=end,
+        label=f"CONTROL.{label}",
+        protected=protected,
+        fail_on_write=fail_on_write,
+    )
 
 
 def slot(text: str) -> bytes:
@@ -154,63 +272,207 @@ def firmware_path_repair_all_filename_slots(
         persist_filename_firmware_path(chain, unit, slot_b, preset_b=True)
 
 
+def main_filename_eeprom_watches(
+    *,
+    slots: tuple[str, ...] = ("a", "b"),
+    units: tuple[int, ...] = (0, 1),
+    protected: bool = True,
+) -> list[dict[str, object]]:
+    watches: list[dict[str, object]] = []
+    for slot_name in slots:
+        if slot_name == "a":
+            base = PRESET_A_EEPROM_BASE
+        elif slot_name == "b":
+            base = PRESET_B_EEPROM_BASE
+        else:
+            raise ValueError(f"unknown filename slot {slot_name!r}")
+        watches.extend(
+            main_range_watches(
+                base,
+                base + FILENAME_LEN - 1,
+                f"preset_{slot_name}_filename_eeprom",
+                units=units,
+                space="Eeprom",
+                protected=protected,
+            )
+        )
+    return watches
+
+
+def main_filename_ram_watches(
+    *,
+    units: tuple[int, ...] = (0, 1),
+    protected: bool = False,
+) -> list[dict[str, object]]:
+    return main_range_watches(
+        FILENAME_RAM_BASE,
+        FILENAME_RAM_BASE + FILENAME_LEN - 1,
+        "filename_ram",
+        units=units,
+        protected=protected,
+    )
+
+
+def main_preset_job_watches(
+    *,
+    units: tuple[int, ...] = (0, 1),
+    protected: bool = False,
+) -> list[dict[str, object]]:
+    return main_range_watches(
+        PRESET_JOB_STATE,
+        PRESET_JOB_END,
+        "preset_job_block",
+        units=units,
+        protected=protected,
+    )
+
+
+def main_rx_ring_watches(
+    *,
+    units: tuple[int, ...] = (0, 1),
+    protected: bool = False,
+) -> list[dict[str, object]]:
+    watches = main_range_watches(
+        MAIN_RX_RING_BASE,
+        MAIN_RX_RING_END,
+        "rx_ring_buffer",
+        units=units,
+        protected=protected,
+    )
+    watches.extend(
+        main_range_watches(
+            MAIN_RX_RING_RD,
+            MAIN_RX_RING_WR,
+            "rx_ring_indices",
+            units=units,
+            protected=protected,
+        )
+    )
+    watches.extend(
+        main_range_watches(
+            MAIN_RX_FRAME_POSITION,
+            MAIN_RX_FRAME_POSITION,
+            "rx_frame_position",
+            units=units,
+            protected=protected,
+        )
+    )
+    return watches
+
+
+def main_route_state_watches(
+    *,
+    units: tuple[int, ...] = (0, 1),
+    protected: bool = False,
+) -> list[dict[str, object]]:
+    watches: list[dict[str, object]] = []
+    for addr, label in (
+        (MAIN_SRC_ROUTE_REQUEST, "src_route_request"),
+        (MAIN_INPUT_SELECT, "input_select"),
+        (MAIN_ROUTE_SHADOW, "route_shadow"),
+        (MAIN_INPUT_SELECT_MIRROR, "input_select_mirror"),
+    ):
+        watches.extend(
+            main_range_watches(addr, addr, label, units=units, protected=protected)
+        )
+    return watches
+
+
+def control_preset_eeprom_watches() -> list[dict[str, object]]:
+    return [
+        control_range_watch(
+            CONTROL_PRESET_EEPROM - 4,
+            CONTROL_PRESET_EEPROM - 1,
+            "preset_eeprom_left_guard",
+            space="Eeprom",
+            protected=True,
+        ),
+        control_range_watch(
+            CONTROL_PRESET_EEPROM,
+            CONTROL_PRESET_EEPROM,
+            "preset_eeprom",
+            space="Eeprom",
+        ),
+        control_range_watch(
+            CONTROL_PRESET_EEPROM + 1,
+            CONTROL_PRESET_EEPROM + 4,
+            "preset_eeprom_right_guard",
+            space="Eeprom",
+            protected=True,
+        ),
+    ]
+
+
+def control_filename_cache_watches() -> list[dict[str, object]]:
+    return [
+        control_range_watch(0x021C, 0x021F, "fname_left_guard", protected=True),
+        control_range_watch(CONTROL_FNAME_CACHE, CONTROL_FNAME_END, "fname_cache"),
+        control_range_watch(
+            CONTROL_FNAME_IDENTITY_GAP_FIRST,
+            CONTROL_FNAME_IDENTITY_GAP_LAST,
+            "fname_identity_gap",
+            protected=True,
+        ),
+        control_range_watch(
+            CONTROL_FNAME_RIGHT_GUARD,
+            CONTROL_FNAME_RIGHT_GUARD,
+            "fname_right_guard",
+            protected=True,
+        ),
+    ]
+
+
 def protected_filename_watches() -> list[dict[str, object]]:
     watches: list[dict[str, object]] = []
     for unit in (0, 1):
         role = f"MAIN{unit}"
         watches.extend(
             [
-                {
-                    "role": role,
-                    "space": "Eeprom",
-                    "start": PRESET_B_EEPROM_BASE,
-                    "end": PRESET_B_EEPROM_BASE + FILENAME_LEN - 1,
-                    "label": f"{role}.preset_b_filename_eeprom",
-                    "protected": True,
-                    "fail_on_write": True,
-                },
-                {
-                    "role": role,
-                    "space": "DataRam",
-                    "start": FILENAME_RAM_BASE,
-                    "end": FILENAME_RAM_BASE + FILENAME_LEN - 1,
-                    "label": f"{role}.filename_ram",
-                },
-                {
-                    "role": role,
-                    "space": "DataRam",
-                    "start": MAIN_ACTIVE_FLAGS,
-                    "end": MAIN_ACTIVE_FLAGS,
-                    "label": f"{role}.active_flags",
-                },
-                {
-                    "role": role,
-                    "space": "DataRam",
-                    "start": EVENT_FLAGS,
-                    "end": EVENT_FLAGS,
-                    "label": f"{role}.event_flags",
-                },
-                {
-                    "role": role,
-                    "space": "DataRam",
-                    "start": FILENAME_DIRTY_FLAGS,
-                    "end": FILENAME_DIRTY_FLAGS,
-                    "label": f"{role}.filename_dirty_flags",
-                },
-                {
-                    "role": role,
-                    "space": "DataRam",
-                    "start": PRESET_JOB_STATE,
-                    "end": PRESET_JOB_STATE,
-                    "label": f"{role}.preset_job_state",
-                },
-                {
-                    "role": role,
-                    "space": "DataRam",
-                    "start": PRESET_JOB_TARGET,
-                    "end": PRESET_JOB_TARGET,
-                    "label": f"{role}.preset_job_target",
-                },
+                trace_watch(
+                    role=role,
+                    space="Eeprom",
+                    start=PRESET_B_EEPROM_BASE,
+                    end=PRESET_B_EEPROM_BASE + FILENAME_LEN - 1,
+                    label=f"{role}.preset_b_filename_eeprom",
+                    protected=True,
+                ),
+                trace_watch(
+                    role=role,
+                    space="DataRam",
+                    start=FILENAME_RAM_BASE,
+                    end=FILENAME_RAM_BASE + FILENAME_LEN - 1,
+                    label=f"{role}.filename_ram",
+                ),
+                trace_watch(
+                    role=role,
+                    space="DataRam",
+                    start=MAIN_ACTIVE_FLAGS,
+                    label=f"{role}.active_flags",
+                ),
+                trace_watch(
+                    role=role,
+                    space="DataRam",
+                    start=EVENT_FLAGS,
+                    label=f"{role}.event_flags",
+                ),
+                trace_watch(
+                    role=role,
+                    space="DataRam",
+                    start=FILENAME_DIRTY_FLAGS,
+                    label=f"{role}.filename_dirty_flags",
+                ),
+                trace_watch(
+                    role=role,
+                    space="DataRam",
+                    start=PRESET_JOB_STATE,
+                    label=f"{role}.preset_job_state",
+                ),
+                trace_watch(
+                    role=role,
+                    space="DataRam",
+                    start=PRESET_JOB_TARGET,
+                    label=f"{role}.preset_job_target",
+                ),
             ]
         )
     return watches
@@ -233,6 +495,102 @@ def single_byte_eeprom_watch(
             "fail_on_write": protected,
         }
     ]
+
+
+def assert_trace_clean(chain: Chain) -> None:
+    summary = chain.memory_trace_summary()
+    assert not summary["overflowed"], summary
+    assert summary["dropped_count"] == 0, summary
+    assert chain.memory_trace_first_violation() is None
+
+
+def wait_preset_jobs_idle(chain: Chain, *, units: tuple[int, ...] = (0, 1)) -> None:
+    for _ in range(80):
+        if all(chain.read_main_reg(unit, PRESET_JOB_STATE) == 0 for unit in units):
+            return
+        chain.step_ticks(5_000_000)
+    states = {
+        unit: {
+            "state": chain.read_main_reg(unit, PRESET_JOB_STATE),
+            "target": chain.read_main_reg(unit, PRESET_JOB_TARGET),
+            "index": chain.read_main_reg(unit, PRESET_JOB_INDEX),
+        }
+        for unit in units
+    }
+    raise AssertionError(f"preset jobs did not become idle: {states!r}")
+
+
+def run_preset_toggle_churn(chain: Chain) -> list[Stimulus]:
+    stimuli: list[Stimulus] = []
+
+    def record(phase: str, action: str, params: dict[str, Any], fn) -> None:  # type: ignore[no-untyped-def]
+        before = chain.current_tick()
+        fn()
+        after = chain.current_tick()
+        stimuli.append(Stimulus(phase, action, params, before, after))
+
+    for cmd in (IR_CMD_PRESET_B, IR_CMD_PRESET_A, IR_CMD_PRESET_B, IR_CMD_PRESET_A):
+        record(
+            "preset",
+            "ir",
+            {"addr": IR_ADDR_HYPEX, "cmd": cmd},
+            lambda cmd=cmd: (
+                chain.inject_decoded_ir_event(addr=IR_ADDR_HYPEX, cmd=cmd),
+                chain.step_ticks(80_000_000),
+            ),
+        )
+    wait_preset_jobs_idle(chain)
+    return stimuli
+
+
+def run_main_route_churn(chain: Chain, *, units: tuple[int, ...] = (0, 1)) -> list[Stimulus]:
+    stimuli: list[Stimulus] = []
+
+    def record(phase: str, action: str, params: dict[str, Any], fn) -> None:  # type: ignore[no-untyped-def]
+        before = chain.current_tick()
+        fn()
+        after = chain.current_tick()
+        stimuli.append(Stimulus(phase, action, params, before, after))
+
+    for data in (0x00, 0x05, 0x08, 0x01, 0x06, 0x07):
+        for unit in units:
+            record(
+                "route",
+                "inject_main_uart_rx_bytes",
+                {"unit": unit, "frame": [0xB0, 0x06, data]},
+                lambda unit=unit, data=data: chain.inject_main_uart_rx_bytes(
+                    unit, [0xB0, 0x06, data]
+                ),
+            )
+        record("route", "settle", {"ticks": 12_000_000}, lambda: chain.step_ticks(12_000_000))
+    return stimuli
+
+
+def run_usb_hid_readonly_churn(chain: Chain, *, unit: int = 0) -> list[Stimulus]:
+    stimuli: list[Stimulus] = []
+
+    def record(phase: str, action: str, params: dict[str, Any], fn) -> None:  # type: ignore[no-untyped-def]
+        before = chain.current_tick()
+        fn()
+        after = chain.current_tick()
+        stimuli.append(Stimulus(phase, action, params, before, after))
+
+    reports = [
+        bytes([0x43, 0x00, 0x00, 0x00] + [0x00] * 60),
+        bytes([0x44] + [0x00] * 63),
+        bytes([0x45, 0x13] + [0x00] * 62),
+        bytes([0x45, 0x32, 0x03, 0xA5] + [0x00] * 60),
+        bytes([0x46] + [0x00] * 63),
+    ]
+    for report in reports:
+        record(
+            "usb",
+            "firmware_hid_report",
+            {"unit": unit, "opcode": report[0], "arg": report[1] if len(report) > 1 else 0},
+            lambda report=report: chain.firmware_hid_report(unit, report, max_steps=120_000),
+        )
+        record("usb", "settle", {"ticks": 2_000_000}, lambda: chain.step_ticks(2_000_000))
+    return stimuli
 
 
 def run_live_like_churn(chain: Chain) -> list[Stimulus]:

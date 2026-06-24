@@ -47,6 +47,127 @@ The local capture metadata is clean:
 
 Diagnosis: this is persistent MAIN EEPROM corruption, not merely volatile RAM or CONTROL scroll state. V3.5 `cmd26_filename_query_handler` scans only printable bytes; a NUL truncates the reported name length, so CONTROL correctly stops scrolling.
 
+### 2026-06-21 live recurrence and EEPROM surgery baseline
+
+After both MAINs were flashed to current V3.5 `rev 0x8F`, the user still saw
+Preset filename corruption on the front panel.  Live USB probes found the
+current image was post-fix but the persistent filename EEPROM was still
+damaged:
+
+- RIGHT `DevSrvsID:4296299389`
+  - active preset before surgery: A
+  - cmd `0x03` active RAM before surgery: clean
+    `LX521.4 22MG10F-v5`
+  - EEPROM A before surgery:
+    `4c583532312e3420323200473130462d7635ffffffffffffffffffffffff`
+    (`LX521.4 22\x00G10F-v5`)
+  - EEPROM B before surgery:
+    `4c583532312e342032324d470030462d7637ffffffffffffffffffffffff`
+    (`LX521.4 22MG\x000F-v7`)
+- LEFT `DevSrvsID:4296299545`
+  - active preset before surgery: A
+  - cmd `0x03` active RAM before surgery:
+    `4c583532312e3420323201473130f82d7635ffffffffffffffffffffffff`
+    (`LX521.4 22\x01G10\xf8-v5`)
+  - EEPROM A before surgery matched the corrupt active RAM bytes above.
+  - EEPROM B before surgery:
+    `4c583532312e342032324d470030462d7637ffffffffffffffffffffffff`
+    (`LX521.4 22MG\x000F-v7`)
+
+Current V3.5 image checks on the same worktree:
+
+- live MAIN version probe: `V3.5 rev 0x8F`
+- merged release bytes:
+  - `0x0008: 04 ef 08 f0`, bootloader high interrupt vector to `0x1008`
+  - `0x1008: d9 cf 01 f0`, first word of `movff FSR2L,isr_save_fsr2l`
+- focused regression:
+  `.venv_ep0/bin/python -m pytest -q tests/sim/test_main_boot_vector_abi.py tests/sim/test_v35_filename_eeprom_nul_repro.py`
+  -> `7 passed, 1 xfailed`; the xfail is the documented historical V3.4
+  vector-layout case.
+
+Interpretation boundary: this recurrence does **not** by itself prove current
+V3.5 `rev 0x8F` is still writing bad filename bytes.  At the time of the first
+probe, persistent EEPROM already contained the bad bytes.  After the surgery
+below, any fresh recurrence on the same current image is much stronger evidence
+for a still-active writer bug.
+
+Surgery performed on 2026-06-21:
+
+- Wrote expected A slot `LX521.4 22MG10F-v5` and expected B slot
+  `LX521.4 22MG10F-v7` through the normal app cmd `0x03` filename write path.
+- Forced the MAIN firmware's own filename EEPROM persist service after each
+  active-slot write.
+- Restored both MAINs to active preset A.
+- Artifacts:
+  - `artifacts/probes/live_filename_eeprom_surgery_20260621.json`
+  - `artifacts/probes/live_filename_eeprom_left_b_repair2_20260621.json`
+  - pre-surgery RAM/EEPROM captures:
+    `artifacts/probes/live_eeprom_right_000_0bf.bin`,
+    `artifacts/probes/live_eeprom_left_000_0bf.bin`,
+    `artifacts/probes/live_ram_right_1f0_30f.bin`,
+    `artifacts/probes/live_ram_left_1f0_30f.bin`
+
+The first surgery pass repaired RIGHT A/B and LEFT A.  LEFT B initially
+verified clean in the immediate surgery report, then a later direct read still
+showed the old `LX521.4 22MG\x000F-v7` byte pattern.  A second, stricter LEFT B
+pass wrote B again and verified durability across `B -> A -> B -> A` switching.
+This ambiguity is useful: it keeps open the possibility of either an incomplete
+first persist/verify sequence or a same-symptom live rewrite.  The final
+baseline after the second pass is clean.
+
+Final post-surgery baseline:
+
+- `scripts/dlcp_diag.py` reports both MAIN Config fields as
+  `LX521.4 22MG10F-v5`.
+- Five sequential HID EEPROM reads report RIGHT and LEFT EEPROM A/B all OK:
+  - A:
+    `4c583532312e342032324d473130462d7635ffffffffffffffffffffffff`
+  - B:
+    `4c583532312e342032324d473130462d7637ffffffffffffffffffffffff`
+- cmd `0x03` active RAM on both MAINs reports `LX521.4 22MG10F-v5`.
+- Both MAINs were restored to active preset A.
+
+### 2026-06-21 post-power-cycle recurrence
+
+After the clean surgery baseline above, the user performed a full power cycle,
+toggled A/B several times, changed volume, and navigated the front-panel menus.
+Both MAIN USB connections were then read without performing any writes.
+
+Read-only check artifact:
+`artifacts/probes/live_filename_eeprom_post_powercycle_check_20260621.json`.
+
+Results:
+
+- `scripts/dlcp_diag.py` still looked clean because both MAINs were active on
+  preset A:
+  - LEFT `DevSrvsID:4296310320`: Config `LX521.4 22MG10F-v5`, HEALTHY
+  - RIGHT `DevSrvsID:4296310231`: Config `LX521.4 22MG10F-v5`, HEALTHY
+- Five repeated raw EEPROM reads were stable:
+  - RIGHT EEPROM A: OK
+  - RIGHT EEPROM B: BAD
+    `4c583532312e342032324d470030462d7637ffffffffffffffffffffffff`
+    (`LX521.4 22MG\x000F-v7`)
+  - LEFT EEPROM A: OK
+  - LEFT EEPROM B: BAD
+    `4c583532312e342032324d470030462d7637ffffffffffffffffffffffff`
+    (`LX521.4 22MG\x000F-v7`)
+- In both MAINs the only B-slot diff from expected is offset 12:
+  expected `0x31` (`'1'`), got `0x00`.
+- cmd `0x03` active RAM remained clean because both MAINs were back on
+  active preset A:
+  `4c583532312e342032324d473130462d7635ffffffffffffffffffffffff`
+  (`LX521.4 22MG10F-v5`).
+
+This materially changes the confidence boundary.  The earlier 2026-06-21
+finding could still be explained as stale EEPROM inherited from the pre-fix
+image.  This post-surgery recurrence happened after both A/B EEPROM slots had
+been verified clean on current V3.5 `rev 0x8F`, so it is strong evidence of a
+still-active current-image path that rewrites or mis-persists preset B under
+power-cycle / A-B churn.  The writer is not yet proven; the next repro should
+focus on preset-B switch/load/persist paths and any boot-time B-slot copy or
+dirty-service trigger rather than the already-fixed high-IRQ vector alignment
+alone.
+
 ## Implementation Evidence
 
 - `src/dlcp_fw/asm/dlcp_main_v35.asm` / `.lst`: `cmd26_filename_query_handler` reads active RAM for the active preset and EEPROM for inactive slots; it stops length scan at non-printable bytes. `preset_persist_filename` copies `0x02C0..0x02DD` to EEPROM base `0x60` or `0x83`. `preset_load_filename` copies EEPROM back to active RAM. `uart_rx_irq_enqueue` already clamps `rx_ring_wr >= 0xC0` before `RCREG -> INDF2`, so the old FIELD-9 adjacent-RAM write is guarded.
@@ -54,7 +175,18 @@ Diagnosis: this is persistent MAIN EEPROM corruption, not merely volatile RAM or
 - Pre-fix V3.5 placed `movff FSR2L,isr_save_fsr2l` at `0x1006`; bytes at `0x1008` were `01 F0 DA CF`, the second word of the FSR2L `MOVFF` plus the first word of `movff FSR2H,isr_save_fsr2h`.
 - V3.2 and V3.3 release images have the expected `movff FSR2L` bytes at `0x1008`. V3.4 does not. V3.5 does after the rev `0x0085` fix.
 - `src/dlcp_fw/flash/dlcp_main_flash.py`: release finalize writes active filename via HID `cmd 0x03`, forces EEPROM persist, then verifies flash plus EEPROM via HID diag memread.
-- `src/dlcp_fw/flash/dlcp_release_flash_common.py`: V3.5 wrapper uses clean local capture sidecars.
+- `src/dlcp_fw/flash/dlcp_release_flash_common.py`: V3.5 wrapper uses clean local capture sidecars when they are present.
+  `scripts/dlcp_v35_release_flash.py --left` forwards
+  `--capture-a artifacts/LX521.4/LX521.4_22MG10F-v5.bin --meta-a ... --capture-b artifacts/LX521.4/LX521.4_22MG10F-v7.bin --meta-b ... --all-ch L`;
+  `--right` forwards the same overlays with `--all-ch R`.
+- The wrapper has two important bypass/degrade cases:
+  - If any local capture or sidecar is missing, it prints
+    `WARNING: local A/B preset captures are incomplete; flashing canonical V3.5 without baked presets`
+    and forwards only `--hex ... --all-ch L|R`.  That path does not repair
+    filename EEPROM.
+  - `--finalize-only` only runs the IR profile finalize; it does not rerun the
+    A/B capture overlay ceremony.  This is explicit in the user-facing help and
+    in the lower-level MAIN flasher error messages.
 - `src/dlcp_fw/sim/dlcp_sim_native.py`: Python facade exposes `Chain.from_v171_v32`, `firmware_hid_report`, `read_main_reg`, `write_main_reg`, `read_main_eeprom_byte`, and `write_main_eeprom_byte`; this is sufficient for a black-box repro and byte-level EEPROM oracle.
 - Existing tests cover pieces but not this bug: `test_v32_usb_filename_xact_gate.py`, `test_v32_flasher_sim_backend_hid.py`, `test_v34_field_bugs_20260610.py`, and `test_preset_filename_lcd_spec.py`.
 

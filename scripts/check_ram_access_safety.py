@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import _bootstrap  # noqa: F401
 
 from dlcp_fw.analysis.ram_bank_safety import (
     assert_targets_safe,

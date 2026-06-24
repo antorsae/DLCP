@@ -441,7 +441,7 @@ mod tests {
         // EECON1 = WREN | WR (no unlock).
         let con1 = EECON1_WREN | EECON1_WR;
         mem.write_raw(Address::from_raw(EECON1_ADDR), con1);
-        ee.handle_eecon1_write(con1, &mut mem);
+        ee.handle_eecon1_write(con1, &mut mem, None, None, None);
         let new_con1 = mem.read_raw(Address::from_raw(EECON1_ADDR));
         assert_eq!(new_con1 & EECON1_WRERR, EECON1_WRERR);
         assert!(ee.pending_tcy.is_none());
@@ -457,7 +457,7 @@ mod tests {
         arm_unlock(&mut ee);
         let con1 = EECON1_WREN | EECON1_WR;
         mem.write_raw(Address::from_raw(EECON1_ADDR), con1);
-        ee.handle_eecon1_write(con1, &mut mem);
+        ee.handle_eecon1_write(con1, &mut mem, None, None, None);
         assert_eq!(ee.pending_tcy, Some(POST_WRITE_TCY));
         assert_eq!(ee.pending_addr, 0x42);
         assert_eq!(ee.pending_data, 0x55);
@@ -474,7 +474,7 @@ mod tests {
         arm_unlock(&mut ee);
         let con1 = EECON1_WREN | EECON1_WR;
         mem.write_raw(Address::from_raw(EECON1_ADDR), con1);
-        ee.handle_eecon1_write(con1, &mut mem);
+        ee.handle_eecon1_write(con1, &mut mem, None, None, None);
         // Tick past the post-write window.
         ee.tick_tcy(POST_WRITE_TCY + 1, &mut mem);
         assert!(ee.pending_tcy.is_none());
@@ -494,7 +494,7 @@ mod tests {
         // EECON1 = RD (with EEPGD=0).
         let con1 = EECON1_RD;
         mem.write_raw(Address::from_raw(EECON1_ADDR), con1);
-        ee.handle_eecon1_write(con1, &mut mem);
+        ee.handle_eecon1_write(con1, &mut mem, None, None, None);
         assert_eq!(mem.read_raw(Address::from_raw(EEDATA_ADDR)), 0x99,);
         // RD self-cleared.
         assert_eq!(mem.read_raw(Address::from_raw(EECON1_ADDR)) & EECON1_RD, 0,);
@@ -514,7 +514,7 @@ mod tests {
         // Pre-condition: memory[EECON1] starts at 0 (POR).
         // Firmware-intended `value` includes bit 5 set.
         let value = EECON1_RD | (1 << 5);
-        ee.handle_eecon1_write(value, &mut mem);
+        ee.handle_eecon1_write(value, &mut mem, None, None, None);
         let con1 = mem.read_raw(Address::from_raw(EECON1_ADDR));
         assert_eq!(con1 & (1 << 5), 0, "bit 5 must not leak via RD path");
 
@@ -522,7 +522,7 @@ mod tests {
         let mut ee = Eeprom::default();
         let mut mem = fresh_mem();
         let value = EECON1_WREN | EECON1_WR | (1 << 5);
-        ee.handle_eecon1_write(value, &mut mem);
+        ee.handle_eecon1_write(value, &mut mem, None, None, None);
         let con1 = mem.read_raw(Address::from_raw(EECON1_ADDR));
         assert_eq!(con1 & EECON1_WRERR, EECON1_WRERR);
         assert_eq!(con1 & (1 << 5), 0, "bit 5 must not leak via WRERR path");
@@ -539,7 +539,7 @@ mod tests {
         mem.write_raw(Address::from_raw(EEDATA_ADDR), 0x42);
         arm_unlock(&mut ee);
         let con1 = EECON1_WREN | EECON1_WR;
-        ee.handle_eecon1_write(con1, &mut mem);
+        ee.handle_eecon1_write(con1, &mut mem, None, None, None);
         assert!(ee.pending_tcy.is_some());
         // Reset.
         ee.reset_state();
