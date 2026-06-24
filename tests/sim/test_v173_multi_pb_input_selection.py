@@ -112,9 +112,15 @@ HEALTH_TICK_DIV = 0x1B5
 HEALTH_PENDING_TICKS = 0x1B6
 
 CONTROL_FLAGS = 0x01F
+CONTROL_PRESET_BIT = 6
 DSP_FAULT_BIT = 7
 BF08_FAULT_BYTE = 0x0AB
+TX_RING_RD = 0x096
+TX_RING_WR = 0x097
+V171_TX_SATURATE_COUNT = 0x1AD
 
+MAIN_ACTIVE_FLAGS = 0x05E
+MAIN_ACTIVE_PRESET_MASK = 0x04
 MAIN_SRC_ROUTE_STATUS = 0x05F
 MAIN_EVENT_FLAGS = 0x07E
 MAIN_INPUT_SELECT = 0x099
@@ -133,10 +139,19 @@ SRC_REG_NON_PCM = 0x12
 SRC_REG_RX_STATUS = 0x13
 TAS_REG_VOLUME_COEFF = 0x30
 
+IR_CMD_PRESET_A = 0x38
+IR_CMD_PRESET_B = 0x39
+IR_CMD_STANDBY = 0x3A
+IR_CMD_WAKE = 0x3B
+IR_CMD_PRESET_TOGGLE = 0x3D
+IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE = 0x3F
+
 ROUTE_AUTO_NONE = 0x00
+ROUTE_SPDIF = 0x01
 ROUTE_OPTICAL = 0x04
 ROUTE_AES = 0x03
 SRC_PAIR_AUTO_NONE = (0x08, 0x30)
+SRC_PAIR_SPDIF = (0x09, 0x70)
 SRC_PAIR_OPTICAL = (0x0B, 0xF0)
 SRC_PAIR_AES = (0x08, 0x30)
 
@@ -236,6 +251,53 @@ def _assert_last_cmd06(
     frames = _cmd06_frames(chain, start)
     assert frames
     assert frames[-1] == (expected_route, 0x06, expected_data)
+
+
+def _preset_frames(chain, start: int = 0) -> list[tuple[int, int, int]]:  # type: ignore[no-untyped-def]
+    return [frame for frame in chain.tx_frames()[start:] if frame[1] == 0x20]
+
+
+def _inject_ir(
+    chain,  # type: ignore[no-untyped-def]
+    cmd: int,
+    *,
+    addr: int = IR_ADDR_HYPEX,
+    ticks: int = COMMAND_SETTLE_TICKS,
+) -> None:
+    chain.inject_decoded_ir_event(addr=addr, cmd=cmd)
+    chain.step_ticks(ticks)
+
+
+def _control_preset_bit(chain) -> int:  # type: ignore[no-untyped-def]
+    return (chain.read_reg(CONTROL_FLAGS) >> CONTROL_PRESET_BIT) & 0x01
+
+
+def _set_control_preset_bit(chain, value: int) -> None:  # type: ignore[no-untyped-def]
+    mask = 1 << CONTROL_PRESET_BIT
+    flags = chain.read_reg(CONTROL_FLAGS)
+    if value:
+        flags |= mask
+    else:
+        flags &= ~mask
+    flags |= 0x01  # keep IR_ARMED set for direct decoded-IR injection.
+    chain.write_reg(CONTROL_FLAGS, flags & 0xFF)
+
+
+def _main_preset_bits(chain) -> tuple[int, int]:  # type: ignore[no-untyped-def]
+    return tuple(
+        (chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS) & MAIN_ACTIVE_PRESET_MASK) >> 2
+        for unit in (0, 1)
+    )
+
+
+def _wait_for_preset_bits(chain, expected: tuple[int, int]) -> None:  # type: ignore[no-untyped-def]
+    for _ in range(100):
+        if _main_preset_bits(chain) == expected:
+            return
+        chain.step_ticks(1_000_000)
+    pytest.fail(
+        f"MAIN preset bits did not reach {expected!r}; got {_main_preset_bits(chain)!r}"
+    )
 
 
 def _wait_for_lcd(chain, expected_row0: str) -> None:  # type: ignore[no-untyped-def]
@@ -380,6 +442,265 @@ def _decode_pb2_persisted(byte: int) -> tuple[str, int]:
     if (byte & 0xF0) == PB2_EEPROM_CONCRETE_BASE and (byte & 0x0F) <= 0x08:
         return ("concrete", byte & 0x0F)
     return ("linked", 0)
+
+
+def test_v173_fixed_ir_shortcut_probe_is_address_matched_and_unconsumed_only() -> None:
+    text = V173_CONTROL_ASM.read_text()
+    start = text.index("ir_dispatch_configured_or_fixed_shortcuts__match_configured_codes:")
+    fixed = text.index(
+        "ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe:"
+    )
+    configured_region = text[start:fixed]
+
+    post_probe_gotos = [
+        line.strip()
+        for line in configured_region.splitlines()
+        if "goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe" in line
+    ]
+    assert post_probe_gotos == [
+        "goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe"
+    ]
+    assert "cpfseq  (Common_RAM + 36), A" in configured_region
+    assert "cpfseq  (Common_RAM + 32), A" in configured_region
+    assert configured_region.count(
+        "goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough"
+    ) >= 7
+
+
+def test_v173_f5_ir_input_toggle_has_explicit_bank0_and_reuses_cmd06_sender() -> None:
+    text = V173_CONTROL_ASM.read_text()
+    start = text.index("v173_ir_input_optical_spdif_toggle_case:")
+    end = text.index("v171_ir_preset_a_case:")
+    body = text[start:end]
+
+    assert "movlb   0x00" in body
+    assert body.index("movlb   0x00") < body.index("cpfseq  input_select_cache_b0, BANKED")
+    assert "call    map_cmd06_input_select_to_menu_index, 0x0" in body
+    assert "movff   rx_parsed_data_b0_phys, input_select_cache_b0_phys" in body
+    assert "rcall   input_frame_send" in body
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    "cmd",
+    [
+        IR_CMD_PRESET_A,
+        IR_CMD_PRESET_B,
+        IR_CMD_STANDBY,
+        IR_CMD_WAKE,
+        IR_CMD_PRESET_TOGGLE,
+        IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE,
+    ],
+)
+def test_v173_wrong_address_fixed_ir_shortcuts_do_not_dispatch(
+    v173_multi_pb_hex: Path,
+    cmd: int,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _latch_split(chain, linked=True)
+    chain.write_reg(INPUT_SELECT_CACHE, 0x05)
+    before = len(chain.tx_frames())
+    before_preset = _control_preset_bit(chain)
+    before_main = _main_preset_bits(chain)
+    before_eeprom = chain.read_control_eeprom_byte(0x74)
+
+    _inject_ir(chain, cmd, addr=IR_ADDR_HYPEX ^ 0x01)
+
+    action_frames = [
+        frame for frame in chain.tx_frames()[before:] if frame[1] in (0x03, 0x06, 0x20)
+    ]
+    assert action_frames == []
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x05
+    assert _control_preset_bit(chain) == before_preset
+    assert _main_preset_bits(chain) == before_main
+    assert chain.read_control_eeprom_byte(0x74) == before_eeprom
+
+
+@pytest.mark.slow
+def test_v173_ir_f1_f2_and_f4_preset_shortcuts_persist_and_update_mains(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_PRESET_B, ticks=80_000_000)
+    _wait_for_preset_bits(chain, (1, 1))
+    assert _control_preset_bit(chain) == 1
+    assert chain.read_control_eeprom_byte(0x74) == 0x01
+    assert (0xB0, 0x20, 0x01) in _preset_frames(chain, before)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_PRESET_A, ticks=80_000_000)
+    _wait_for_preset_bits(chain, (0, 0))
+    assert _control_preset_bit(chain) == 0
+    assert chain.read_control_eeprom_byte(0x74) == 0x00
+    assert (0xB0, 0x20, 0x00) in _preset_frames(chain, before)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_PRESET_TOGGLE, ticks=80_000_000)
+    _wait_for_preset_bits(chain, (1, 1))
+    assert _control_preset_bit(chain) == 1
+    assert chain.read_control_eeprom_byte(0x74) == 0x01
+    assert (0xB0, 0x20, 0x01) in _preset_frames(chain, before)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_PRESET_TOGGLE, ticks=80_000_000)
+    _wait_for_preset_bits(chain, (0, 0))
+    assert _control_preset_bit(chain) == 0
+    assert chain.read_control_eeprom_byte(0x74) == 0x00
+    assert (0xB0, 0x20, 0x00) in _preset_frames(chain, before)
+
+
+@pytest.mark.slow
+def test_v173_ir_standby_and_wake_shortcuts_still_emit_endpoints(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_STANDBY)
+    assert (0xB0, 0x03, 0x00) in chain.tx_frames()[before:]
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_WAKE, ticks=80_000_000)
+    assert (0xB0, 0x03, 0x01) in chain.tx_frames()[before:]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("start_preset", [0, 1])
+def test_v173_ir_f4_tx_saturation_restores_local_preset_and_eeprom(
+    v173_multi_pb_hex: Path,
+    start_preset: int,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    if start_preset:
+        _inject_ir(chain, IR_CMD_PRESET_TOGGLE, ticks=80_000_000)
+        _wait_for_preset_bits(chain, (1, 1))
+    else:
+        _wait_for_preset_bits(chain, (0, 0))
+    _set_control_preset_bit(chain, start_preset)
+    before_eeprom = chain.read_control_eeprom_byte(0x74)
+    before_main = _main_preset_bits(chain)
+    before_frames = len(chain.tx_frames())
+
+    chain.write_reg(V171_TX_SATURATE_COUNT, 0x00)
+    chain.write_reg(TX_RING_RD, 0x00)
+    chain.write_reg(TX_RING_WR, 0x2D)
+    _inject_ir(chain, IR_CMD_PRESET_TOGGLE, ticks=5_000_000)
+
+    assert _preset_frames(chain, before_frames) == []
+    assert chain.read_reg(V171_TX_SATURATE_COUNT) > 0
+    assert _control_preset_bit(chain) == start_preset
+    assert chain.read_control_eeprom_byte(0x74) == before_eeprom
+    assert _main_preset_bits(chain) == before_main
+    assert chain.read_reg(CONTROL_FLAGS) & 0x01
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("start_payload", "expected_payload"),
+    [
+        (0x08, 0x05),
+        (0x05, 0x08),
+        (0x00, 0x08),
+        (0x01, 0x08),
+        (0x02, 0x08),
+        (0x03, 0x08),
+        (0x04, 0x08),
+        (0x06, 0x08),
+        (0x07, 0x08),
+        (0x80, 0x08),
+        (0xFF, 0x08),
+    ],
+)
+def test_v173_ir_f5_toggles_pb1_payload_via_existing_cmd06_path(
+    v173_multi_pb_hex: Path,
+    start_payload: int,
+    expected_payload: int,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _latch_split(chain, linked=True)
+    chain.write_reg(RAW_STATUS_CACHE, 0x03)
+    chain.write_reg(INPUT_SELECT_CACHE, start_payload)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE)
+
+    _assert_last_cmd06(chain, before, 0xB0, expected_payload)
+    assert chain.read_reg(INPUT_SELECT_CACHE) == expected_payload
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("raw_status", [0x00, 0x01, 0x02, 0x03, 0x80, 0xFF])
+def test_v173_ir_f5_keeps_input_pb1_lcd_row_coherent_across_raw_status(
+    v173_multi_pb_hex: Path,
+    raw_status: int,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _latch_split(chain, linked=True)
+    chain.write_reg(RAW_STATUS_CACHE, raw_status)
+    chain.write_reg(INPUT_SELECT_CACHE, 0x05)
+    _navigate_right(chain, 2)
+    assert chain.lcd_lines()[0] == "Input PB1:      "
+
+    _inject_ir(chain, IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE, ticks=20_000_000)
+
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x08
+    assert chain.read_reg(INPUT_SELECTED_INDEX) <= chain.read_reg(MENU_OPTION_MAX)
+    assert len(chain.lcd_lines()[1]) == 16
+    assert chain.lcd_lines()[1] in {label for label, _ in FULL_INPUT_ROWS}
+    if raw_status in (0x03, 0x80, 0xFF):
+        assert chain.lcd_lines()[1] == "Optical         "
+
+
+@pytest.mark.slow
+def test_v173_ir_f5_linked_pb2_broadcasts_and_routes_both_mains_to_optical(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _latch_split(chain, linked=True)
+    _prepare_mains_for_source_status(chain)
+    chain.write_reg(RAW_STATUS_CACHE, 0x03)
+    chain.write_reg(INPUT_SELECT_CACHE, 0x05)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE, ticks=20_000_000)
+
+    _assert_last_cmd06(chain, before, 0xB0, 0x08)
+    _wait_for_main_input_route(chain, 0, 0x08, ROUTE_OPTICAL, SRC_PAIR_OPTICAL)
+    _wait_for_main_input_route(chain, 1, 0x08, ROUTE_OPTICAL, SRC_PAIR_OPTICAL)
+
+
+@pytest.mark.slow
+def test_v173_ir_f5_independent_pb2_targets_pb1_and_preserves_pb2_persistence(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _latch_split(chain, linked=False)
+    _prepare_mains_for_source_status(chain)
+    chain.write_reg(RAW_STATUS_CACHE, 0x03)
+    chain.write_reg(INPUT_SELECT_CACHE, 0x08)
+    chain.write_reg(INPUT_INTENT_PB2, 0x07)
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, PB2_EEPROM_CONCRETE_BASE | 0x07)
+    pb2_eeprom_before = chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM)
+
+    assert _force_full_sync_input_step(chain)[-1] == (0xB1, 0x06, 0x08)
+    assert _force_full_sync_input_step(chain)[-1] == (0xB2, 0x06, 0x07)
+    _wait_for_main_input_route(chain, 0, 0x08, ROUTE_OPTICAL, SRC_PAIR_OPTICAL)
+    _wait_for_main_input_route(chain, 1, 0x07, ROUTE_AES, SRC_PAIR_AES)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE, ticks=20_000_000)
+    frames = _cmd06_frames(chain, before)
+
+    assert frames and frames[-1] == (0xB1, 0x06, 0x05)
+    assert not any(frame[0] in (0xB0, 0xB2) for frame in frames)
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x05
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x07
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == pb2_eeprom_before
+    assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+    _wait_for_main_input_route(chain, 0, 0x05, ROUTE_SPDIF, SRC_PAIR_SPDIF)
+    _wait_for_main_input_route(chain, 1, 0x07, ROUTE_AES, SRC_PAIR_AES)
 
 
 @pytest.mark.slow

@@ -163,6 +163,8 @@ RC5_PRESET_A               equ  0x38
 RC5_PRESET_B               equ  0x39
 RC5_STANDBY_ENTER          equ  0x3A    ; V1.64b explicit standby
 RC5_WAKE                   equ  0x3B    ; V1.64b explicit wake
+RC5_PRESET_TOGGLE          equ  0x3D
+RC5_INPUT_OPTICAL_SPDIF_TOGGLE equ  0x3F
 
 ; EEPROM slot for V1.71 preset-state byte.  V1.61b binary overlay
 ; pinned address 0x74; V1.71 preserves it so EEPROM images remain

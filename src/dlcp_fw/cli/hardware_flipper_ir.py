@@ -33,6 +33,8 @@ class IrActionSpec:
 ACTION_SPECS: tuple[IrActionSpec, ...] = (
     IrActionSpec("F1", "RC5", 0x10, 0x38),
     IrActionSpec("F2", "RC5", 0x10, 0x39),
+    IrActionSpec("F4", "RC5", 0x10, 0x3D, aliases=("PRESET_TOGGLE",)),
+    IrActionSpec("F5", "RC5", 0x10, 0x3F, aliases=("INPUT_TOGGLE", "SPDIF_OPTICAL_TOGGLE")),
     IrActionSpec("MUTE", "RC5", 0x10, 0x35),
     IrActionSpec("POWER", "RC5", 0x10, 0x32, aliases=("POWER_TOGGLE", "FLIP")),
     IrActionSpec("STANDBY", "RC5", 0x10, 0x3A, aliases=("STDBY",)),

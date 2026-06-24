@@ -3711,7 +3711,7 @@ ir_dispatch_configured_or_fixed_shortcuts__match_configured_codes:              
 
         movf    ir_decoded_addr_acc, W, A                     ; reg: 0x01e
         cpfseq  (Common_RAM + 32), A                        ; reg: 0x020
-        goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
+        goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough
         movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 33), A                        ; reg: 0x021
         goto    ir_dispatch_configured_or_fixed_shortcuts__check_volume_up_code                                   ; dest: 0x000e0c
@@ -3721,7 +3721,7 @@ ir_dispatch_configured_or_fixed_shortcuts__match_configured_codes:              
         movwf   (Common_RAM + 28), A                        ; reg: 0x01c
         btg     control_flags_acc, 0x1, A                   ; reg: 0x01f
         bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
-        goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
+        goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough
 
 ir_dispatch_configured_or_fixed_shortcuts__check_volume_up_code:                                                  ; address: 0x000e0c
 
@@ -3743,7 +3743,7 @@ ir_dispatch_configured_or_fixed_shortcuts__check_volume_up_code:                
 
 ir_dispatch_configured_or_fixed_shortcuts__volume_up_done:                                                  ; address: 0x000e2e
 
-        goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
+        goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough
 
 ir_dispatch_configured_or_fixed_shortcuts__check_volume_down_code:                                                  ; address: 0x000e32
 
@@ -3765,7 +3765,7 @@ ir_dispatch_configured_or_fixed_shortcuts__check_volume_down_code:              
 
 ir_dispatch_configured_or_fixed_shortcuts__volume_down_done:                                                  ; address: 0x000e54
 
-        goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
+        goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough
 
 ir_dispatch_configured_or_fixed_shortcuts__check_mute_toggle_code:                                                  ; address: 0x000e58
 
@@ -3784,7 +3784,7 @@ ir_dispatch_configured_or_fixed_shortcuts__check_mute_toggle_code:              
         bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         bsf     control_flags_acc, 0x4, A                   ; reg: 0x01f
         rcall   mute_frame_send                                ; dest: 0x000c7c
-        goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
+        goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough
 
 ir_dispatch_configured_or_fixed_shortcuts__check_input_previous_code:                                                  ; address: 0x000e7c
 
@@ -3851,13 +3851,13 @@ ir_dispatch_configured_or_fixed_shortcuts__input_previous_emit_frame:           
         call    map_input_menu_index_to_cmd06_input_select, 0x0                           ; dest: 0x00076a
         movff   tx_data_staging_b0_phys, input_select_cache_b0_phys
         rcall   input_frame_send                                ; dest: 0x000c22
-        goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
+        goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough
 
 ir_dispatch_configured_or_fixed_shortcuts__check_input_next_code:                                                  ; address: 0x000ee6
 
         movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 36), A                        ; reg: 0x024
-        goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough                                   ; dest: 0x000f4e
+        goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe
         movf    raw_status_cache_b0, F, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    ir_dispatch_configured_or_fixed_shortcuts__input_next_limit_for_status_one                                   ; dest: 0x000efe
@@ -3918,11 +3918,12 @@ ir_dispatch_configured_or_fixed_shortcuts__input_next_emit_frame:               
         call    map_input_menu_index_to_cmd06_input_select, 0x0                           ; dest: 0x00076a
         movff   tx_data_staging_b0_phys, input_select_cache_b0_phys
         rcall   input_frame_send                                ; dest: 0x000c22
-        goto    ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe                                   ; dest: 0x000f50
+        goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough
 
 ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough:                                                  ; stock IR dispatch fallthrough #1
 
         bsf     control_flags_acc, IR_ARMED, A              ; reg: 0x01f
+        return  0x0
 
 ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe:                                                  ; stock IR dispatch exit (no stock case matched)
 
@@ -3937,9 +3938,12 @@ ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe:
         ;   RC5 0x39 → preset B   (V1.61b)
         ;   RC5 0x3A → standby    (V1.64b explicit-standby endpoint)
         ;   RC5 0x3B → wake       (V1.64b explicit-wake endpoint)
+        ;   RC5 0x3D → preset toggle A/B
+        ;   RC5 0x3F → PB1 S/PDIF/Optical toggle
         ;
-        ; All four are handled inline before re-arming the IR gate; any
-        ; other unmapped code falls through to the stock re-arm path.
+        ; Fixed shortcuts run only for configured-address commands that
+        ; missed every menu-configured IR code stored in RAM(0x21..0x26).
+        ; Any other unmapped code falls through to the stock re-arm path.
         movf    ir_decoded_cmd_acc, W, A
         xorlw   RC5_PRESET_A                             ; 0x38
         bz      v171_ir_preset_a_case
@@ -3952,7 +3956,41 @@ ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe:
         movf    ir_decoded_cmd_acc, W, A
         xorlw   RC5_WAKE                                 ; 0x3B
         bz      v171_ir_wake_case
+        movf    ir_decoded_cmd_acc, W, A
+        xorlw   RC5_PRESET_TOGGLE                        ; 0x3D
+        bz      v173_ir_preset_toggle_case
+        movf    ir_decoded_cmd_acc, W, A
+        xorlw   RC5_INPUT_OPTICAL_SPDIF_TOGGLE           ; 0x3F
+        bz      v173_ir_input_optical_spdif_toggle_case
         ; Not a V1.72 shortcut — standard re-arm + return.
+        bsf     control_flags_acc, IR_ARMED, A
+        return  0x0
+
+v173_ir_preset_toggle_case:
+        btfsc   control_flags_acc, PRESET_BIT, A             ; B -> A
+        bra     v171_ir_preset_a_case
+        bra     v171_ir_preset_b_case                        ; A -> B
+
+v173_ir_input_optical_spdif_toggle_case:
+        movlb   0x00
+        movlw   0x08
+        cpfseq  input_select_cache_b0, BANKED                ; Optical?
+        bra     v173_ir_input_toggle_select_optical
+        movlw   0x05                                        ; Optical -> S/PDIF
+        bra     v173_ir_input_toggle_stage
+v173_ir_input_toggle_select_optical:
+        movlw   0x08                                        ; anything else -> Optical
+v173_ir_input_toggle_stage:
+        movwf   rx_parsed_data_acc, A
+        call    map_cmd06_input_select_to_menu_index, 0x0
+        movff   rx_parsed_data_b0_phys, input_select_cache_b0_phys
+        bsf     control_flags_acc, 0x3, A                    ; event_exit
+        bsf     control_flags_acc, 0x4, A                    ; display redraw
+        movlw   0x58
+        movwf   (Common_RAM + 27), A
+        movlw   0x1b                                        ; stock input IR inhibit
+        movwf   (Common_RAM + 28), A
+        rcall   input_frame_send
         bsf     control_flags_acc, IR_ARMED, A
         return  0x0
 

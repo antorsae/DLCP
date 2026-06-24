@@ -82,7 +82,7 @@ shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 | SRC/input routing | Auto Detect and manual digital inputs can flap or depend on stale receiver/TAS state. | Auto Detect is rate-limited and debounced, locked RXCKR estimator holes hold route, hard loss/reacquire is explicit, and fixed inputs prime the receiver/TAS path. |
 | Presets | One active DSP configuration. | A/B DSP preset banks with coordinated delayed switching, validated per-row APPLY, and no unmute until the selected coefficient image is proven. |
 | Flashing | Firmware update can be opaque and resets are hard to reason about. | CLI path prints before/after identity, preserves user settings, and performs post-flash finalizers. |
-| IR | Stock RC5 command handling only. | Stock-compatible RC5 path plus shortcuts for preset A/B and explicit standby/wake. |
+| IR | Stock RC5 command handling only. | Stock-compatible RC5 path plus shortcuts for preset A/B, preset toggle, PB1 S/PDIF/Optical toggle, and explicit standby/wake. |
 
 ## What You Get
 
@@ -90,6 +90,8 @@ shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 
 - `0x38`: preset A
 - `0x39`: preset B
+- `0x3D`: toggle preset A/B
+- `0x3F`: toggle PB1 input between S/PDIF and Optical
 - `0x3A`: standby
 - `0x3B`: wake
 

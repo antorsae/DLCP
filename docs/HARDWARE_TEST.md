@@ -349,6 +349,8 @@ This sender uses the Hypex RC5 profile:
 - address `0x10`
 - `F1` -> `0x38`
 - `F2` -> `0x39`
+- `F4` -> `0x3D` (preset A/B toggle)
+- `F5` -> `0x3F` (PB1 S/PDIF/Optical toggle)
 - `Mute` -> `0x35`
 - `Power` (legacy toggle) -> `0x32`
 - `Standby` (endpoint) -> `0x3A`

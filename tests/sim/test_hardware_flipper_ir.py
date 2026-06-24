@@ -35,12 +35,16 @@ def test_discover_flipper_serial_ports_filters_real_flipper_like_nodes(monkeypat
 
 def test_resolve_action_spec_supports_hypex_profile_actions_and_aliases() -> None:
     f2 = ir.resolve_action_spec("F2")
+    f4 = ir.resolve_action_spec("preset_toggle")
+    f5 = ir.resolve_action_spec("spdIF_optical_toggle")
     power = ir.resolve_action_spec("power")
     standby = ir.resolve_action_spec("standby")
     wake = ir.resolve_action_spec("wake")
     mute = ir.resolve_action_spec("mute")
 
     assert (f2.protocol, f2.address, f2.command) == ("RC5", 0x10, 0x39)
+    assert (f4.protocol, f4.address, f4.command) == ("RC5", 0x10, 0x3D)
+    assert (f5.protocol, f5.address, f5.command) == ("RC5", 0x10, 0x3F)
     assert (power.protocol, power.address, power.command) == ("RC5", 0x10, 0x32)
     assert (standby.protocol, standby.address, standby.command) == ("RC5", 0x10, 0x3A)
     assert (wake.protocol, wake.address, wake.command) == ("RC5", 0x10, 0x3B)
@@ -68,13 +72,13 @@ def test_send_ir_action_formats_flipper_cli_command_and_returns_port(monkeypatch
     monkeypatch.setattr(
         ir,
         "issue_cli_command",
-        lambda port, command, timeout_s, idle_s: ">: ir tx RC5 10 39\r\n>:\r\n",
+        lambda port, command, timeout_s, idle_s: f">: {command}\r\n>:\r\n",
     )
 
-    payload = ir.send_ir_action(action="F2")
+    payload = ir.send_ir_action(action="F5")
 
-    assert payload["canonical_action"] == "F2"
-    assert payload["cli_command"] == "ir tx RC5 10 39"
+    assert payload["canonical_action"] == "F5"
+    assert payload["cli_command"] == "ir tx RC5 10 3F"
     assert payload["port"] == "/dev/cu.usbmodemflip_Ovarlide1"
 
 
