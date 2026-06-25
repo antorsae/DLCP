@@ -1,7 +1,7 @@
 # IR Preset/Input Switch Shortcuts
 
 Date: 2026-06-24
-Status: Implemented in source/tests; canonical release not republished
+Status: Implemented in canonical CONTROL V1.73 release rev 0x54
 
 ## Purpose
 

@@ -1,7 +1,7 @@
 # IR Preset/Input Switch Shortcuts Implementation Plan
 
 Date: 2026-06-24
-Status: Implemented - simulator verified; canonical release not republished
+Status: Implemented - simulator verified; canonical release published
 Source spec: `docs/IR_PRESET_INPUT_SWITCH.md`
 
 ## Scope
@@ -362,8 +362,15 @@ git diff --check
 Deployment evidence:
 
 - No live hardware smoke was run for this change.
-- No canonical V1.73 release publish was run.
-- `firmware/patched/releases/DLCP_Control_V1.73.hex` was not changed.
+- Canonical V1.73 release publish was run on 2026-06-25:
+  `.venv_ep0/bin/python scripts/build_v173_release.py`.
+- `firmware/patched/releases/DLCP_Control_V1.73.hex` was rebuilt as
+  `V1.73 / rev 0x54 / build 20260625`.
+- CONTROL V1.73 HEX SHA-256:
+  `ce6aa82d4cd874c5a6a40b3d93cc2be6413cbcdf7c04553d4b9bc3ca2c378280`.
+- Release publish verification:
+  `.venv_ep0/bin/python -m pytest tests/sim/test_v34_v173_release_builders.py -q`
+  -> `7 passed in 0.07s`.
 
 ## Reviewer Findings And Iteration History
 
