@@ -481,13 +481,13 @@ For release wrappers that currently accept only `--path`, the operator must use
 the role-derived `path` from `identify-mains`. This is mandatory for PB1/PB2
 setups because USB enumeration order is not a safe proxy for physical position.
 
-### 6. Confirm current MAIN release identity and A/B filenames
+### 6. Historical V3.2/V3.4 MAIN identity and A/B filename gate
 
-After flashing the current V3.4 release with baked LX521.4 captures, run the
-MAIN-only identity gate.  The historical pytest name still says `v32`, but the
-current wrapper/HEX under test is `DLCP_Firmware_V3.4.hex`.  It can be run with
-one MAIN connected at a time, matching the one-board-at-a-time release-flash
-workflow:
+This MAIN-only identity gate remains useful for historical capture-era
+V3.2/V3.4 validation.  The pytest name and fixture expectations are
+V3.2/capture-era and preset B is the old `LX521.4 22MG10F-v7`.  Do not use this
+as the current V3.5 XML-native filename contract.  It can be run with one MAIN
+connected at a time after intentionally flashing the historical release:
 
 ```bash
 DLCP_HW_RELEASE_IDENTITY_CONFIRM=1 \
@@ -496,11 +496,11 @@ DLCP_HW_RELEASE_IDENTITY_CONFIRM=1 \
   --run-hardware
 ```
 
-Pass criteria:
+Historical pass criteria:
 
-- HID reports V3.4, currently rev `0xAC`.
+- HID reports the historical target version/revision.
 - runtime EEPROM identity/revision matches
-  `firmware/patched/releases/DLCP_Firmware_V3.4.hex`.
+  the historical target HEX under test.
 - preset A active filename RAM and HID cmd `0x03` readback are
   `LX521.4 22MG10F-v5`.
 - preset B active filename RAM and HID cmd `0x03` readback are
@@ -533,8 +533,8 @@ Pass criteria:
 - CONTROL LCD is either `Volume` / `Active: A|B` or Preset row 0 ending in
   `A`, `B`, or `!` when a DSP fault hides the preset letter.
 - both MAINs report the selected active preset.
-- both MAINs' active filename RAM matches the baked release capture:
-  A = `LX521.4 22MG10F-v5`, B = `LX521.4 22MG10F-v7`.
+- both MAINs' active filename RAM matches the current V3.5 XML-native release
+  defaults: A = `LX521.4 22MG10F-v5`, B = `LX521.4 22MG10F-v8`.
 
 ### 8. Confirm physical front-panel STBY/WAKE from Volume
 

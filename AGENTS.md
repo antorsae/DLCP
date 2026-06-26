@@ -187,7 +187,7 @@ Regenerate after any semantic map update: `python3 scripts/annotate_disasm.py`
 
 Canonical constants used across scripts/tests:
 
-- Directory roots: `PROJECT_ROOT`, `DOCS_DIR`, `FIRMWARE_DIR`, `ARTIFACTS_DIR`, `SCRIPTS_DIR`, `VENDOR_DIR`, `TOOLS_ARTIFACTS_DIR`
+- Directory roots: `PROJECT_ROOT`, `DOCS_DIR`, `FIRMWARE_DIR`, `ARTIFACTS_DIR`, `SCRIPTS_DIR`, `VENDOR_DIR`, `TOOLS_ARTIFACTS_DIR`, `LX521_ARTIFACTS_DIR`, `LX521_FILTERDATA_DIR`
 - Firmware dirs: `FIRMWARE_STOCK_DIR`, `FIRMWARE_PATCHED_DIR`, `FIRMWARE_DISASM_DIR`, `FIRMWARE_DUMPS_DIR`, `FIRMWARE_REFERENCE_DIR`
 - Stock main: `STOCK_MAIN_HEX`, `STOCK_MAIN_PROGRAM_MEMORY_EXPORT`, `STOCK_MAIN_DUMP_TABLE`, `STOCK_MAIN_DUMP_CONVERTED_HEX`, `STOCK_MAIN_COMBINED_HEX`, `STOCK_MAIN_CONFIG_BITS_EXPORT`, `STOCK_MAIN_EE_DATA_EXPORT`, `STOCK_MAIN_USER_ID_EXPORT`
 - Stock control: `STOCK_CONTROL_HEX_V14`, `STOCK_CONTROL_HEX_V15B`, `STOCK_CONTROL_HEX_V16B`
@@ -199,6 +199,7 @@ Canonical constants used across scripts/tests:
   - `V33_MAIN_HEX` is the canonical V3.3 release artifact at `firmware/patched/releases/DLCP_Firmware_V3.3.hex`
   - `V34_MAIN_HEX` is the canonical V3.4 release artifact at `firmware/patched/releases/DLCP_Firmware_V3.4.hex`
   - `V35_MAIN_HEX` is the canonical V3.5 release artifact at `firmware/patched/releases/DLCP_Firmware_V3.5.hex`
+  - V3.5 FilterData XML release defaults: `V35_FILTERDATA_PRESET_A`, `V35_FILTERDATA_PRESET_B`, `V35_FILTERDATA_PRESET_A_NAME`, `V35_FILTERDATA_PRESET_B_NAME`, `V35_FILTERDATA_PRESET_A_SHA256`, `V35_FILTERDATA_PRESET_B_SHA256`
 - Source-assembled control: `V17_CONTROL_ASM`, `V17_CONTROL_ASM_COMMENTS`, `V17_CONTROL_ASM_SHIFTED`, `V171_CONTROL_ASM`, `V171_CONTROL_HEX`, `V172_CONTROL_ASM`, `V172_CONTROL_HEX`, `V173_CONTROL_ASM`, `V173_CONTROL_HEX`
   - `V171_CONTROL_HEX` is the canonical V1.71 release artifact at `firmware/patched/releases/DLCP_Control_V1.71.hex`
   - `V172_CONTROL_HEX` is the canonical V1.72 release artifact at `firmware/patched/releases/DLCP_Control_V1.72.hex`
@@ -256,6 +257,7 @@ Always prefer these constants over hardcoded paths.
 - EEPROM shadow dump: `dlcp_ep0_eeprom_shadow_dump.py`
 - DSP filename A/B probe: `dsp_filename_ab_probe.py`
 - HID preset capture reader: `read_coeffs.py` (CLI: `scripts/dlcp_read_coeffs.py`)
+- HFD FilterData XML preset-table compiler: `filterdata_xml.py` (CLI: `scripts/dlcp_filterdata_xml_to_bin.py`; V3.5 release flashing consumes it in memory and must not create `.bin/.json` outputs)
 
 ### Analysis package (`src/dlcp_fw/analysis`)
 
@@ -296,6 +298,7 @@ Contains migrated analysis scripts and utilities including:
 - `scripts/dlcp_v34_release_flash.py`
 - `scripts/dlcp_v35_release_flash.py`
 - `scripts/dlcp_read_coeffs.py`
+- `scripts/dlcp_filterdata_xml_to_bin.py`
 - `scripts/dlcp_ep0_flash_probe.py`
 - `scripts/sim_presets_ab.py`
 - `scripts/sim_link_control_main_presets_ab.py`
@@ -447,7 +450,7 @@ V3.4/V1.73 historical refactoring release:
 
 V3.5/V1.73 current candidate MAIN promotion:
 - `test_v35_v173_release_builders.py` (V3.5 builder updates identity metadata, runs RAM-bank safety for `main-v35` before publishing HEX, and rolls back source/listing/old HEX on assembly or RAM-safety failure; includes V1.73 builder parity coverage)
-- `test_dlcp_v35_release_flash.py` (V3.5 release-flash wrapper argument forwarding, no-local-captures warning path, info-only passthrough, explicit-route requirement)
+- `test_dlcp_v35_release_flash.py` (V3.5 release-flash wrapper XML FilterData forwarding, expected name/SHA guard, missing-XML hard error, info-only/finalize-only passthrough, explicit-route requirement)
 - `test_firmware_version_label.py` covers canonical V3.5 USB HID + EEPROM version bytes.
 - `test_v172_v33_diag_identity.py` includes V1.73 + V3.5 cmd `0x25` identity nibbles and PB1/PB2 LCD title coverage.
 
@@ -611,6 +614,7 @@ Reanalysis artifacts (local by default; ignored via `.gitignore`):
 Generated/ephemeral (ignored):
 
 - `artifacts/LX521.4/...`
+  - current V3.5 release flashing expects local HFD 4.97 XML at `artifacts/LX521.4/FilterData/LX521.4 22MG10F-v5/Config.xml` and `artifacts/LX521.4/FilterData/LX521.4 22MG10F-v8/Config.xml`; keep this tree symlinked into worktrees when using the V3.5 operator wrapper.
 - `artifacts/sim/current/...`
 - `artifacts/probes/...`
 - `__pycache__/`, `.pytest_cache/`, `.ruff_cache/`, `.venv*`, etc.
@@ -775,7 +779,7 @@ scripts/flash_control_safe.sh --path "$CONTROL_RELAY_MAIN_HID"
 
 - Canonical MAIN release output is always `firmware/patched/releases/DLCP_Firmware_V3.5.hex`.
 - Each canonical `V3.5` build must increment the EEPROM revision byte in `src/dlcp_fw/asm/dlcp_main_v35.asm` at `eeprom_data[0x82]`, update the boot-time runtime identity literal, update the cmd `0x25` identity revision nibbles, and pass RAM-bank safety for `main-v35`; `scripts/build_v35_release.py` is the required path because it keeps all of those gates in sync before publishing the HEX.
-- `scripts/dlcp_v35_release_flash.py` is the canonical operator wrapper for V3.5 MAIN flashing. It preserves the V3.2/V3.3/V3.4 baked-preset/no-local-captures behavior and forwards to `scripts/dlcp_main_flash.py`.
+- `scripts/dlcp_v35_release_flash.py` is the canonical operator wrapper for V3.5 MAIN flashing. It compiles preset A from `artifacts/LX521.4/FilterData/LX521.4 22MG10F-v5/Config.xml` and preset B from `artifacts/LX521.4/FilterData/LX521.4 22MG10F-v8/Config.xml` in `hfd-pz` mode, verifies the expected names/table SHA256 values before USB access, overlays the tables in memory, and forwards to `scripts/dlcp_main_flash.py`. Missing XML is a hard error; V3.5 does not flash an unbaked release when these XML inputs are absent. Historical V3.1/V3.2/V3.3/V3.4 wrappers keep the baked-capture/no-local-captures behavior.
 - V3.5 is the current MAIN release line when paired with the V1.73 CONTROL candidate. Keep V3.4 source and release paths intact for historical rebuilds and compatibility testing.
 
 ## V1.71 Release Ceremony

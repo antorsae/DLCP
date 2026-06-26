@@ -37,6 +37,43 @@ def _require_file(path: Path, *, label: str, parser: argparse.ArgumentParser) ->
         parser.error(f"{label} not found: {path}")
 
 
+def _filterdata_config_path(path: Path) -> Path:
+    if path.name == "Config.xml" or path.suffix.lower() == ".xml":
+        return path
+    return path / "Config.xml"
+
+
+def _missing_filterdata_sources(
+    *,
+    filterdata_a: Path,
+    filterdata_b: Path,
+) -> list[tuple[str, Path]]:
+    candidates = [
+        ("preset A FilterData Config.xml", _filterdata_config_path(filterdata_a)),
+        ("preset B FilterData Config.xml", _filterdata_config_path(filterdata_b)),
+    ]
+    return [(label, path) for label, path in candidates if not path.is_file()]
+
+
+def _require_filterdata_sources(
+    *,
+    filterdata_a: Path,
+    filterdata_b: Path,
+    parser: argparse.ArgumentParser,
+) -> None:
+    missing = _missing_filterdata_sources(
+        filterdata_a=filterdata_a,
+        filterdata_b=filterdata_b,
+    )
+    if missing:
+        detail = "; ".join(f"{label} not found: {path}" for label, path in missing)
+        parser.error(
+            detail
+            + ". Populate artifacts/LX521.4/FilterData with the HFD 4.97 "
+            "FilterData directories, or pass explicit --filterdata-* paths."
+        )
+
+
 def _missing_capture_files(
     *,
     capture_a_bin: Path,
@@ -103,6 +140,13 @@ def build_forward_argv(
     capture_a_meta: Path | None = None,
     capture_b_bin: Path | None = None,
     capture_b_meta: Path | None = None,
+    filterdata_a: Path | None = None,
+    filterdata_b: Path | None = None,
+    filterdata_mode: str | None = None,
+    filterdata_a_name: str | None = None,
+    filterdata_b_name: str | None = None,
+    filterdata_a_sha256: str | None = None,
+    filterdata_b_sha256: str | None = None,
 ) -> list[str]:
     ca_bin = capture_a_bin or CAPTURE_A_BIN
     ca_meta = capture_a_meta or CAPTURE_A_META
@@ -126,6 +170,42 @@ def build_forward_argv(
         parser.error("a release flash requires exactly one routing target: --left, --right, or --all-ch L|R")
 
     _require_file(release_hex, label=f"canonical {version_label} MAIN hex", parser=parser)
+
+    if filterdata_a is not None or filterdata_b is not None:
+        if filterdata_a is None or filterdata_b is None:
+            parser.error("FilterData release flashing requires both preset A and preset B XML sources")
+        _require_filterdata_sources(
+            filterdata_a=filterdata_a,
+            filterdata_b=filterdata_b,
+            parser=parser,
+        )
+        argv.extend(
+            [
+                "--hex",
+                str(release_hex),
+                "--filterdata-a",
+                str(filterdata_a),
+                "--filterdata-b",
+                str(filterdata_b),
+                "--filterdata-mode",
+                filterdata_mode or "hfd-pz",
+                "--all-ch",
+                route,
+            ]
+        )
+        if filterdata_a_name is not None:
+            argv.extend(["--filterdata-a-name", filterdata_a_name])
+        if filterdata_b_name is not None:
+            argv.extend(["--filterdata-b-name", filterdata_b_name])
+        if filterdata_a_sha256 is not None:
+            argv.extend(["--filterdata-a-sha256", filterdata_a_sha256])
+        if filterdata_b_sha256 is not None:
+            argv.extend(["--filterdata-b-sha256", filterdata_b_sha256])
+        if getattr(args, "allow_unverified_filterdata", False):
+            argv.append("--allow-unverified-filterdata")
+        if args.profile:
+            argv.extend(["--profile", args.profile])
+        return argv
 
     missing_captures = _missing_capture_files(
         capture_a_bin=ca_bin,
@@ -170,11 +250,26 @@ def release_main(
     capture_a_meta: Path | None = None,
     capture_b_bin: Path | None = None,
     capture_b_meta: Path | None = None,
+    filterdata_a: Path | None = None,
+    filterdata_b: Path | None = None,
+    filterdata_mode: str | None = None,
+    filterdata_a_name: str | None = None,
+    filterdata_b_name: str | None = None,
+    filterdata_a_sha256: str | None = None,
+    filterdata_b_sha256: str | None = None,
 ) -> int:
+    if filterdata_a is not None or filterdata_b is not None:
+        source_text = (
+            f"bakes FilterData XML presets in {filterdata_mode or 'hfd-pz'} "
+            "mode in memory and verifies expected preset names/table hashes "
+            "before USB access."
+        )
+    else:
+        source_text = "bakes local A/B preset captures when they are present."
     ap = argparse.ArgumentParser(
         description=(
             f"Operator wrapper for the canonical {version_label} MAIN release flash path; "
-            "bakes local A/B preset captures when they are present."
+            f"{source_text}"
         ),
     )
     ap.add_argument("--vid", type=_parse_int_auto, default=DEFAULT_VID)
@@ -213,6 +308,15 @@ def release_main(
         default=None,
         help="post-flash MAIN IR profile; omitted uses the MAIN flasher default (hypex)",
     )
+    if filterdata_a is not None or filterdata_b is not None:
+        ap.add_argument(
+            "--allow-unverified-filterdata",
+            action="store_true",
+            help=(
+                "advanced: allow V3.5 FilterData name/SHA mismatch for "
+                "noncanonical local XML debugging"
+            ),
+        )
     ap.add_argument("-v", "--verbose", action="store_true", help="verbose output")
     args = ap.parse_args(argv)
 
@@ -224,5 +328,12 @@ def release_main(
         capture_a_meta=capture_a_meta,
         capture_b_bin=capture_b_bin,
         capture_b_meta=capture_b_meta,
+        filterdata_a=filterdata_a,
+        filterdata_b=filterdata_b,
+        filterdata_mode=filterdata_mode,
+        filterdata_a_name=filterdata_a_name,
+        filterdata_b_name=filterdata_b_name,
+        filterdata_a_sha256=filterdata_a_sha256,
+        filterdata_b_sha256=filterdata_b_sha256,
     )
     return main_flash.main(forward_argv)

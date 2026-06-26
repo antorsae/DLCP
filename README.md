@@ -254,10 +254,10 @@ For raw state capture when USB still works but the chain or LCD is unhealthy:
 There are two supported ways to flash the release pair.
 
 Use the **CLI path** for the normal two-PB deployment.  It is the canonical
-path because it bakes A/B preset captures when local captures are available,
-applies L/R routing, verifies identity, and preserves user settings.  With no
-local captures, it flashes the release unbaked and prints the post-flash DSP
-upload instructions.
+path because it compiles the V3.5 A/B preset tables directly from Hypex
+FilterData XML, applies L/R routing, verifies identity, and preserves user
+settings.  Missing XML inputs are a hard preflight error; the V3.5 wrapper does
+not flash an unbaked MAIN when preset data is unavailable.
 
 Use the **HFD path** only when you want a stock-style firmware update through
 Hypex Filter Design.  HFD can stream the HEX files, but it does not run the
@@ -268,22 +268,30 @@ steps.
 
 Close HFD or any other app using the DLCP USB HID device before running CLI tools.
 
-For the CLI A/B preset flow, keep the captured DSP tables under:
+For the V3.5 CLI A/B preset flow, expose the HFD 4.97 FilterData exports under
+the ignored local artifact tree:
 
 ```text
-artifacts/LX521.4/LX521.4_22MG10F-v5.bin
-artifacts/LX521.4/LX521.4_22MG10F-v5.json
-artifacts/LX521.4/LX521.4_22MG10F-v7.bin
-artifacts/LX521.4/LX521.4_22MG10F-v7.json
+artifacts/LX521.4/FilterData/LX521.4 22MG10F-v5/Config.xml
+artifacts/LX521.4/FilterData/LX521.4 22MG10F-v8/Config.xml
 ```
 
-The `.json` sidecars carry the config-name metadata used after flashing.
-These files are local operator artifacts and may be absent in a fresh clone.
-If they are missing, `scripts/dlcp_v35_release_flash.py` prints a warning and
-flashes the canonical V3.5 MAIN without baking A/B preset captures.  In that
-mode, upload the desired DSP project/settings afterward with Hypex Filter
-Design, or capture local preset tables into
-`artifacts/LX521.4/` and rerun the CLI wrapper.
+The V3.5 wrapper compiles these XMLs in memory with `hfd-pz` coefficient
+recomputation, derives display names from the two FilterData directory names,
+and verifies the generated table SHA256 before any USB access:
+
+```text
+Preset A v5 sha256 5e352d409ce18c79ae5aa558b988fb0dddbacda4ca455aa0ffb9336a138e78d8
+Preset B v8 sha256 474f93fceabb7d06e6936e11c1075ad59c1e588a9696290f831cf9039d2eb043
+```
+
+Fresh worktrees should symlink `artifacts/LX521.4` to the base checkout's local
+artifact tree as described in `AGENTS.md`.  If either XML is missing, place the
+matching HFD 4.97 FilterData directory at the path above or pass explicit
+`--filterdata-*` paths through the lower-level debug flasher; do not continue
+with an unbaked V3.5 release flash.  The old
+`LX521.4_22MG10F-v5/v7.{bin,json}` captures remain supported for historical
+V3.1-V3.4/manual flows, but are not the V3.5 default.
 
 ### CLI Validation Flash
 
@@ -309,12 +317,6 @@ Flash MAIN PB2 / right:
 ```bash
 : "${RIGHT_HID:?set RIGHT_HID from identify-mains output}"
 .venv_ep0/bin/python scripts/dlcp_v35_release_flash.py --path "$RIGHT_HID" --right
-```
-
-When the LX521.4 capture files are not present, expect this warning:
-
-```text
-WARNING: local A/B preset captures are incomplete; flashing canonical V3.5 without baked presets.
 ```
 
 Flash CONTROL:

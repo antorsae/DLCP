@@ -24,6 +24,7 @@ from pathlib import Path
 import time
 from typing import Dict, List, Optional
 
+from dlcp_fw.flash.filterdata_xml import build_preset_table
 from dlcp_fw.flash.dlcp_control_flash import (
     DEFAULT_PID,
     DEFAULT_VID,
@@ -36,7 +37,7 @@ from dlcp_fw.flash.dlcp_control_flash import (
     enumerate_devices,
     parse_intel_hex,
 )
-from dlcp_fw.paths import STOCK_MAIN_COMBINED_HEX
+from dlcp_fw.paths import PROJECT_ROOT, STOCK_MAIN_COMBINED_HEX
 
 
 MAIN_BOOT_END_EXCL = 0x1000
@@ -191,6 +192,10 @@ class CaptureOverlay:
     name_slot: bytes
     config_name: str
     flash_base: int
+    source_path: Optional[Path] = None
+    source_kind: str = "capture"
+    source_mode: Optional[str] = None
+    source_sha256: Optional[str] = None
 
 
 def detect_static_hex_hid_version(hex_mem: Dict[int, int]) -> Optional[VersionInfo]:
@@ -381,6 +386,82 @@ def _load_capture_overlay(
         name_slot=name_slot,
         config_name=config_name,
         flash_base=flash_base,
+        source_path=capture_path,
+        source_sha256=_sha256_hex(table),
+    )
+
+
+def _display_path(path: Path) -> str:
+    resolved = path.resolve(strict=False)
+    try:
+        return str(resolved.relative_to(PROJECT_ROOT))
+    except ValueError:
+        return f"<external>/{path.name}"
+
+
+def resolve_filterdata_config(path: Path) -> Path:
+    if path.is_dir():
+        config = path / "Config.xml"
+        if not config.is_file():
+            raise RuntimeError(f"FilterData directory has no Config.xml: {path}")
+        return config
+    if path.is_file():
+        return path
+    raise RuntimeError(
+        f"FilterData source not found: {path} "
+        "(expected a Config.xml file or a directory containing Config.xml)"
+    )
+
+
+def _load_filterdata_overlay(
+    *,
+    filterdata_path: Path,
+    mode: str,
+    name_override: Optional[str],
+    preset: str,
+    flash_base: int,
+    expected_name: Optional[str] = None,
+    expected_sha256: Optional[str] = None,
+    allow_unverified: bool = False,
+) -> CaptureOverlay:
+    if preset not in {"A", "B"}:
+        raise RuntimeError(f"unsupported preset overlay {preset!r}")
+    config_xml = resolve_filterdata_config(filterdata_path)
+    derived_name = config_xml.parent.name
+    table = build_preset_table(config_xml, mode=mode)
+    if len(table) != PRESET_TABLE_SIZE:
+        raise RuntimeError(
+            f"{config_xml} generated {len(table)} bytes, expected {PRESET_TABLE_SIZE}"
+        )
+    table_sha = _sha256_hex(table)
+    mismatches: list[str] = []
+    if expected_name is not None and derived_name != expected_name:
+        mismatches.append(
+            f"name {derived_name!r} != expected {expected_name!r}"
+        )
+    if expected_sha256 is not None and table_sha.lower() != expected_sha256.lower():
+        mismatches.append(
+            f"sha256 {table_sha} != expected {expected_sha256.lower()}"
+        )
+    if mismatches:
+        message = (
+            f"FilterData preset {preset} verification failed for "
+            f"{_display_path(config_xml)}: " + "; ".join(mismatches)
+        )
+        if not allow_unverified:
+            raise RuntimeError(message)
+        print(f"WARNING: {message}; continuing because --allow-unverified-filterdata was set")
+    config_name = name_override if name_override is not None else derived_name
+    return CaptureOverlay(
+        preset=preset,
+        table=table,
+        name_slot=_encode_name_slot(config_name),
+        config_name=config_name,
+        flash_base=flash_base,
+        source_path=config_xml,
+        source_kind="filterdata",
+        source_mode=mode,
+        source_sha256=table_sha,
     )
 
 
@@ -2225,6 +2306,41 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--name-a", default=None, help="ASCII config name fallback if --capture-a sidecar JSON is missing")
     ap.add_argument("--name-b", default=None, help="ASCII config name fallback if --capture-b sidecar JSON is missing")
     ap.add_argument(
+        "--filterdata-a",
+        type=Path,
+        metavar="PATH",
+        default=None,
+        help="preset A Hypex FilterData directory or Config.xml to compile in memory",
+    )
+    ap.add_argument(
+        "--filterdata-b",
+        type=Path,
+        metavar="PATH",
+        default=None,
+        help=(
+            "preset B Hypex FilterData directory or Config.xml to compile in memory; "
+            "target HEX must be V2.4-V2.8 or V3.1+"
+        ),
+    )
+    ap.add_argument(
+        "--filterdata-mode",
+        choices=("auto", "direct", "legacy", "hfd-pz"),
+        default="hfd-pz",
+        help="FilterData coefficient mode for --filterdata-* overlays (default: hfd-pz)",
+    )
+    ap.add_argument("--filterdata-a-name", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--filterdata-b-name", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--filterdata-a-sha256", default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--filterdata-b-sha256", default=None, help=argparse.SUPPRESS)
+    ap.add_argument(
+        "--allow-unverified-filterdata",
+        action="store_true",
+        help=(
+            "advanced: allow expected FilterData name/SHA mismatch; intended only "
+            "for noncanonical local XML debugging"
+        ),
+    )
+    ap.add_argument(
         "--all-ch",
         type=str.upper,
         choices=sorted(ALL_CH_ROUTE_VALUES),
@@ -2362,6 +2478,14 @@ def main(argv: Optional[List[str]] = None) -> int:
         ap.error("--hex is required (main firmware Intel HEX)")
     if (args.no_verify or args.skip_bootloader_check or args.skip_switch) and not args.force_unsafe:
         ap.error("--no-verify, --skip-bootloader-check, and --skip-switch require --force-unsafe")
+    if args.filterdata_a is not None and (
+        args.capture_a is not None or args.meta_a is not None
+    ):
+        ap.error("--filterdata-a conflicts with --capture-a/--meta-a")
+    if args.filterdata_b is not None and (
+        args.capture_b is not None or args.meta_b is not None
+    ):
+        ap.error("--filterdata-b conflicts with --capture-b/--meta-b")
 
     hex_mem = parse_intel_hex(args.hex)
     overlays: list[CaptureOverlay] = []
@@ -2381,6 +2505,25 @@ def main(argv: Optional[List[str]] = None) -> int:
         )
         _apply_capture_overlay(hex_mem, overlay_a)
         overlays.append(overlay_a)
+    if args.filterdata_a is not None:
+        try:
+            overlay_a = _load_filterdata_overlay(
+                filterdata_path=args.filterdata_a,
+                mode=args.filterdata_mode,
+                name_override=args.name_a,
+                preset="A",
+                flash_base=resolve_capture_flash_base(
+                    preset="A",
+                    target_version=target_hex_version,
+                ),
+                expected_name=args.filterdata_a_name,
+                expected_sha256=args.filterdata_a_sha256,
+                allow_unverified=args.allow_unverified_filterdata,
+            )
+        except RuntimeError as exc:
+            ap.error(str(exc))
+        _apply_capture_overlay(hex_mem, overlay_a)
+        overlays.append(overlay_a)
     if args.capture_b is not None:
         try:
             overlay_b = _load_capture_overlay(
@@ -2392,6 +2535,25 @@ def main(argv: Optional[List[str]] = None) -> int:
                     preset="B",
                     target_version=target_hex_version,
                 ),
+            )
+        except RuntimeError as exc:
+            ap.error(str(exc))
+        _apply_capture_overlay(hex_mem, overlay_b)
+        overlays.append(overlay_b)
+    if args.filterdata_b is not None:
+        try:
+            overlay_b = _load_filterdata_overlay(
+                filterdata_path=args.filterdata_b,
+                mode=args.filterdata_mode,
+                name_override=args.name_b,
+                preset="B",
+                flash_base=resolve_capture_flash_base(
+                    preset="B",
+                    target_version=target_hex_version,
+                ),
+                expected_name=args.filterdata_b_name,
+                expected_sha256=args.filterdata_b_sha256,
+                allow_unverified=args.allow_unverified_filterdata,
             )
         except RuntimeError as exc:
             ap.error(str(exc))
@@ -2434,13 +2596,20 @@ def main(argv: Optional[List[str]] = None) -> int:
                 f"(EEPROM {target_hex_eeprom_version.major}.{target_hex_eeprom_version.minor})"
             )
         if not args.skip_bootloader_check:
-            print(f"  explicit bootloader bytes match: {args.bootloader_ref}")
+            print(f"  explicit bootloader bytes match: {_display_path(Path(args.bootloader_ref))}")
         for overlay in overlays:
-            capture_path = args.capture_a if overlay.preset == "A" else args.capture_b
-            print(f"  capture {overlay.preset} overlay: {capture_path}")
-            print(f"  capture {overlay.preset} name: {overlay.config_name!r}")
-            print(f"  capture {overlay.preset} flash base: 0x{overlay.flash_base:04X}")
-            print(f"  capture {overlay.preset} table sha256: {_sha256_hex(overlay.table)}")
+            label = "filterdata" if overlay.source_kind == "filterdata" else "capture"
+            source_path = overlay.source_path
+            source_text = _display_path(source_path) if source_path is not None else "<unknown>"
+            print(f"  {label} {overlay.preset} source: {source_text}")
+            if overlay.source_mode is not None:
+                print(f"  {label} {overlay.preset} mode: {overlay.source_mode}")
+            print(f"  {label} {overlay.preset} name: {overlay.config_name!r}")
+            print(f"  {label} {overlay.preset} flash base: 0x{overlay.flash_base:04X}")
+            print(
+                f"  {label} {overlay.preset} table sha256: "
+                f"{overlay.source_sha256 or _sha256_hex(overlay.table)}"
+            )
         if args.all_ch is not None:
             print(f"  post-flash all-ch mapping: {args.all_ch}")
         print(

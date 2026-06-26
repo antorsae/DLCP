@@ -799,12 +799,9 @@ def test_live_manual_front_panel_preset_selection_updates_mains_and_filename_ram
 
     _require_main_pair_and_camera_accessible()
 
-    from dlcp_fw.flash import dlcp_v32_release_flash
+    from dlcp_fw.flash import dlcp_v35_release_flash
 
-    expected_names = {
-        "A": _release_capture_name(dlcp_v32_release_flash.CAPTURE_A_META),
-        "B": _release_capture_name(dlcp_v32_release_flash.CAPTURE_B_META),
-    }
+    expected_names = dlcp_v35_release_flash.DEFAULT_PRESET_NAMES
 
     line1, line2 = _capture_lcd_consensus(tmp_path, f"front_panel_preset_{target}")
     if line1 == "Volume":
@@ -932,7 +929,7 @@ def test_live_preset_filename_scroll_survives_manual_a_b_a(tmp_path: Path) -> No
 
     expected_a = os.environ.get("DLCP_HW_EXPECTED_PRESET_FILENAME_A", "").strip()
     if not expected_a:
-        expected_a = _release_capture_name(dlcp_v35_release_flash.CAPTURE_A_META)
+        expected_a = dlcp_v35_release_flash.DEFAULT_PRESET_NAMES["A"]
 
     print(
         "PRECONDITION: CONTROL must be on the Preset page with preset A active. "

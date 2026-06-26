@@ -28,11 +28,14 @@ from dlcp_fw.flash.dlcp_main_flash import (
     _apply_all_channel_mapping,
     _force_active_filename_persist,
     _load_capture_overlay,
+    _load_filterdata_overlay,
     _name_slot_to_cmd03_payload,
     _parse_cmd03_filename_response,
     _switch_active_preset_ep0,
     main,
+    resolve_filterdata_config,
 )
+from dlcp_fw.flash.filterdata_xml import build_preset_table, sha256_hex
 from dlcp_fw.flash.dlcp_control_flash import HidDeviceInfo
 from dlcp_fw.sim.hexio import write_intel_hex
 
@@ -65,6 +68,50 @@ def _write_minimal_main_hex(path: Path, *, major: int, minor: int, flag: int = 0
         addr + 13: 0x6F,
     }
     write_intel_hex(path, mem)
+
+
+def _write_filterdata_xml(path: Path, *, frequency: str = "1000") -> None:
+    import xml.etree.ElementTree as ET
+
+    root = ET.Element("config")
+    ET.SubElement(root, "device", procsamplingrate="93750")
+    for group_id in range(1, 7):
+        gain_node = ET.SubElement(
+            root,
+            "processobj",
+            processtype="ptGain",
+            groupid=str(group_id),
+        )
+        ET.SubElement(gain_node, "gain", value="0")
+        delay_node = ET.SubElement(
+            root,
+            "processobj",
+            processtype="ptDelay",
+            groupid=str(group_id),
+        )
+        ET.SubElement(delay_node, "delay", value="0")
+        for index in range(1, 16):
+            bq = ET.SubElement(
+                root,
+                "processobj",
+                processtype="ptBiQuad",
+                groupid=str(group_id),
+                title=f"BQ {index}",
+                enabled="true",
+            )
+            ET.SubElement(bq, "filtertype", value="ftUnity")
+            ET.SubElement(bq, "f1", value=frequency)
+            ET.SubElement(bq, "gain", value="0")
+            ET.SubElement(bq, "q1", value="1")
+            ET.SubElement(bq, "zconst", value="1")
+            ET.SubElement(bq, "shelfhl", value="stLowShelf")
+            ET.SubElement(bq, "b0", value="1")
+            ET.SubElement(bq, "b1", value="0")
+            ET.SubElement(bq, "b2", value="0")
+            ET.SubElement(bq, "a1", value="0")
+            ET.SubElement(bq, "a2", value="0")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ET.ElementTree(root).write(path, encoding="utf-8", xml_declaration=True)
 
 
 def _stub_ir_profile_finalize(
@@ -147,6 +194,79 @@ def test_load_capture_overlay_reads_preset_b_sidecar_json(tmp_path: Path) -> Non
     assert overlay.name_slot == name_slot
     assert overlay.config_name == "BRAVO-B"
     assert overlay.flash_base == PRESET_B_FLASH_BASE
+
+
+def test_resolve_filterdata_config_accepts_directory_and_file(tmp_path: Path) -> None:
+    config = tmp_path / "Alpha" / "Config.xml"
+    _write_filterdata_xml(config)
+
+    assert resolve_filterdata_config(config.parent) == config
+    assert resolve_filterdata_config(config) == config
+
+
+def test_load_filterdata_overlay_derives_name_and_validates_sha(tmp_path: Path) -> None:
+    config = tmp_path / "AlphaPreset" / "Config.xml"
+    _write_filterdata_xml(config)
+    table = build_preset_table(config, mode="hfd-pz")
+
+    overlay = _load_filterdata_overlay(
+        filterdata_path=config.parent,
+        mode="hfd-pz",
+        name_override=None,
+        preset="A",
+        flash_base=PRESET_A_FLASH_BASE,
+        expected_name="AlphaPreset",
+        expected_sha256=sha256_hex(table),
+    )
+
+    assert overlay.preset == "A"
+    assert overlay.table == table
+    assert overlay.name_slot == b"AlphaPreset" + (b"\xFF" * (FILENAME_LEN - 11))
+    assert overlay.config_name == "AlphaPreset"
+    assert overlay.flash_base == PRESET_A_FLASH_BASE
+    assert overlay.source_kind == "filterdata"
+    assert overlay.source_mode == "hfd-pz"
+    assert overlay.source_sha256 == sha256_hex(table)
+
+
+def test_load_filterdata_overlay_rejects_expected_name_or_sha_mismatch(
+    tmp_path: Path,
+) -> None:
+    config = tmp_path / "AlphaPreset" / "Config.xml"
+    _write_filterdata_xml(config)
+
+    with pytest.raises(RuntimeError, match="verification failed"):
+        _load_filterdata_overlay(
+            filterdata_path=config,
+            mode="hfd-pz",
+            name_override=None,
+            preset="A",
+            flash_base=PRESET_A_FLASH_BASE,
+            expected_name="WrongName",
+            expected_sha256="0" * 64,
+        )
+
+
+def test_load_filterdata_overlay_allows_unverified_with_warning(
+    tmp_path: Path,
+    capsys,
+) -> None:
+    config = tmp_path / "AlphaPreset" / "Config.xml"
+    _write_filterdata_xml(config)
+
+    overlay = _load_filterdata_overlay(
+        filterdata_path=config,
+        mode="hfd-pz",
+        name_override=None,
+        preset="A",
+        flash_base=PRESET_A_FLASH_BASE,
+        expected_name="WrongName",
+        expected_sha256="0" * 64,
+        allow_unverified=True,
+    )
+
+    assert overlay.config_name == "AlphaPreset"
+    assert "WARNING:" in capsys.readouterr().out
 
 
 def test_name_slot_to_cmd03_payload_maps_ff_padding_to_zero() -> None:
@@ -357,6 +477,195 @@ def test_cli_capture_a_and_b_overlay_stream_before_flash(monkeypatch, tmp_path: 
     assert stream[start_a : start_a + 0x20] == table_a[:0x20]
     assert stream[start_b : start_b + 0x20] == table_b[:0x20]
     assert seen["need_post_app"] is False
+
+
+def test_cli_filterdata_a_and_b_overlay_stream_before_flash(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    base_hex = tmp_path / "base.hex"
+    config_a = tmp_path / "Alpha XML" / "Config.xml"
+    config_b = tmp_path / "Bravo XML" / "Config.xml"
+    _write_minimal_main_hex(base_hex, major=0x03, minor=0x05)
+    _write_filterdata_xml(config_a)
+    _write_filterdata_xml(config_b, frequency="1200")
+    table_a = build_preset_table(config_a, mode="hfd-pz")
+    table_b = build_preset_table(config_b, mode="hfd-pz")
+
+    seen: dict[str, object] = {}
+
+    def fake_flash_main(**kwargs):
+        seen.update(kwargs)
+        return None
+
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.flash_main", fake_flash_main)
+
+    rc = main(
+        [
+            "--hex",
+            str(base_hex),
+            "--filterdata-a",
+            str(config_a.parent),
+            "--filterdata-b",
+            str(config_b),
+            "--filterdata-mode",
+            "hfd-pz",
+            "--filterdata-a-name",
+            "Alpha XML",
+            "--filterdata-b-name",
+            "Bravo XML",
+            "--filterdata-a-sha256",
+            sha256_hex(table_a),
+            "--filterdata-b-sha256",
+            sha256_hex(table_b),
+            "--skip-bootloader-check",
+            "--force-unsafe",
+            "--dry-run",
+        ]
+    )
+
+    assert rc == 0
+    stream = seen["stream"]
+    assert isinstance(stream, bytes)
+    start_a = PRESET_A_FLASH_BASE - 0x1000
+    start_b = PRESET_B_FLASH_BASE - 0x1000
+    assert stream[start_a : start_a + 0x20] == table_a[:0x20]
+    assert stream[start_b : start_b + 0x20] == table_b[:0x20]
+    assert seen["need_post_app"] is False
+    assert not list(tmp_path.rglob("*.bin"))
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_cli_filterdata_preflight_prints_xml_evidence_without_raw_absolute_paths(
+    monkeypatch,
+    tmp_path: Path,
+    capsys,
+) -> None:
+    base_hex = tmp_path / "base.hex"
+    config_a = tmp_path / "Alpha XML" / "Config.xml"
+    config_b = tmp_path / "Bravo XML" / "Config.xml"
+    _write_minimal_main_hex(base_hex, major=0x03, minor=0x05)
+    _write_filterdata_xml(config_a)
+    _write_filterdata_xml(config_b)
+    table_a = build_preset_table(config_a, mode="hfd-pz")
+    table_b = build_preset_table(config_b, mode="hfd-pz")
+
+    monkeypatch.setattr("dlcp_fw.flash.dlcp_main_flash.flash_main", lambda **kwargs: None)
+
+    rc = main(
+        [
+            "--hex",
+            str(base_hex),
+            "--filterdata-a",
+            str(config_a),
+            "--filterdata-b",
+            str(config_b),
+            "--filterdata-a-name",
+            "Alpha XML",
+            "--filterdata-b-name",
+            "Bravo XML",
+            "--filterdata-a-sha256",
+            sha256_hex(table_a),
+            "--filterdata-b-sha256",
+            sha256_hex(table_b),
+            "--skip-bootloader-check",
+            "--force-unsafe",
+            "--preflight-only",
+        ]
+    )
+    out = capsys.readouterr().out
+
+    assert rc == 0
+    assert "filterdata A source: <external>/Config.xml" in out
+    assert "filterdata B source: <external>/Config.xml" in out
+    assert "filterdata A mode: hfd-pz" in out
+    assert "filterdata B mode: hfd-pz" in out
+    assert "filterdata A name: 'Alpha XML'" in out
+    assert "filterdata B name: 'Bravo XML'" in out
+    assert "filterdata A flash base: 0x5600" in out
+    assert "filterdata B flash base: 0x4C00" in out
+    assert sha256_hex(table_a) in out
+    assert sha256_hex(table_b) in out
+    assert "without baked presets" not in out
+    assert str(tmp_path) not in out
+    assert not list(tmp_path.rglob("*.bin"))
+    assert not list(tmp_path.rglob("*.json"))
+
+
+def test_cli_filterdata_conflicts_abort_before_flash_main(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    base_hex = tmp_path / "base.hex"
+    capture = tmp_path / "presetA.bin"
+    config = tmp_path / "Alpha XML" / "Config.xml"
+    _write_minimal_main_hex(base_hex, major=0x03, minor=0x05)
+    _write_filterdata_xml(config)
+    capture.write_bytes(bytes(PRESET_TABLE_SIZE))
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash.flash_main",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("flash_main must not be called")),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        main(
+            [
+                "--hex",
+                str(base_hex),
+                "--filterdata-a",
+                str(config),
+                "--capture-a",
+                str(capture),
+                "--skip-bootloader-check",
+                "--force-unsafe",
+                "--dry-run",
+            ]
+        )
+
+    assert exc.value.code == 2
+
+
+def test_cli_filterdata_missing_or_bad_xml_aborts_before_flash_main(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    base_hex = tmp_path / "base.hex"
+    missing = tmp_path / "Missing" / "Config.xml"
+    bad = tmp_path / "Bad" / "Config.xml"
+    _write_minimal_main_hex(base_hex, major=0x03, minor=0x05)
+    bad.parent.mkdir(parents=True)
+    bad.write_text("<config>", encoding="utf-8")
+    monkeypatch.setattr(
+        "dlcp_fw.flash.dlcp_main_flash.flash_main",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("flash_main must not be called")),
+    )
+
+    for path in (missing, bad):
+        with pytest.raises(SystemExit) as exc:
+            main(
+                [
+                    "--hex",
+                    str(base_hex),
+                    "--filterdata-a",
+                    str(path),
+                    "--skip-bootloader-check",
+                    "--force-unsafe",
+                    "--dry-run",
+                ]
+            )
+        assert exc.value.code == 2
+
+
+def test_cli_filterdata_help_hides_wrapper_owned_validation_args(capsys) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(["--help"])
+
+    out = capsys.readouterr().out
+    assert exc.value.code == 0
+    assert "--filterdata-a PATH" in out
+    assert "--filterdata-mode" in out
+    assert "--filterdata-a-sha256" not in out
+    assert "--filterdata-a-name" not in out
 
 
 def test_cli_capture_b_uses_v24_legacy_flash_base(monkeypatch, tmp_path: Path) -> None:
