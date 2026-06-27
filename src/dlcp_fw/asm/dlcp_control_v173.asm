@@ -5145,6 +5145,12 @@ v171_diag_loop:
         bsf     INTCON, RBIE, A
         call    button_scan_debounce, 0x0
         movlb   0x00
+        ; Drain a small RX burst.  Preset filename + health traffic can
+        ; leave BF/2C replies queued when the operator enters Diag; one
+        ; parser pass per LCD loop shows n/a/old PB state for seconds.
+        call    rx_parser_entry, 0x0
+        call    rx_parser_entry, 0x0
+        call    rx_parser_entry, 0x0
         call    rx_parser_entry, 0x0
         call    v171_service_rx_frame_gap, 0x0
         call    v171_health_service, 0x0
@@ -9006,7 +9012,7 @@ input_pb2_same_as_pb1_table:
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x37, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x37, 0x00 ; "Rev x57 20260627"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x38, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x37, 0x00 ; "Rev x58 20260627"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -9014,7 +9020,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x57                    ; V1.73 + monotonic release revision
+        db      0x01, 0x07, 0x33, 0x58                    ; V1.73 + monotonic release revision
         db      0x20, 0x26, 0x06, 0x27                    ; build date 20260627 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---

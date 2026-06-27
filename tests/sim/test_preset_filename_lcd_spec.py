@@ -19,6 +19,10 @@ from dlcp_fw.paths import (
     V34_MAIN_ASM,
     V35_MAIN_HEX,
 )
+from dlcp_fw.flash.dlcp_main_flash import (
+    detect_static_hex_eeprom_version,
+    parse_intel_hex,
+)
 from dlcp_fw.sim.v17_symbols import assemble_v17
 from dlcp_fw.sim.v30_symbols import assemble_v30
 
@@ -3625,3 +3629,52 @@ def test_v173_v34_preset_lcd_suffix_and_row1_atomicity_matrix(
 
 def test_v173_v35_canonical_preset_lcd_suffix_and_row1_atomicity_matrix() -> None:
     _assert_preset_lcd_suffix_and_row1_atomicity_matrix(V173_CONTROL_HEX, V35_MAIN_HEX)
+
+
+@pytest.mark.slow
+def test_v173_v35_diag_identity_recovers_after_contended_preset_filename_blackout() -> None:
+    """A contended filename query must not make Diag show PB1 lost for seconds."""
+    _require_rust()
+    chain = _start_native_filename_chain(
+        V173_CONTROL_HEX,
+        V35_MAIN_HEX,
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+        initial_preset="A",
+    )
+
+    _drive_and_assert_native_preset_filename(
+        chain,
+        NativePresetFilenameStep("RIGHT", "A"),
+        slot_a=PRESET_FILENAME_SLOT_A,
+        slot_b=PRESET_FILENAME_SLOT_B,
+    )
+
+    _press(chain, "DOWN")
+    chain.set_blackout(True)
+    chain.step_ticks(240_000_000)
+    chain.set_blackout(False)
+    row1_ok = _preset_filename_windows(
+        "B", PRESET_FILENAME_SLOT_A, PRESET_FILENAME_SLOT_B
+    )
+    preset_lines = _wait_for_lcd(
+        chain,
+        lambda lcd: lcd[0] == "Preset         B" and lcd[1] in row1_ok,
+        attempts=10,
+        ticks=40_000_000,
+    )
+    assert preset_lines[0] == "Preset         B" and preset_lines[1] in row1_ok
+
+    for _ in range(4):
+        _press(chain, "RIGHT")
+
+    info = detect_static_hex_eeprom_version(parse_intel_hex(str(V35_MAIN_HEX)))
+    assert info is not None
+    expected = (f"PB1 OK v3.5 {info.revision:04X}", "O1              ")
+    lines = _wait_for_lcd(
+        chain,
+        lambda lcd: lcd == expected,
+        attempts=12,
+        ticks=24_000_000,
+    )
+    assert lines == expected
