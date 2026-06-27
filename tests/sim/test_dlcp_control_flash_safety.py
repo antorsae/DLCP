@@ -14,6 +14,7 @@ from dlcp_fw.paths import (
 )
 from dlcp_fw.flash.dlcp_control_flash import (
     CONTROL_BOOT_START,
+    CONTROL_EEPROM_BASE,
     CONTROL_PROG_END_EXCL,
     CONTROL_RELEASE_MAGIC,
     CONTROL_RELEASE_METADATA_ADDR,
@@ -140,6 +141,20 @@ def test_build_control_stream_preserves_release_metadata_bytes() -> None:
     offset = CONTROL_RELEASE_METADATA_ADDR
     assert stream[offset : offset + len(CONTROL_RELEASE_MAGIC)] == CONTROL_RELEASE_MAGIC
     assert stream[offset + 8 : offset + 11] == bytes([0x01, 0x07, 0x31])
+
+
+def test_build_control_stream_ignores_pb1_pb2_input_eeprom_records() -> None:
+    candidate = {
+        0x0000: 0x12,
+        CONTROL_EEPROM_BASE + 0x5E: 0xC5,
+        CONTROL_EEPROM_BASE + 0x5F: 0xB7,
+    }
+
+    stream = build_control_stream(candidate)
+
+    assert stream[0x0000] == 0x12
+    assert stream[0x5E] == 0xFF
+    assert stream[0x5F] == 0xFF
 
 
 def test_hfd_v212_control_update_disassembly_contract_is_documented() -> None:

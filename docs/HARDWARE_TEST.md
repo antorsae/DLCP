@@ -441,6 +441,11 @@ it can include HID paths/serials, camera names, Flipper serial ports, and media
 paths.  Shared or committed evidence must be a sanitized derivative with role
 labels plus redacted/hash-only identifiers.
 
+Significant hardware incidents must also be recorded in
+[`docs/TEST_INCIDENTS.md`](TEST_INCIDENTS.md) using sanitized evidence.  Each
+entry links the observed LCD/USB/audio state to the deterministic simulator
+regression or opt-in hardware gate that prevents repeat escapes.
+
 `--bug BUG-...` expands a ledger bug ID to the phase set listed in
 `docs/IMPL_V171_V32_BUG_LEDGER.md`, de-duplicating phases when multiple bugs
 are selected.
@@ -1271,10 +1276,13 @@ Diagnostics replies:
 Volume(0) → Preset(1) → Input PB1(2) → Input PB2(3) → Setup(4) → PB1 Diag(5) → PB2 Diag(6) → Volume(0)
 ```
 
-State 3 (`Input PB2`) is not EEPROM-persistent.  After a cold boot with no PB2
-reply yet, the ring may temporarily be the six-state base ring. Once PB2 has
-answered, RIGHT from Input PB1 must show `Input PB2:`. PB2 initially renders
-`Same as PB1`; selecting a concrete PB2 source makes PB1/PB2 independent.
+State 3 (`Input PB2`) is runtime-discovered rather than a persisted display
+page.  After a cold boot with no PB2 reply yet, the ring may temporarily be the
+six-state base ring. Once PB2 has answered, RIGHT from Input PB1 must show
+`Input PB2:`. PB2 initially renders `Same as PB1`; selecting a concrete PB2
+source makes PB1/PB2 independent. PB2 input intent is CONTROL-EEPROM persistent
+in the current V1.73 line; PB1 CONTROL-owned persistence is tracked by
+`docs/MULTI_PB_INPUT_SELECTION.md`.
 
 Each PB Diag page is its own 16x2 LCD screen.  Layout dispatches by
 health (per `dlcp_control_v171.asm:3484+,3603+`):
@@ -1668,7 +1676,7 @@ gate unless the current operator has explicitly approved live hardware access.
 
 ### Prerequisites
 
-- MAIN flashed with canonical V3.5 rev `0x0090` or newer.
+- MAIN flashed with canonical V3.5 rev `0x0091` or newer.
 - Known locked digital source on the selected input.
 - Explicit HID path for the MAIN under test.  Use `--all` only when the goal is
   to query every attached MAIN.
@@ -1729,8 +1737,8 @@ future route/TAS regressions.
 ### Prerequisites
 
 - CONTROL flashed with canonical V1.73 for the target validation; the current
-  multi-PB bugfix artifact is rev `0x52`.
-- both MAINs flashed with canonical V3.5, currently rev `0x0090`.
+  multi-PB/test-robustness artifact is rev `0x57`.
+- both MAINs flashed with canonical V3.5, currently rev `0x0091`.
 - known audio source available on at least one fixed digital input and through
   Auto Detect; if possible, exercise `S/PDIF`, `USB Audio`, `AES`, and
   `Optical` individually.

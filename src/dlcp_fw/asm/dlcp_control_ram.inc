@@ -451,9 +451,12 @@ INPUT_SPLIT_FLAG_PB2_LINKED equ 0x02   ; PB2 input follows PB1 via broadcast
 INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE equ 0x03 ; sanitized persisted PB2 value is concrete
 INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY equ 0x04 ; user changed PB2 setting; save once
 INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE equ 0x05 ; unavailable persisted PB2 is temporarily linked
+INPUT_SPLIT_FLAG_PB1_PENDING_VALID equ 0x06 ; sanitized persisted PB1 value is pending post-handshake
+INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY equ 0x07 ; user changed PB1 setting; save once
 input_intent_pb2           equ  0x0BB  ; physical 0x1BB
 input_send_target          equ  0x0BC  ; physical 0x1BC; scratch: 0 PB1, 1 PB2
 input_pending_pb2          equ  0x0BD  ; physical 0x1BD; decoded persisted PB2 cmd06 payload
+input_pending_pb1          equ  0x0BE  ; physical 0x1BE; decoded persisted PB1 cmd06 payload
 
 ; Cadence-cycle reload for the cmd 0x22 timeout.  Each cadence cycle
 ; is ~1 s (set by V171_DIAG_POLL_RELOAD_LO/HI).  A reload of 4 gives
@@ -1117,6 +1120,9 @@ input_send_target_b1_phys        EQU  0x1BC    ; physical address for movff/lfsr
 input_pending_pb2_b1             EQU  0x1BD    ; phys 0x1BD, bank 1, owner input_pending_pb2
 input_pending_pb2_b1_op          EQU  0xBD     ; 8-bit f operand for input_pending_pb2_b1
 input_pending_pb2_b1_phys        EQU  0x1BD    ; physical address for movff/lfsr
+input_pending_pb1_b1             EQU  0x1BE    ; phys 0x1BE, bank 1, owner input_pending_pb1
+input_pending_pb1_b1_op          EQU  0xBE     ; 8-bit f operand for input_pending_pb1_b1
+input_pending_pb1_b1_phys        EQU  0x1BE    ; physical address for movff/lfsr
 v171_diag_render_pb_index_b1     EQU  0x1CD    ; phys 0x1CD, bank 1, owner v171_diag_render_pb_index
 v171_diag_render_pb_index_b1_op  EQU  0xCD     ; 8-bit f operand for v171_diag_render_pb_index_b1
 v171_diag_render_pb_index_b1_phys EQU  0x1CD    ; physical address for movff/lfsr

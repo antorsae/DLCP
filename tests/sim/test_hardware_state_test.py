@@ -147,6 +147,13 @@ def test_identify_mains_fails_when_two_roles_are_not_unique(monkeypatch) -> None
         hw.main(["identify-mains", "--require-left-right"])
 
 
+def test_identify_mains_fails_when_no_main_devices_visible(monkeypatch) -> None:
+    monkeypatch.setattr(hw, "_collect_main_roles", lambda *, vid, pid: [])
+
+    with pytest.raises(RuntimeError, match="expected exactly 2 visible MAIN HID devices"):
+        hw.main(["identify-mains", "--require-left-right"])
+
+
 def test_ir_preset_roundtrip_passes_with_expected_lcd_and_memory(monkeypatch, tmp_path) -> None:
     left_before = hw.MainRoleState(
         path="left-path",

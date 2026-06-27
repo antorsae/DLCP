@@ -19,11 +19,19 @@ from __future__ import annotations
 import pytest
 from intelhex import IntelHex
 
-from dlcp_fw.paths import V32_MAIN_ASM, V34_MAIN_ASM
+from dlcp_fw.paths import V32_MAIN_ASM, V34_MAIN_ASM, V35_MAIN_ASM, V35_MAIN_HEX
 from dlcp_fw.sim.v30_symbols import (
     assemble_v30,
     load_gpasm_symbols_for_hex,
 )
+
+try:
+    from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
+
+    _RUST_CHAIN_IMPORT_ERROR: Exception | None = None
+except Exception as exc:  # pragma: no cover
+    RustChain = None  # type: ignore[assignment]
+    _RUST_CHAIN_IMPORT_ERROR = exc
 
 
 # Pure source / hex tests -- no sim backend needed.
@@ -56,7 +64,10 @@ SOURCE_TABLE_EXPECTED = [
 MAIN_ASM_CASES = [
     ("v32", V32_MAIN_ASM),
     ("v34", V34_MAIN_ASM),
+    ("v35", V35_MAIN_ASM),
 ]
+
+CHANNEL6_ROUTE_PAYLOAD = bytes.fromhex("00800000000000000000000000000000")
 
 
 @pytest.fixture(scope="module", params=MAIN_ASM_CASES, ids=lambda case: case[0])
@@ -122,3 +133,20 @@ def test_tables_do_not_cross_256_byte_page(main_symbols_and_hex):
             "The Part 2/3 loops compute TBLPTRL without carry into TBLPTRH — "
             "relocate the tables or re-seed TBLPTR differently."
         )
+
+
+@pytest.mark.slow
+def test_v35_cold_route_sync_keeps_channel6_tas28_payload_stock_equivalent() -> None:
+    if RustChain is None:
+        pytest.fail(
+            "rust dlcp_sim_native facade not importable -- "
+            f"{_RUST_CHAIN_IMPORT_ERROR!r}"
+        )
+
+    chain = RustChain.from_v3x_main_only(str(V35_MAIN_HEX))
+    chain.step_tcy(16_000_000)
+    chain.step_ticks(80_000_000)
+
+    payloads = chain.read_main_dsp_write_payloads(0, 0x28)
+    assert payloads, "cold route sync never emitted TAS 0x28 channel-6 payload"
+    assert payloads[-1] == CHANNEL6_ROUTE_PAYLOAD

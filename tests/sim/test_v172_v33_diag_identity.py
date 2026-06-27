@@ -11,16 +11,23 @@ from dlcp_fw.paths import (
     V17_CONTROL_RAM_INC,
     V172_CONTROL_ASM,
     V173_CONTROL_ASM,
+    V173_CONTROL_HEX,
     V32_MAIN_ASM,
     V33_MAIN_ASM,
     V34_MAIN_ASM,
     V35_MAIN_ASM,
+    V35_MAIN_HEX,
+)
+from dlcp_fw.flash.dlcp_main_flash import (
+    detect_static_hex_eeprom_version,
+    parse_intel_hex,
 )
 from dlcp_fw.patch.build_v33_release import read_v33_release_revision
 from dlcp_fw.patch.build_v34_release import read_v34_release_revision
 from dlcp_fw.patch.build_v35_release import read_v35_release_revision
 from dlcp_fw.sim.v17_symbols import assemble_v17
 from dlcp_fw.sim.v30_symbols import assemble_v30
+from tests.sim.lcd_assertions import assert_lcd_exact, wait_for_lcd_exact
 
 
 pytestmark = pytest.mark.dual_supported
@@ -49,6 +56,15 @@ DISPLAY_STATE_INDEX_PHYS = 0x0BF
 V171_DIAG_PB1_BASE_PHYS = 0x180
 V171_DIAG_PB2_BASE_PHYS = 0x18B
 V171_DIAG_PRESENT_PHYS = 0x197
+V172_DIAG_ID_PB1_MAJOR_PHYS = 0x245
+V172_DIAG_ID_PB1_MINOR_PHYS = 0x246
+V172_DIAG_ID_PB1_REV_PHYS = 0x247
+V172_DIAG_ID_PB2_MAJOR_PHYS = 0x248
+V172_DIAG_ID_PB2_MINOR_PHYS = 0x249
+V172_DIAG_ID_PB2_REV_PHYS = 0x24A
+V172_DIAG_ID_VALID_MASK_PHYS = 0x24B
+V173_DIAG_ID_PB1_REV_HI_PHYS = 0x26C
+V173_DIAG_ID_PB2_REV_HI_PHYS = 0x26D
 
 DIAG_I_PHYS = 0x2E5
 
@@ -318,6 +334,17 @@ def _expected_v35_diag_title(pb_idx: int) -> str:
     return f"PB{pb_idx + 1} OK v3.5 {rev:04X}"
 
 
+def _expected_canonical_v35_diag_title(pb_idx: int) -> str:
+    info = detect_static_hex_eeprom_version(parse_intel_hex(str(V35_MAIN_HEX)))
+    assert info is not None, f"V3.5 EEPROM identity missing in {V35_MAIN_HEX}"
+    assert (info.major, info.minor) == (0x03, 0x05)
+    return f"PB{pb_idx + 1} OK v3.5 {info.revision:04X}"
+
+
+def _expected_ok_diag_lcd(pb_idx: int, row0: str) -> tuple[str, str]:
+    return (row0, "O1              ")
+
+
 def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
     """MAIN space is tight: cmd 0x25 must stay compact, not unroll 5 frames."""
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
@@ -498,6 +525,128 @@ def test_v173_v35_diag_ok_title_shows_visible_main_identity(
         limit=700,
     )
     assert lines[0] == expected
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v35_diag_entry_invalidates_stale_identity_cache(
+    v173_hex: Path, v35_hex: Path, pb_idx: int
+) -> None:
+    """Diag entry must re-query after a MAIN flash without rebooting CONTROL."""
+    chain = _connected_chain(v173_hex, v35_hex)
+
+    if pb_idx == 0:
+        stale_major = V172_DIAG_ID_PB1_MAJOR_PHYS
+        stale_minor = V172_DIAG_ID_PB1_MINOR_PHYS
+        stale_rev = V172_DIAG_ID_PB1_REV_PHYS
+        stale_rev_hi = V173_DIAG_ID_PB1_REV_HI_PHYS
+    else:
+        stale_major = V172_DIAG_ID_PB2_MAJOR_PHYS
+        stale_minor = V172_DIAG_ID_PB2_MINOR_PHYS
+        stale_rev = V172_DIAG_ID_PB2_REV_PHYS
+        stale_rev_hi = V173_DIAG_ID_PB2_REV_HI_PHYS
+
+    chain.write_reg(stale_major, 0x03)
+    chain.write_reg(stale_minor, 0x03)
+    chain.write_reg(stale_rev, 0x91)
+    chain.write_reg(stale_rev_hi, 0x00)
+    chain.write_reg(V172_DIAG_ID_VALID_MASK_PHYS, 1 << pb_idx)
+
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_v35_diag_title(pb_idx)
+    stale = f"PB{pb_idx + 1} OK v3.3 0091"
+    lines = _wait_for_lcd(
+        chain,
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
+        limit=900,
+    )
+    assert lines[0] == expected
+    assert lines[0] != stale
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v35_canonical_diag_ok_title_shows_visible_main_identity(
+    pb_idx: int,
+) -> None:
+    chain = _connected_chain(V173_CONTROL_HEX, V35_MAIN_HEX)
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_ok_diag_lcd(
+        pb_idx,
+        _expected_canonical_v35_diag_title(pb_idx),
+    )
+    lines = wait_for_lcd_exact(
+        chain,
+        expected,
+        limit=700,
+        context=f"canonical V1.73/V3.5 PB{pb_idx + 1} Diag identity",
+    )
+    assert_lcd_exact(
+        lines,
+        expected,
+        context=f"canonical V1.73/V3.5 PB{pb_idx + 1} final Diag identity",
+    )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v35_canonical_diag_entry_invalidates_stale_identity_cache(
+    pb_idx: int,
+) -> None:
+    """Canonical artifacts must replace stale healthy PB identity text on Diag entry."""
+    chain = _connected_chain(V173_CONTROL_HEX, V35_MAIN_HEX)
+
+    if pb_idx == 0:
+        stale_major = V172_DIAG_ID_PB1_MAJOR_PHYS
+        stale_minor = V172_DIAG_ID_PB1_MINOR_PHYS
+        stale_rev = V172_DIAG_ID_PB1_REV_PHYS
+        stale_rev_hi = V173_DIAG_ID_PB1_REV_HI_PHYS
+    else:
+        stale_major = V172_DIAG_ID_PB2_MAJOR_PHYS
+        stale_minor = V172_DIAG_ID_PB2_MINOR_PHYS
+        stale_rev = V172_DIAG_ID_PB2_REV_PHYS
+        stale_rev_hi = V173_DIAG_ID_PB2_REV_HI_PHYS
+
+    chain.write_reg(stale_major, 0x03)
+    chain.write_reg(stale_minor, 0x03)
+    chain.write_reg(stale_rev, 0x91)
+    chain.write_reg(stale_rev_hi, 0x00)
+    chain.write_reg(V172_DIAG_ID_VALID_MASK_PHYS, 1 << pb_idx)
+
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_ok_diag_lcd(
+        pb_idx,
+        _expected_canonical_v35_diag_title(pb_idx),
+    )
+    stale = f"PB{pb_idx + 1} OK v3.3 0091"
+    timeline: list[tuple[str, str]] = []
+    final_lines: tuple[str, str] | None = None
+    for _ in range(900):
+        lines = chain.lcd_lines()
+        if not timeline or timeline[-1] != lines:
+            timeline.append(lines)
+        if lines == expected:
+            final_lines = lines
+            break
+        chain.step()
+
+    assert final_lines == expected, (
+        f"canonical V1.73/V3.5 PB{pb_idx + 1} Diag identity did not settle; "
+        f"expected={expected!r}; tail={timeline[-12:]!r}"
+    )
+    assert_lcd_exact(
+        final_lines,
+        expected,
+        context=f"canonical stale PB{pb_idx + 1} identity replaced",
+    )
+    assert final_lines[0] != stale
+    assert not any(lines[0] == stale for lines in timeline[-12:]), (
+        f"stale healthy identity remained visible after settle window: "
+        f"stale={stale!r}; tail={timeline[-12:]!r}"
+    )
 
 
 @pytest.mark.slow

@@ -13,9 +13,11 @@ from dlcp_fw.paths import (
     V171_CONTROL_HEX,
     V172_CONTROL_ASM,
     V173_CONTROL_ASM,
+    V173_CONTROL_HEX,
     V32_MAIN_HEX,
     V33_MAIN_ASM,
     V34_MAIN_ASM,
+    V35_MAIN_HEX,
 )
 from dlcp_fw.sim.v17_symbols import assemble_v17
 from dlcp_fw.sim.v30_symbols import assemble_v30
@@ -3541,11 +3543,11 @@ _ATOMICITY_SAMPLE_TICKS = 2_000_000
 _ATOMICITY_MAX_TRANSIENT_SAMPLES = 4
 
 
-def test_v173_v34_preset_lcd_suffix_and_row1_atomicity_matrix(
-    v173_v34_filename_hexes: tuple[Path, Path],
+def _assert_preset_lcd_suffix_and_row1_atomicity_matrix(
+    control_hex: Path,
+    main_hex: Path,
 ) -> None:
     _require_rust()
-    control_hex, main_hex = v173_v34_filename_hexes
     chain = _start_native_filename_chain(
         control_hex,
         main_hex,
@@ -3612,3 +3614,14 @@ def test_v173_v34_preset_lcd_suffix_and_row1_atomicity_matrix(
     assert lcd0.startswith("Preset") and lcd0[15] in ("A", "B"), (
         f"matrix did not settle on a healthy Preset page: {chain.lcd_lines()!r}"
     )
+
+
+def test_v173_v34_preset_lcd_suffix_and_row1_atomicity_matrix(
+    v173_v34_filename_hexes: tuple[Path, Path],
+) -> None:
+    control_hex, main_hex = v173_v34_filename_hexes
+    _assert_preset_lcd_suffix_and_row1_atomicity_matrix(control_hex, main_hex)
+
+
+def test_v173_v35_canonical_preset_lcd_suffix_and_row1_atomicity_matrix() -> None:
+    _assert_preset_lcd_suffix_and_row1_atomicity_matrix(V173_CONTROL_HEX, V35_MAIN_HEX)

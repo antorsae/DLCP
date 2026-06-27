@@ -41,7 +41,7 @@ def test_legacy_broadcast_input_sender_atomic_expectations_are_unchanged() -> No
     text = V173_CONTROL_ASM.read_text(encoding="utf-8")
     legacy = _body(text, "input_frame_send", "input_frame_send_aborted")
     assert "INPUT_SPLIT_FLAG_PB2_LINKED" in legacy
-    assert re.search(r"rcall\s+tx_ring_reserve_3", legacy)
+    assert re.search(r"(?:r)?call\s+tx_ring_reserve_3", legacy)
     assert legacy.index("tx_ring_reserve_3") < legacy.index("tx_byte_enqueue")
     assert len(re.findall(r"call\s+tx_byte_enqueue", legacy)) == 3
 

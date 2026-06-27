@@ -13,6 +13,7 @@ from dlcp_fw.paths import (
     V35_MAIN_HEX,
 )
 from dlcp_fw.sim.v17_symbols import assemble_v17
+from tests.sim.lcd_assertions import assert_lcd_exact
 
 try:
     from dlcp_fw.sim.dlcp_sim_native import Chain as RustChain
@@ -52,6 +53,9 @@ INPUT_SPLIT_FLAG_PB2_LINKED = 2
 INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE = 3
 INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY = 4
 INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE = 5
+INPUT_SPLIT_FLAG_PB1_PENDING_VALID = 6
+INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY = 7
+INPUT_PENDING_PB1 = 0x1BE
 INPUT_PENDING_PB2 = 0x1BD
 
 IR_ADDR_HYPEX = 0x10
@@ -97,7 +101,9 @@ FULL_SYNC_HI = 0x0A0
 FULL_SYNC_STEP = 0x170
 
 CONTROL_DISPLAY_STATE_EEPROM = 0x00
+CONTROL_PB1_INPUT_EEPROM = 0x5E
 CONTROL_PB2_INPUT_EEPROM = 0x5F
+PB1_EEPROM_CONCRETE_BASE = 0xC0
 PB2_EEPROM_LINKED = 0xA0
 PB2_EEPROM_CONCRETE_BASE = 0xB0
 
@@ -124,6 +130,7 @@ MAIN_ACTIVE_PRESET_MASK = 0x04
 MAIN_SRC_ROUTE_STATUS = 0x05F
 MAIN_EVENT_FLAGS = 0x07E
 MAIN_INPUT_SELECT = 0x099
+MAIN_EEPROM_INPUT_SELECT = 0x04
 MAIN_SRC_ROUTE_REQUEST = 0x093
 MAIN_ROUTE_SHADOW = 0x0AB
 MAIN_INPUT_SELECT_MIRROR = 0x0B3
@@ -154,8 +161,22 @@ SRC_PAIR_AUTO_NONE = (0x08, 0x30)
 SRC_PAIR_SPDIF = (0x09, 0x70)
 SRC_PAIR_OPTICAL = (0x0B, 0xF0)
 SRC_PAIR_AES = (0x08, 0x30)
+TAS_CHANNEL6_ROUTE_SYNC_REG = 0x28
+TAS_CHANNEL6_ROUTE_SYNC_UNITY_PAYLOAD = bytes.fromhex(
+    "00800000000000000000000000000000"
+)
 
 COMMAND_SETTLE_TICKS = 12_000_000
+
+SPLIT_MENU_LCD_ROWS = [
+    (STATE_PRESET, ("Preset         A", "                ")),
+    (STATE_INPUT_PB1, ("Input PB1:      ", "Auto Detect     ")),
+    (STATE_INPUT_PB2, ("Input PB2:      ", "Same as PB1     ")),
+    (STATE_SETUP_SPLIT, ("Setup           ", "BL Timeout      ")),
+    (STATE_PB1_DIAG_SPLIT, ("PB1 OK          ", "O1              ")),
+    (STATE_PB2_DIAG_SPLIT, ("PB2 OK          ", "O1              ")),
+    (STATE_VOLUME, ("Volume:-17.0dB A", "Auto Detect     ")),
+]
 
 
 @pytest.fixture(scope="module")
@@ -392,11 +413,16 @@ def _wait_for_main_input_route(
 
 def _force_full_sync_input_step(chain) -> list[tuple[int, int, int]]:  # type: ignore[no-untyped-def]
     before = len(chain.tx_frames())
-    chain.write_reg(FULL_SYNC_STEP, 0x01)
-    chain.write_reg(FULL_SYNC_LO, 0x20)
-    chain.write_reg(FULL_SYNC_HI, 0x4E)
-    chain.step_ticks(4_000_000)
-    return _cmd06_frames(chain, before)
+    frames: list[tuple[int, int, int]] = []
+    for _ in range(4):
+        chain.write_reg(FULL_SYNC_STEP, 0x01)
+        chain.write_reg(FULL_SYNC_LO, 0x20)
+        chain.write_reg(FULL_SYNC_HI, 0x4E)
+        chain.step_ticks(4_000_000)
+        frames = _cmd06_frames(chain, before)
+        if frames:
+            break
+    return frames
 
 
 def _latch_split_from_health(chain) -> None:  # type: ignore[no-untyped-def]
@@ -433,6 +459,23 @@ def _control_pb2_eeprom_watch() -> dict[str, object]:
         "end": CONTROL_PB2_INPUT_EEPROM,
         "label": "control_pb2_input_persist",
     }
+
+
+def _control_input_eeprom_watch() -> dict[str, object]:
+    return {
+        "role": "CONTROL",
+        "space": "Eeprom",
+        "start": CONTROL_PB1_INPUT_EEPROM,
+        "end": CONTROL_PB2_INPUT_EEPROM,
+        "label": "control_input_persist",
+    }
+
+
+def _decode_pb1_persisted(byte: int) -> tuple[str, int]:
+    byte &= 0xFF
+    if (byte & 0xF0) == PB1_EEPROM_CONCRETE_BASE and (byte & 0x0F) <= 0x08:
+        return ("concrete", byte & 0x0F)
+    return ("invalid", 0)
 
 
 def _decode_pb2_persisted(byte: int) -> tuple[str, int]:
@@ -704,6 +747,36 @@ def test_v173_ir_f5_independent_pb2_targets_pb1_and_preserves_pb2_persistence(
 
 
 @pytest.mark.slow
+def test_v173_ir_f5_pb1_toggle_marks_dirty_and_persists_control_eeprom(
+    v173_multi_pb_hex: Path,
+) -> None:
+    chain = _boot_chain(v173_multi_pb_hex)
+    _latch_split(chain, linked=False)
+    chain.write_reg(INPUT_SELECT_CACHE, 0x05)
+    chain.write_reg(INPUT_INTENT_PB2, 0x07)
+    chain.write_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM, PB1_EEPROM_CONCRETE_BASE | 0x05)
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, PB2_EEPROM_CONCRETE_BASE | 0x07)
+
+    before = len(chain.tx_frames())
+    _inject_ir(chain, IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE, ticks=20_000_000)
+
+    _assert_last_cmd06(chain, before, 0xB1, 0x08)
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x08
+    assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY)
+    assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+
+    _force_settings_save(chain)
+
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == (
+        PB1_EEPROM_CONCRETE_BASE | 0x08
+    )
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == (
+        PB2_EEPROM_CONCRETE_BASE | 0x07
+    )
+    assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY))
+
+
+@pytest.mark.slow
 def test_pb2_discovery_inserts_input_pb2_after_pb1_and_defaults_linked(
     v173_multi_pb_hex: Path,
 ) -> None:
@@ -714,21 +787,14 @@ def test_pb2_discovery_inserts_input_pb2_after_pb1_and_defaults_linked(
     assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_SEEN)
     assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
 
-    expected = [
-        (STATE_PRESET, "Preset"),
-        (STATE_INPUT_PB1, "Input PB1:      "),
-        (STATE_INPUT_PB2, "Input PB2:      "),
-        (STATE_SETUP_SPLIT, "Setup           "),
-        (STATE_PB1_DIAG_SPLIT, "PB1 "),
-        (STATE_PB2_DIAG_SPLIT, "PB2 "),
-        (STATE_VOLUME, "Volume"),
-    ]
-    for state, row0_prefix in expected:
+    for state, expected_lcd in SPLIT_MENU_LCD_ROWS:
         _press(chain, "RIGHT")
         assert chain.read_reg(DISPLAY_STATE) == state
-        assert chain.lcd_lines()[0].startswith(row0_prefix), chain.lcd_lines()
-        if state == STATE_INPUT_PB2:
-            assert chain.lcd_lines()[1] == "Same as PB1     "
+        assert_lcd_exact(
+            chain,
+            expected_lcd,
+            context=f"split menu state 0x{state:02X}",
+        )
 
 
 @pytest.mark.slow
@@ -740,21 +806,14 @@ def test_canonical_hex_split_menu_visible_behavior_regression() -> None:
     assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_SEEN)
     assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
 
-    expected = [
-        (STATE_PRESET, "Preset"),
-        (STATE_INPUT_PB1, "Input PB1:      "),
-        (STATE_INPUT_PB2, "Input PB2:      "),
-        (STATE_SETUP_SPLIT, "Setup           "),
-        (STATE_PB1_DIAG_SPLIT, "PB1 "),
-        (STATE_PB2_DIAG_SPLIT, "PB2 "),
-        (STATE_VOLUME, "Volume"),
-    ]
-    for state, row0_prefix in expected:
+    for state, expected_lcd in SPLIT_MENU_LCD_ROWS:
         _press(chain, "RIGHT")
         assert chain.read_reg(DISPLAY_STATE) == state
-        assert chain.lcd_lines()[0].startswith(row0_prefix), chain.lcd_lines()
-        if state == STATE_INPUT_PB2:
-            assert chain.lcd_lines()[1] == "Same as PB1     "
+        assert_lcd_exact(
+            chain,
+            expected_lcd,
+            context=f"canonical split menu state 0x{state:02X}",
+        )
 
     chain.write_reg(INPUT_SPLIT_FLAGS, 1 << INPUT_SPLIT_FLAG_PB2_SEEN)
     chain.write_reg(INPUT_SELECT_CACHE, 0x08)  # PB1 Optical
@@ -765,7 +824,11 @@ def test_canonical_hex_split_menu_visible_behavior_regression() -> None:
     assert chain.lcd_lines() == ("Input PB2:      ", "AES             ")
     _navigate_right(chain, 4)
     assert chain.read_reg(DISPLAY_STATE) == STATE_VOLUME
-    assert chain.lcd_lines()[1] == "Optical         "
+    assert_lcd_exact(
+        chain,
+        ("Volume:-17.0dB A", "Optical         "),
+        context="canonical volume page shows PB1 source",
+    )
 
 
 @pytest.mark.slow
@@ -817,7 +880,11 @@ def test_legacy_pb2_unknown_input_page_stays_broadcast_and_six_state(
 
     _navigate_right(chain, 4)
     assert chain.read_reg(DISPLAY_STATE) == STATE_VOLUME
-    assert chain.lcd_lines()[0].startswith("Volume")
+    assert_lcd_exact(
+        chain,
+        ("Volume:-17.0dB A", "S/PDIF          "),
+        context="legacy single-PB volume page",
+    )
 
 
 @pytest.mark.slow
@@ -1118,8 +1185,11 @@ def test_volume_row_always_shows_pb1_input_when_pb2_differs(v173_multi_pb_hex: P
     _navigate_right(chain, 4)
 
     assert chain.read_reg(DISPLAY_STATE) == STATE_VOLUME
-    assert chain.lcd_lines()[0].startswith("Volume")
-    assert chain.lcd_lines()[1] == "Optical         "
+    assert_lcd_exact(
+        chain,
+        ("Volume:-17.0dB A", "Optical         "),
+        context="volume page shows PB1 input when PB2 differs",
+    )
 
 
 @pytest.mark.slow
@@ -1299,18 +1369,92 @@ def test_power_on_reset_clears_runtime_pb2_split_state(v173_multi_pb_hex: Path) 
     assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_SEEN))
 
 
-def test_pb2_persisted_byte_decoder_is_closed_allowlist() -> None:
-    valid = {PB2_EEPROM_LINKED} | {
+def test_pb1_and_pb2_persisted_byte_decoders_are_closed_allowlists() -> None:
+    valid_pb1 = {PB1_EEPROM_CONCRETE_BASE | value for value in range(0x09)}
+    valid_pb2 = {PB2_EEPROM_LINKED} | {
         PB2_EEPROM_CONCRETE_BASE | value for value in range(0x09)
     }
     for byte in range(0x100):
+        mode, value = _decode_pb1_persisted(byte)
+        if byte in valid_pb1:
+            assert (mode, value) == ("concrete", byte & 0x0F)
+        else:
+            assert (mode, value) == ("invalid", 0)
+
         mode, value = _decode_pb2_persisted(byte)
         if byte == PB2_EEPROM_LINKED:
             assert (mode, value) == ("linked", 0)
-        elif byte in valid:
+        elif byte in valid_pb2:
             assert (mode, value) == ("concrete", byte & 0x0F)
         else:
             assert (mode, value) == ("linked", 0)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("cmd06", range(0x09))
+def test_pb1_persisted_valid_concrete_values_apply_only_after_connect(
+    v173_multi_pb_hex: Path,
+    cmd06: int,
+) -> None:
+    chain = _new_chain(v173_multi_pb_hex)
+    chain.write_control_eeprom_byte(
+        CONTROL_PB1_INPUT_EEPROM,
+        PB1_EEPROM_CONCRETE_BASE | cmd06,
+    )
+    chain.write_main_eeprom_byte(0, MAIN_EEPROM_INPUT_SELECT, 0x08)
+    chain.write_main_eeprom_byte(1, MAIN_EEPROM_INPUT_SELECT, 0x00)
+
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert chain.read_reg(INPUT_SELECT_CACHE) == cmd06
+    assert chain.read_reg(INPUT_PENDING_PB1) == cmd06
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB1_PENDING_VALID))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY))
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize(
+    ("seed", "payload"),
+    [
+        (0xFF, 0x09),
+        (0x80, 0x7F),
+        (0x7F, 0x80),
+        (0x00, 0xFF),
+        (0x07, 0x09),
+        (0xA1, 0x7F),
+        (0xB9, 0x80),
+        (0xC9, 0xFF),
+    ],
+)
+def test_pb1_invalid_or_erased_eeprom_does_not_migrate_ambiguous_bf06_payloads(
+    v173_multi_pb_hex: Path,
+    seed: int,
+    payload: int,
+) -> None:
+    chain = _new_chain(v173_multi_pb_hex)
+    chain.write_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM, seed)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+
+    assert not (
+        chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB1_PENDING_VALID)
+    )
+    assert not (
+        chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY)
+    )
+
+    chain.begin_memory_trace([_control_input_eeprom_watch()], max_records=200)
+    chain.write_reg(BF06_INPUT_GATE, 0x00)
+    _inject_control_rx_frame(chain, (0xBF, 0x06, payload))
+    chain.step_ticks(2_000_000)
+    _force_settings_save(chain)
+
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == seed
+    assert [
+        record for record in chain.memory_trace_records()
+        if record["kind"] == "EepromCommit"
+        and record["addr"] == CONTROL_PB1_INPUT_EEPROM
+    ] == []
 
 
 @pytest.mark.slow
@@ -1442,6 +1586,237 @@ def test_pb2_user_selected_concrete_round_trips_through_eeprom_and_por(
     _rediscover_pb2_with_raw_status(reboot, 0x03)
     assert not (reboot.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
     assert reboot.read_reg(INPUT_INTENT_PB2) == 0x07
+
+
+def _assert_pb1_spdif_pb2_aes_persisted_inputs_survive_cold_boot(
+    control_hex: Path,
+) -> None:
+    chain = _boot_chain(control_hex)
+    _prepare_mains_for_source_status(chain)
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+
+    _navigate_right(chain, 3)
+    assert chain.lcd_lines() == ("Input PB2:      ", "Same as PB1     ")
+    for _ in range(4):  # Same -> Auto -> S/PDIF -> USB -> AES
+        _press(chain, "UP")
+    assert chain.lcd_lines() == ("Input PB2:      ", "AES             ")
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x07
+
+    _press(chain, "LEFT")
+    assert chain.lcd_lines() == ("Input PB1:      ", "Auto Detect     ")
+    _press(chain, "UP")
+    assert chain.lcd_lines() == ("Input PB1:      ", "S/PDIF          ")
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x05
+
+    _wait_for_main_input_route(chain, 0, 0x05, ROUTE_SPDIF, SRC_PAIR_SPDIF)
+    _wait_for_main_input_route(chain, 1, 0x07, ROUTE_AES, SRC_PAIR_AES)
+
+    _force_settings_save(chain)
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == (
+        PB1_EEPROM_CONCRETE_BASE | 0x05
+    )
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == (
+        PB2_EEPROM_CONCRETE_BASE | 0x07
+    )
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+
+    reboot = _new_chain(control_hex)
+    reboot.write_control_eeprom_byte(
+        CONTROL_PB1_INPUT_EEPROM,
+        PB1_EEPROM_CONCRETE_BASE | 0x05,
+    )
+    reboot.write_control_eeprom_byte(
+        CONTROL_PB2_INPUT_EEPROM,
+        PB2_EEPROM_CONCRETE_BASE | 0x07,
+    )
+    reboot.write_main_eeprom_byte(0, MAIN_EEPROM_INPUT_SELECT, 0x08)
+    reboot.write_main_eeprom_byte(1, MAIN_EEPROM_INPUT_SELECT, 0x00)
+    assert reboot.run_until_connected(limit=300) < 300, reboot.lcd_lines()
+    assert reboot.read_reg(INPUT_SELECT_CACHE) == 0x05
+    assert reboot.read_reg(INPUT_PENDING_PB1) == 0x05
+    assert not (
+        reboot.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB1_PENDING_VALID)
+    )
+    _rediscover_pb2_with_raw_status(reboot, 0x03)
+    assert _force_full_sync_input_step(reboot)[-1] == (0xB1, 0x06, 0x05)
+    assert _force_full_sync_input_step(reboot)[-1] == (0xB2, 0x06, 0x07)
+
+    assert reboot.read_reg(INPUT_SELECT_CACHE) == 0x05
+    assert reboot.read_reg(INPUT_INTENT_PB2) == 0x07
+    _wait_for_main_input_route(reboot, 0, 0x05, ROUTE_SPDIF, SRC_PAIR_SPDIF)
+    _wait_for_main_input_route(reboot, 1, 0x07, ROUTE_AES, SRC_PAIR_AES)
+
+
+@pytest.mark.slow
+def test_pb1_spdif_persists_across_cold_boot_with_independent_pb2_aes(
+    v173_multi_pb_hex: Path,
+) -> None:
+    _assert_pb1_spdif_pb2_aes_persisted_inputs_survive_cold_boot(v173_multi_pb_hex)
+
+
+@pytest.mark.slow
+def test_v173_canonical_pb1_spdif_pb2_aes_persisted_inputs_survive_cold_boot() -> None:
+    _assert_pb1_spdif_pb2_aes_persisted_inputs_survive_cold_boot(V173_CONTROL_HEX)
+
+
+@pytest.mark.slow
+def test_v173_canonical_pb1_pb2_dirty_save_commits_eeprom_and_clean_save_no_churn() -> None:
+    chain = _new_chain(V173_CONTROL_HEX)
+    chain.write_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM, 0xFF)
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, 0xFF)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    _prepare_mains_for_source_status(chain)
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+
+    chain.begin_memory_trace([_control_input_eeprom_watch()], max_records=600)
+
+    _navigate_right(chain, 3)
+    assert_lcd_exact(chain, ("Input PB2:      ", "Same as PB1     "))
+    for _ in range(4):  # Same -> Auto -> S/PDIF -> USB -> AES
+        _press(chain, "UP")
+    assert_lcd_exact(chain, ("Input PB2:      ", "AES             "))
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x07
+    assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY)
+
+    _press(chain, "LEFT")
+    assert_lcd_exact(chain, ("Input PB1:      ", "Auto Detect     "))
+    _press(chain, "UP")
+    assert_lcd_exact(chain, ("Input PB1:      ", "S/PDIF          "))
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x05
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert flags & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY)
+    assert flags & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY)
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == 0xFF
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == 0xFF
+    assert [
+        record for record in chain.memory_trace_records()
+        if record["kind"] == "EepromCommit"
+        and record["addr"] in (CONTROL_PB1_INPUT_EEPROM, CONTROL_PB2_INPUT_EEPROM)
+    ] == []
+
+    _force_settings_save(chain)
+    commits = [
+        record for record in chain.memory_trace_records()
+        if record["kind"] == "EepromCommit"
+        and record["addr"] in (CONTROL_PB1_INPUT_EEPROM, CONTROL_PB2_INPUT_EEPROM)
+    ]
+    assert {record["addr"] for record in commits} == {
+        CONTROL_PB1_INPUT_EEPROM,
+        CONTROL_PB2_INPUT_EEPROM,
+    }
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == (
+        PB1_EEPROM_CONCRETE_BASE | 0x05
+    )
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == (
+        PB2_EEPROM_CONCRETE_BASE | 0x07
+    )
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+
+    reboot = _new_chain(V173_CONTROL_HEX)
+    reboot.write_control_eeprom_byte(
+        CONTROL_PB1_INPUT_EEPROM,
+        PB1_EEPROM_CONCRETE_BASE | 0x05,
+    )
+    reboot.write_control_eeprom_byte(
+        CONTROL_PB2_INPUT_EEPROM,
+        PB2_EEPROM_CONCRETE_BASE | 0x07,
+    )
+    assert reboot.run_until_connected(limit=300) < 300, reboot.lcd_lines()
+    _rediscover_pb2_with_raw_status(reboot, 0x03)
+    assert reboot.read_reg(INPUT_SELECT_CACHE) == 0x05
+    assert reboot.read_reg(INPUT_INTENT_PB2) == 0x07
+
+    reboot.begin_memory_trace([_control_input_eeprom_watch()], max_records=400)
+    _force_settings_save(reboot)
+    assert _force_full_sync_input_step(reboot)[-1] == (0xB1, 0x06, 0x05)
+    assert _force_full_sync_input_step(reboot)[-1] == (0xB2, 0x06, 0x07)
+    _force_settings_save(reboot)
+    assert [
+        record for record in reboot.memory_trace_records()
+        if record["kind"] == "EepromCommit"
+        and record["addr"] in (CONTROL_PB1_INPUT_EEPROM, CONTROL_PB2_INPUT_EEPROM)
+    ] == []
+
+
+@pytest.mark.slow
+def test_v173_canonical_invalid_erased_corrupt_input_eeprom_does_not_import_ambiguous_status() -> None:
+    chain = _new_chain(V173_CONTROL_HEX)
+    pb1_erased = 0xFF
+    pb2_corrupt = 0xB9
+    chain.write_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM, pb1_erased)
+    chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, pb2_corrupt)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB1_PENDING_VALID))
+    assert flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
+
+    chain.begin_memory_trace([_control_input_eeprom_watch()], max_records=300)
+    chain.write_reg(BF06_INPUT_GATE, 0x00)
+    _inject_control_rx_frame(chain, (0xBF, 0x06, 0x80))
+    chain.step_ticks(2_000_000)
+    _force_settings_save(chain)
+
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == pb1_erased
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == pb2_corrupt
+    assert _force_full_sync_input_step(chain)[-1][0] == 0xB0
+    assert [
+        record for record in chain.memory_trace_records()
+        if record["kind"] == "EepromCommit"
+        and record["addr"] in (CONTROL_PB1_INPUT_EEPROM, CONTROL_PB2_INPUT_EEPROM)
+    ] == []
+
+
+@pytest.mark.slow
+def test_v173_canonical_pb2_corrupt_runtime_intent_clamps_to_safe_fallback() -> None:
+    chain = _boot_chain(V173_CONTROL_HEX)
+    chain.write_reg(
+        INPUT_SPLIT_FLAGS,
+        (1 << INPUT_SPLIT_FLAG_PB2_SEEN) | (1 << INPUT_SPLIT_FLAG_SYNC_TARGET),
+    )
+    chain.write_reg(INPUT_SELECT_CACHE, 0x08)
+    chain.write_reg(INPUT_INTENT_PB2, 0xFF)
+
+    frames = _force_full_sync_input_step(chain)
+
+    assert frames and frames[-1] == (0xB2, 0x06, 0x00)
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x00
+
+
+@pytest.mark.slow
+def test_power_on_pb1_spdif_pb2_aes_keeps_pb2_channel6_route_payload() -> None:
+    chain = _new_chain(V173_CONTROL_HEX)
+    chain.write_control_eeprom_byte(
+        CONTROL_PB1_INPUT_EEPROM,
+        PB1_EEPROM_CONCRETE_BASE | 0x05,
+    )
+    chain.write_control_eeprom_byte(
+        CONTROL_PB2_INPUT_EEPROM,
+        PB2_EEPROM_CONCRETE_BASE | 0x07,
+    )
+    chain.write_main_eeprom_byte(0, MAIN_EEPROM_INPUT_SELECT, 0x08)
+    chain.write_main_eeprom_byte(1, MAIN_EEPROM_INPUT_SELECT, 0x00)
+
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x05
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+    assert _force_full_sync_input_step(chain)[-1] == (0xB1, 0x06, 0x05)
+    assert _force_full_sync_input_step(chain)[-1] == (0xB2, 0x06, 0x07)
+
+    _wait_for_main_input_route(chain, 0, 0x05, ROUTE_SPDIF, SRC_PAIR_SPDIF)
+    _wait_for_main_input_route(chain, 1, 0x07, ROUTE_AES, SRC_PAIR_AES)
+    payloads = chain.read_main_dsp_write_payloads(1, TAS_CHANNEL6_ROUTE_SYNC_REG)
+
+    assert payloads
+    assert payloads[-1] == TAS_CHANNEL6_ROUTE_SYNC_UNITY_PAYLOAD
 
 
 @pytest.mark.slow
@@ -1625,17 +2000,20 @@ def test_pb2_persistence_dirty_flag_prevents_repeat_eeprom_commits(
 
 
 @pytest.mark.slow
-def test_navigation_full_sync_and_relink_cycles_do_not_write_clean_pb2_eeprom(
+def test_navigation_full_sync_and_relink_cycles_do_not_write_clean_input_eeprom(
     v173_multi_pb_hex: Path,
 ) -> None:
     chain = _new_chain(v173_multi_pb_hex)
+    pb1_seed = PB1_EEPROM_CONCRETE_BASE | 0x05
     seed = PB2_EEPROM_CONCRETE_BASE | 0x07
+    chain.write_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM, pb1_seed)
     chain.write_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM, seed)
     assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
     _rediscover_pb2_with_raw_status(chain, 0x03)
+    assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY))
     assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY))
 
-    chain.begin_memory_trace([_control_pb2_eeprom_watch()], max_records=400)
+    chain.begin_memory_trace([_control_input_eeprom_watch()], max_records=400)
 
     _navigate_right(chain, 3)
     assert chain.lcd_lines() == ("Input PB2:      ", "AES             ")
@@ -1652,8 +2030,9 @@ def test_navigation_full_sync_and_relink_cycles_do_not_write_clean_pb2_eeprom(
     assert [
         record for record in chain.memory_trace_records()
         if record["kind"] == "EepromCommit"
-        and record["addr"] == CONTROL_PB2_INPUT_EEPROM
+        and record["addr"] in (CONTROL_PB1_INPUT_EEPROM, CONTROL_PB2_INPUT_EEPROM)
     ] == []
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == pb1_seed
     assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == seed
 
 
@@ -1900,6 +2279,7 @@ def test_bug_v173_split_ir_previous_next_keep_route_style_and_pb2_intent(
         assert chain.read_reg(INPUT_INTENT_PB2) == 0x03
         assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
     assert chain.read_reg(INPUT_SELECT_CACHE) == expected_input
+    assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB1_PERSIST_DIRTY)
     assert chain.read_reg(RAW_STATUS_CACHE) == 0x80
 
 
@@ -1971,6 +2351,26 @@ def test_display_state_save_load_remaps_split_menu_to_legacy_eeprom_space() -> N
     assert "settings_save_eeprom__clamp_runtime_state" in save
     assert "settings_load_eeprom__clamp_display_state" in load
     assert "movlw   0x02                                        ; clamp erased/foreign runtime states to Input" in load
+
+
+def test_pb1_persistence_source_loads_pending_and_applies_after_handshake_only() -> None:
+    text = V173_CONTROL_ASM.read_text(encoding="utf-8")
+    load = text[
+        text.index("input_pb1_persist_load:"):
+        text.index("input_pb2_persist_load:")
+    ]
+    save = text[
+        text.index("settings_save_eeprom:"):
+        text.index("input_pb1_persist_load:")
+    ]
+
+    assert "EEPROM_PB1_INPUT_ADDR      equ     0x5E" in text
+    assert "PB1_INPUT_EEPROM_CONCRETE_BASE equ 0xC0" in text
+    assert "movwf   input_pending_pb1_b1, BANKED" in load
+    assert "INPUT_SPLIT_FLAG_PB1_PENDING_VALID" in load
+    assert "input_select_cache" not in load
+    assert "call    input_persist_save_if_dirty, 0x0" in save
+    assert text.count("call    input_pb1_persist_apply_after_connect, 0x0") == 2
 
 
 def test_pb2_menu_state_and_malformed_row_are_gated_by_split_flag() -> None:

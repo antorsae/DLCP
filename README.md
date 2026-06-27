@@ -3,15 +3,17 @@
 Drop-in replacement firmware for the **Hypex DLCP**.  The current
 non-hardware-gated candidate pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0090`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x54 / build 20260625`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0091`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x57 / build 20260627`)
 
-CONTROL `rev 0x54` includes the PB2 `Same as PB1` + `DOWN` fix, the
+CONTROL `rev 0x57` includes the PB2 `Same as PB1` + `DOWN` fix, the
 follow-up BF/08 ACKSTAT-only stale-`!` fix found by the broad simulator gate,
-persistent PB2 input settings with `Same as PB1` as the erased/unknown EEPROM
-default, and the fixed RC5 F4/F5 preset/input toggle shortcuts.  Non-hardware
-gates are green; live PB2 DOWN, audio-routing, persistence, and IR field gates
-are still required before hardware field closure.
+persistent PB1/PB2 input settings with `Same as PB1` as the erased/unknown PB2
+EEPROM default, fixed RC5 F4/F5 preset/input toggle shortcuts, and the
+test-robustness canonical artifact gates documented in
+[`docs/TEST_ROBUSTNESS_IMPL.md`](docs/TEST_ROBUSTNESS_IMPL.md).  Non-hardware
+gates remain required before hardware field closure; live PB2 DOWN,
+audio-routing, persistence, and IR field gates are still required.
 
 This README focuses on the current V3.5 + V1.73 candidate deployment.  All
 user-facing comparisons below use stock MAIN V2.3 + CONTROL V1.6b as the
@@ -101,8 +103,8 @@ shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 PB2 initially shows `Same as PB1`, preserving the stock-style broadcast input
 behavior for both MAINs.  Selecting a concrete PB2 source makes PB1 and PB2
 independent and sends addressed input frames; selecting `Same as PB1` again
-returns to broadcast behavior.  CONTROL `rev 0x54` persists the PB2 input
-choice in a guarded CONTROL EEPROM byte and keeps it pending until PB2 is
+returns to broadcast behavior.  CONTROL `rev 0x57` persists PB1 and PB2 input
+choices in guarded CONTROL EEPROM bytes and keeps PB2 pending until PB2 is
 rediscovered after boot.  The Volume page always shows PB1's source.
 This fixes the stock MASTER/FOLLOWER digital-input problem: stock CONTROL
 broadcasts one global input selection, so choosing `Optical` makes both PB1 and
@@ -118,7 +120,7 @@ Input PB2: AES
 If PB2 health ages out, the PB2 input title can show `old` or `lost`, but the
 page remains available after PB2 has been discovered.  The reported PB2
 `Same as PB1` + `DOWN` reboot is simulator/canonical-HEX fixed in CONTROL
-`rev 0x52` and retained in `rev 0x54`, but not live field-closed until the
+`rev 0x52` and retained in `rev 0x57`, but not live field-closed until the
 hardware gate in
 [`docs/HARDWARE_TEST.md`](docs/HARDWARE_TEST.md) passes.
 
@@ -392,23 +394,24 @@ Full simulator gate:
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
 ```
 
-Current non-hardware x54 verification snapshot:
+Current non-hardware x57 verification snapshot:
 
-- IR/multi-PB focused gate:
-  `142 passed in 1133.87s`
-- CONTROL release builder gate:
-  `7 passed in 0.07s`
-- Legacy IR regression gate:
-  `21 passed in 203.70s`
-- Flipper IR action gate:
-  `7 passed in 0.03s`
+- Test-robustness focused gate:
+  `55 passed in 75.48s`
+- Current release-artifact middle gate:
+  `67 passed in 0.86s`
+- Full simulator gate:
+  `2082 passed, 2 skipped, 4 xfailed, 10 warnings in 1001.77s`
+- MAIN RAM-bank safety: `OK (main-v35)`
 - CONTROL RAM-bank safety: `OK (control-v173)`
-- CONTROL x54 SHA-256:
-  `ce6aa82d4cd874c5a6a40b3d93cc2be6413cbcdf7c04553d4b9bc3ca2c378280`
+- MAIN x0091 SHA-256:
+  `2e17a79dfd0686d95559275d70b2d830cf40de3dda4f61984c3a8b7b40819f7e`
+- CONTROL x57 SHA-256:
+  `27fd91c6f0b09bed8e05268b7a5f2ce370e994290ce7840e1897856f20a4e88a`
 
 This is not live field closure for PB2 DOWN, multi-PB audio routing, or PB2
-input persistence; run the dedicated hardware gates before calling those field
-closed on hardware.
+input persistence, IR, or test-robustness incidents; run the dedicated hardware
+gates before calling those field closed on hardware.
 
 Recent adjacent non-hardware verification snapshot:
 
