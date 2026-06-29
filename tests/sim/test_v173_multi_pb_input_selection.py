@@ -1197,14 +1197,10 @@ def test_volume_row_always_shows_pb1_input_when_pb2_differs(v173_multi_pb_hex: P
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    ("raw_status", "base_max"),
-    [(0x00, 0x05), (0x01, 0x06), (0x02, 0x07), (0x03, 0x08)],
-)
-def test_pb2_input_raw_status_variants_keep_extra_same_as_pb1_row(
+@pytest.mark.parametrize("raw_status", [0x00, 0x01, 0x02, 0x03])
+def test_pb2_input_raw_status_variants_keep_full_pb2_row_set(
     v173_multi_pb_hex: Path,
     raw_status: int,
-    base_max: int,
 ) -> None:
     chain = _boot_chain(v173_multi_pb_hex)
     _latch_split(chain, linked=True)
@@ -1212,7 +1208,7 @@ def test_pb2_input_raw_status_variants_keep_extra_same_as_pb1_row(
 
     _navigate_right(chain, 3)
     assert chain.lcd_lines() == ("Input PB2:      ", "Same as PB1     ")
-    assert chain.read_reg(MENU_OPTION_MAX) == base_max + 1
+    assert chain.read_reg(MENU_OPTION_MAX) == 0x09
     assert chain.read_reg(INPUT_SELECTED_INDEX) == 0
 
 
@@ -1515,22 +1511,12 @@ def test_pb2_persisted_valid_concrete_values_apply_after_pb2_discovery(
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("raw_status", "expect_concrete"),
-    [
-        (0x00, False),
-        (0x01, False),
-        (0x02, False),
-        (0x03, True),
-        (0x04, True),
-        (0x7F, True),
-        (0x80, True),
-        (0xFF, True),
-    ],
+    "raw_status",
+    [0x00, 0x01, 0x02, 0x03, 0x04, 0x7F, 0x80, 0xFF],
 )
-def test_pb2_persisted_concrete_source_uses_raw_status_fallback_without_overwrite(
+def test_pb2_persisted_concrete_source_survives_every_raw_status_without_overwrite(
     v173_multi_pb_hex: Path,
     raw_status: int,
-    expect_concrete: bool,
 ) -> None:
     seed = PB2_EEPROM_CONCRETE_BASE | 0x08  # Optical: valid only in full-input class.
     chain = _new_chain(v173_multi_pb_hex)
@@ -1540,14 +1526,9 @@ def test_pb2_persisted_concrete_source_uses_raw_status_fallback_without_overwrit
     _rediscover_pb2_with_raw_status(chain, raw_status)
 
     flags = chain.read_reg(INPUT_SPLIT_FLAGS)
-    if expect_concrete:
-        assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
-        assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE))
-        assert chain.read_reg(INPUT_INTENT_PB2) == 0x08
-    else:
-        assert flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
-        assert flags & (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE)
-        assert chain.read_reg(INPUT_INTENT_PB2) == chain.read_reg(INPUT_SELECT_CACHE)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE))
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x08
 
     chain.begin_memory_trace([_control_pb2_eeprom_watch()], max_records=200)
     _force_settings_save(chain)
@@ -1558,6 +1539,47 @@ def test_pb2_persisted_concrete_source_uses_raw_status_fallback_without_overwrit
     ]
     assert pb2_commits == []
     assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == seed
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("raw_status", [0x00, 0x01])
+def test_pb1_spdif_pb2_aes_persisted_field_inputs_do_not_relink_pb2(
+    v173_multi_pb_hex: Path,
+    raw_status: int,
+) -> None:
+    chain = _new_chain(v173_multi_pb_hex)
+    chain.write_control_eeprom_byte(
+        CONTROL_PB1_INPUT_EEPROM,
+        PB1_EEPROM_CONCRETE_BASE | 0x05,
+    )
+    chain.write_control_eeprom_byte(
+        CONTROL_PB2_INPUT_EEPROM,
+        PB2_EEPROM_CONCRETE_BASE | 0x07,
+    )
+    chain.write_main_eeprom_byte(0, MAIN_EEPROM_INPUT_SELECT, 0x08)
+    chain.write_main_eeprom_byte(1, MAIN_EEPROM_INPUT_SELECT, 0x00)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+
+    _rediscover_pb2_with_raw_status(chain, raw_status)
+
+    flags = chain.read_reg(INPUT_SPLIT_FLAGS)
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
+    assert not (flags & (1 << INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE))
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x05
+    assert chain.read_reg(INPUT_PENDING_PB2) == 0x07
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x07
+
+    _navigate_right(chain, 3)
+    assert_lcd_exact(chain, ("Input PB2:      ", "AES             "))
+
+    first = _force_full_sync_input_step(chain)
+    second = _force_full_sync_input_step(chain)
+    assert first and first[-1] == (0xB1, 0x06, 0x05)
+    assert second and second[-1] == (0xB2, 0x06, 0x07)
+    assert not any(frame[0] == 0xB0 for frame in first + second)
+
+    _wait_for_main_input_route(chain, 0, 0x05, ROUTE_SPDIF, SRC_PAIR_SPDIF)
+    _wait_for_main_input_route(chain, 1, 0x07, ROUTE_AES, SRC_PAIR_AES)
 
 
 @pytest.mark.slow
@@ -2063,18 +2085,10 @@ def test_bug_v173_pb2_same_as_pb1_down_clamps_unknown_raw_status(
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize(
-    ("raw_status", "expected_label", "expected_data"),
-    [
-        (raw_status, label, data)
-        for raw_status, (label, data) in VALID_RAW_STATUS_DOWN_WRAP.items()
-    ],
-)
-def test_bug_v173_pb2_same_as_pb1_down_preserves_valid_raw_status_limits(
+@pytest.mark.parametrize("raw_status", list(VALID_RAW_STATUS_DOWN_WRAP))
+def test_bug_v173_pb2_same_as_pb1_down_uses_full_pb2_table_for_valid_raw_status(
     v173_multi_pb_hex: Path,
     raw_status: int,
-    expected_label: str,
-    expected_data: int,
 ) -> None:
     chain = _boot_chain(v173_multi_pb_hex)
     _enter_pb2_same_as_pb1(chain, raw_status)
@@ -2083,13 +2097,14 @@ def test_bug_v173_pb2_same_as_pb1_down_preserves_valid_raw_status_limits(
     _press(chain, "DOWN")
 
     assert chain.read_reg(DISPLAY_STATE) == STATE_INPUT_PB2
-    assert chain.lcd_lines()[1] == expected_label
-    assert chain.read_reg(INPUT_INTENT_PB2) == expected_data
-    _assert_last_cmd06(chain, before, 0xB2, expected_data)
+    assert chain.read_reg(MENU_OPTION_MAX) == 0x09
+    assert chain.lcd_lines()[1] == "Analogue 4      "
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x04
+    _assert_last_cmd06(chain, before, 0xB2, 0x04)
 
 
 @pytest.mark.slow
-@pytest.mark.parametrize("raw_status", [0x04, 0x7F, 0x80, 0xFF])
+@pytest.mark.parametrize("raw_status", [0x00, 0x01, 0x02, 0x03, 0x04, 0x7F, 0x80, 0xFF])
 def test_bug_v173_unknown_raw_status_pb2_exact_label_to_cmd06_mapping(
     v173_multi_pb_hex: Path,
     raw_status: int,
@@ -2130,20 +2145,12 @@ def test_bug_v173_unknown_raw_status_legacy_pb1_uses_full_input_table(
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("raw_status", "expected_label", "expected_data"),
-    [
-        (0x00, "Analogue 1      ", 0x01),
-        (0x01, "Analogue 2      ", 0x02),
-        (0x02, "Analogue 3      ", 0x03),
-        (0x03, "Analogue 4      ", 0x04),
-        (0x80, "Analogue 4      ", 0x04),
-    ],
+    "raw_status",
+    [0x00, 0x01, 0x02, 0x03, 0x80],
 )
 def test_bug_v173_malformed_pb2_state_recovers_to_active_max_commit(
     v173_multi_pb_hex: Path,
     raw_status: int,
-    expected_label: str,
-    expected_data: int,
 ) -> None:
     chain = _boot_chain(v173_multi_pb_hex)
     _enter_pb2_same_as_pb1(chain, raw_status)
@@ -2158,9 +2165,9 @@ def test_bug_v173_malformed_pb2_state_recovers_to_active_max_commit(
     assert chain.read_reg(DISPLAY_STATE) == STATE_INPUT_PB2
     assert chain.read_reg(MENU_OPTION_SELECTED) == chain.read_reg(MENU_OPTION_MAX)
     assert chain.read_reg(MENU_OPTION_MAX) <= 0x09
-    assert chain.lcd_lines()[1] == expected_label
-    assert chain.read_reg(INPUT_INTENT_PB2) == expected_data
-    _assert_last_cmd06(chain, before, 0xB2, expected_data)
+    assert chain.lcd_lines()[1] == "Analogue 4      "
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x04
+    _assert_last_cmd06(chain, before, 0xB2, 0x04)
 
 
 @pytest.mark.slow
@@ -2423,7 +2430,11 @@ def test_pb2_menu_state_and_malformed_row_are_gated_by_split_flag() -> None:
     assert "movwf   menu_option_max_index_b0, BANKED" in compute_max
     assert "cpfsgt  rx_ring_staging_b0, BANKED" in compute_max
     assert "INPUT_SPLIT_FLAG_PB2_LINKED" in prepare
-    assert "decf    rx_ring_staging_b0, F, BANKED" in prepare
+    assert "input_map_cmd06_to_full_menu_index:" in text
+    assert "input_map_pb2_visible_row_to_full_cmd06:" in text
+    assert "call    input_map_pb2_visible_row_to_full_cmd06, 0x0" in prepare
+    assert "movff   tx_data_staging_b0_phys, input_intent_pb2_b1_phys" in prepare
+    assert "bsf     STATUS, C, A" in prepare
     assert "input_screen_restore_pb2_visible_row_after_commit:" in text
     assert "restore PB2 display row after cmd06 mapping" in text
     assert text.count("call    input_screen_restore_pb2_visible_row_after_commit, 0x0") == 2

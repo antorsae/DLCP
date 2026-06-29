@@ -139,6 +139,8 @@ IR_INHIBIT_HI_PHYS = 0x01C
 VOLUME_CACHE_PHYS = 0x0B9
 INPUT_SELECT_CACHE_PHYS = 0x0B8
 RAW_STATUS_CACHE_PHYS = 0x0A1
+V171_DIAG_PRESENT_PHYS = 0x197
+HEALTH_SEEN_MASK_PHYS = 0x1B2
 INPUT_SPLIT_FLAGS_PHYS = 0x1BA
 INPUT_INTENT_PB2_PHYS = 0x1BB
 INPUT_SPLIT_FLAG_PB2_SEEN = 0
@@ -167,6 +169,9 @@ IR_CMD_WAKE = 0x3B
 COMMAND_SETTLE_TICKS = 12_000_000
 STANDBY_FRAME = (0xB0, 0x03, 0x00)
 WAKE_FRAME = (0xB0, 0x03, 0x01)
+BUTTON_PINS = {
+    "RIGHT": ("A", 4),
+}
 
 
 def _require_rust() -> None:
@@ -375,11 +380,21 @@ def _configure_hypex_ir_profile(chain) -> None:  # type: ignore[no-untyped-def]
 
 
 def _mark_pb2_seen_linked(chain) -> None:  # type: ignore[no-untyped-def]
+    chain.write_reg(V171_DIAG_PRESENT_PHYS, chain.read_reg(V171_DIAG_PRESENT_PHYS) | 0x02)
+    chain.write_reg(HEALTH_SEEN_MASK_PHYS, chain.read_reg(HEALTH_SEEN_MASK_PHYS) | 0x02)
     chain.write_reg(
         INPUT_SPLIT_FLAGS_PHYS,
         (1 << INPUT_SPLIT_FLAG_PB2_SEEN) | (1 << INPUT_SPLIT_FLAG_PB2_LINKED),
     )
     chain.write_reg(INPUT_INTENT_PB2_PHYS, chain.read_reg(INPUT_SELECT_CACHE_PHYS))
+
+
+def _press_front_panel(chain, key: str) -> None:  # type: ignore[no-untyped-def]
+    port, bit = BUTTON_PINS[key]
+    chain.set_control_pin(port, bit, False)
+    chain.step_ticks(5_000_000)
+    chain.set_control_pin(port, bit, True)
+    chain.step_ticks(5_000_000)
 
 
 def _main_active_gates(chain) -> tuple[int, int]:  # type: ignore[no-untyped-def]
@@ -402,8 +417,7 @@ def _navigate_to_diag_page(chain, pb_idx: int) -> None:  # type: ignore[no-untyp
         if chain.lcd_lines()[0].startswith(target):
             chain.step_ticks(COMMAND_SETTLE_TICKS)
             return
-        chain.press("RIGHT")
-        chain.step_ticks(COMMAND_SETTLE_TICKS)
+        _press_front_panel(chain, "RIGHT")
     if chain.lcd_lines()[0].startswith(target):
         chain.step_ticks(COMMAND_SETTLE_TICKS)
         return

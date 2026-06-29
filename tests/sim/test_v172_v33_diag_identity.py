@@ -55,7 +55,10 @@ DISPLAY_STATE_INDEX_PHYS = 0x0BF
 
 V171_DIAG_PB1_BASE_PHYS = 0x180
 V171_DIAG_PB2_BASE_PHYS = 0x18B
+V171_DIAG_TARGET_PHYS = 0x196
 V171_DIAG_PRESENT_PHYS = 0x197
+V171_DIAG_FLAGS_PHYS = 0x19C
+V171_DIAG_FLAG_DIRTY = 0
 V172_DIAG_ID_PB1_MAJOR_PHYS = 0x245
 V172_DIAG_ID_PB1_MINOR_PHYS = 0x246
 V172_DIAG_ID_PB1_REV_PHYS = 0x247
@@ -63,6 +66,9 @@ V172_DIAG_ID_PB2_MAJOR_PHYS = 0x248
 V172_DIAG_ID_PB2_MINOR_PHYS = 0x249
 V172_DIAG_ID_PB2_REV_PHYS = 0x24A
 V172_DIAG_ID_VALID_MASK_PHYS = 0x24B
+V172_DIAG_ID_SEEN_MASK_PHYS = 0x24C
+V172_DIAG_ID_FLAGS_PHYS = 0x24E
+V172_DIAG_ID_TIMEOUT_PHYS = 0x24F
 V173_DIAG_ID_PB1_REV_HI_PHYS = 0x26C
 V173_DIAG_ID_PB2_REV_HI_PHYS = 0x26D
 
@@ -345,6 +351,34 @@ def _expected_ok_diag_lcd(pb_idx: int, row0: str) -> tuple[str, str]:
     return (row0, "O1              ")
 
 
+def _diag_identity_cells(pb_idx: int) -> tuple[int, int, int, int]:
+    if pb_idx == 0:
+        return (
+            V172_DIAG_ID_PB1_MAJOR_PHYS,
+            V172_DIAG_ID_PB1_MINOR_PHYS,
+            V172_DIAG_ID_PB1_REV_PHYS,
+            V173_DIAG_ID_PB1_REV_HI_PHYS,
+        )
+    return (
+        V172_DIAG_ID_PB2_MAJOR_PHYS,
+        V172_DIAG_ID_PB2_MINOR_PHYS,
+        V172_DIAG_ID_PB2_REV_PHYS,
+        V173_DIAG_ID_PB2_REV_HI_PHYS,
+    )
+
+
+def _poison_identity_seen_without_valid(chain, pb_idx: int) -> None:  # type: ignore[no-untyped-def]
+    mask = 1 << pb_idx
+    chain.write_reg(V172_DIAG_ID_VALID_MASK_PHYS, chain.read_reg(V172_DIAG_ID_VALID_MASK_PHYS) & ~mask)
+    chain.write_reg(V172_DIAG_ID_SEEN_MASK_PHYS, chain.read_reg(V172_DIAG_ID_SEEN_MASK_PHYS) | mask)
+    chain.write_reg(V172_DIAG_ID_FLAGS_PHYS, chain.read_reg(V172_DIAG_ID_FLAGS_PHYS) & ~0x05)
+    chain.write_reg(V172_DIAG_ID_TIMEOUT_PHYS, 0x00)
+    for addr in _diag_identity_cells(pb_idx):
+        chain.write_reg(addr, 0x00)
+    chain.write_reg(V171_DIAG_TARGET_PHYS, pb_idx)
+    chain.write_reg(V171_DIAG_FLAGS_PHYS, chain.read_reg(V171_DIAG_FLAGS_PHYS) | (1 << V171_DIAG_FLAG_DIRTY))
+
+
 def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
     """MAIN space is tight: cmd 0x25 must stay compact, not unroll 5 frames."""
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
@@ -523,6 +557,49 @@ def test_v173_v35_diag_ok_title_shows_visible_main_identity(
         chain,
         lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
         limit=700,
+    )
+    assert lines[0] == expected
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v35_diag_identity_retries_seen_without_valid_after_runtime_reply(
+    v173_hex: Path, v35_hex: Path, pb_idx: int
+) -> None:
+    chain = _connected_chain(v173_hex, v35_hex)
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_v35_diag_title(pb_idx)
+    _wait_for_lcd(
+        chain,
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
+        limit=700,
+    )
+
+    _poison_identity_seen_without_valid(chain, pb_idx)
+    suffixless = f"PB{pb_idx + 1} OK          "
+    _wait_for_lcd(
+        chain,
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == suffixless,
+        limit=1400,
+    )
+
+    before = len(chain.tx_frames())
+    lines = _wait_for_lcd(
+        chain,
+        lambda lcd: _is_diag_page(chain, pb_idx, lcd) and lcd[0] == expected,
+        limit=2400,
+    )
+
+    route = 0xB1 if pb_idx == 0 else 0xB2
+    cmd25 = [
+        frame
+        for frame in chain.tx_frames()[before:]
+        if frame[0] == route and frame[1] == 0x25
+    ]
+    assert cmd25, (
+        f"PB{pb_idx + 1} identity should be retried after a healthy "
+        f"runtime diagnostics reply; lcd={chain.lcd_lines()!r}"
     )
     assert lines[0] == expected
 

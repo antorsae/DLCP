@@ -1704,6 +1704,23 @@ v171_bf2x_store_done:
         ; reached that PB.  Count it as link freshness so Diagnostics
         ; pages do not need a competing background cmd 0x23 poll.
         call    v171_health_mark_common_target_fresh, 0x0
+        ; If identity timed out once, the old code marked the PB "seen" even
+        ; though no valid suffix was cached.  A fresh runtime burst proves the
+        ; PB is still reachable, so allow a later cmd 0x25 identity retry.
+        movlb   0x01
+        btfsc   v171_diag_effective_target_b1, 0, BANKED
+        bra     v171_bf27_identity_retry_pb2
+        movlb   0x02
+        btfsc   v172_diag_id_valid_mask_b2, 0, BANKED
+        bra     v171_bf27_identity_retry_done
+        bcf     v172_diag_id_seen_mask_b2, 0, BANKED
+        bra     v171_bf27_identity_retry_done
+v171_bf27_identity_retry_pb2:
+        movlb   0x02
+        btfsc   v172_diag_id_valid_mask_b2, 1, BANKED
+        bra     v171_bf27_identity_retry_done
+        bcf     v172_diag_id_seen_mask_b2, 1, BANKED
+v171_bf27_identity_retry_done:
         movlb   0x01
         bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RUNTIME_PENDING, BANKED
         btg     v171_diag_target_b1, 0, BANKED               ; flip for next query
@@ -6369,22 +6386,7 @@ input_split_latch_enable:
         bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_SYNC_TARGET, BANKED
         btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE, BANKED
         bra     input_split_latch_enable_linked
-        movff   input_pending_pb2_b1_phys, rx_parsed_data_b0_phys
-        movlb   0x00
-        call    map_cmd06_input_select_to_menu_index, 0x0
-        call    input_screen_compute_menu_max, 0x0
-        movf    menu_option_max_index_b0, W, BANKED
-        cpfsgt  rx_ring_staging_b0, BANKED
-        bra     input_split_latch_pending_row_in_range
-        bra     input_split_latch_enable_fallback
-input_split_latch_pending_row_in_range:
-        call    map_input_menu_index_to_cmd06_input_select, 0x0
-        movlb   0x01
-        movf    input_pending_pb2_b1, W, BANKED
-        movlb   0x00
-        xorwf   tx_data_staging_acc, W, A
-        bz      input_split_latch_enable_concrete
-        bra     input_split_latch_enable_fallback
+        bra     input_split_latch_enable_concrete
 input_split_latch_enable_concrete:
         movlb   0x01
         bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
@@ -8768,7 +8770,7 @@ input_screen_stage_selected_index:
         bra     input_screen_stage_pb2_linked_index
         movff   input_intent_pb2_b1_phys, rx_parsed_data_b0_phys
         movlb   0x00
-        call    map_cmd06_input_select_to_menu_index, 0x0
+        call    input_map_cmd06_to_full_menu_index, 0x0
         incf    rx_ring_staging_b0, F, BANKED                  ; PB2 row 0 is Same as PB1
         return  0x0
 input_screen_stage_pb2_linked_index:
@@ -8784,6 +8786,132 @@ input_screen_stage_pb1_index:
 input_screen_stage_map_done:
         call    map_cmd06_input_select_to_menu_index, 0x0
         movlb   0x00
+        return  0x0
+
+input_map_cmd06_to_full_menu_index:
+        movlb   0x00
+        clrf    rx_ring_staging_b0, BANKED
+        movf    rx_parsed_data_acc, F, A
+        bz      input_map_cmd06_to_full_menu_index_return
+        movlw   0x05
+        cpfseq  rx_parsed_data_acc, A
+        bra     input_map_cmd06_to_full_menu_index_check_06
+        movlw   0x01
+        movwf   rx_ring_staging_b0, BANKED
+        return  0x0
+input_map_cmd06_to_full_menu_index_check_06:
+        movlw   0x06
+        cpfseq  rx_parsed_data_acc, A
+        bra     input_map_cmd06_to_full_menu_index_check_07
+        movlw   0x02
+        movwf   rx_ring_staging_b0, BANKED
+        return  0x0
+input_map_cmd06_to_full_menu_index_check_07:
+        movlw   0x07
+        cpfseq  rx_parsed_data_acc, A
+        bra     input_map_cmd06_to_full_menu_index_check_08
+        movlw   0x03
+        movwf   rx_ring_staging_b0, BANKED
+        return  0x0
+input_map_cmd06_to_full_menu_index_check_08:
+        movlw   0x08
+        cpfseq  rx_parsed_data_acc, A
+        bra     input_map_cmd06_to_full_menu_index_check_01
+        movlw   0x04
+        movwf   rx_ring_staging_b0, BANKED
+        return  0x0
+input_map_cmd06_to_full_menu_index_check_01:
+        decfsz  rx_parsed_data_acc, W, A
+        bra     input_map_cmd06_to_full_menu_index_check_02
+        movlw   0x05
+        movwf   rx_ring_staging_b0, BANKED
+        return  0x0
+input_map_cmd06_to_full_menu_index_check_02:
+        movlw   0x02
+        cpfseq  rx_parsed_data_acc, A
+        bra     input_map_cmd06_to_full_menu_index_check_03
+        movlw   0x06
+        movwf   rx_ring_staging_b0, BANKED
+        return  0x0
+input_map_cmd06_to_full_menu_index_check_03:
+        movlw   0x03
+        cpfseq  rx_parsed_data_acc, A
+        bra     input_map_cmd06_to_full_menu_index_check_04
+        movlw   0x07
+        movwf   rx_ring_staging_b0, BANKED
+        return  0x0
+input_map_cmd06_to_full_menu_index_check_04:
+        movlw   0x04
+        cpfseq  rx_parsed_data_acc, A
+        bra     input_map_cmd06_to_full_menu_index_return
+        movlw   0x08
+        movwf   rx_ring_staging_b0, BANKED
+input_map_cmd06_to_full_menu_index_return:
+        return  0x0
+
+input_map_pb2_visible_row_to_full_cmd06:
+        movlb   0x00
+        movf    rx_ring_staging_b0, W, BANKED
+        addlw   0xFF
+        movwf   (Common_RAM + 4), A
+        clrf    tx_data_staging_acc, A
+        movf    (Common_RAM + 4), F, A
+        bz      input_map_pb2_visible_row_to_full_cmd06_return
+        movlw   0x01
+        cpfseq  (Common_RAM + 4), A
+        bra     input_map_pb2_visible_row_to_full_cmd06_check_02
+        movlw   0x05
+        movwf   tx_data_staging_acc, A
+        return  0x0
+input_map_pb2_visible_row_to_full_cmd06_check_02:
+        movlw   0x02
+        cpfseq  (Common_RAM + 4), A
+        bra     input_map_pb2_visible_row_to_full_cmd06_check_03
+        movlw   0x06
+        movwf   tx_data_staging_acc, A
+        return  0x0
+input_map_pb2_visible_row_to_full_cmd06_check_03:
+        movlw   0x03
+        cpfseq  (Common_RAM + 4), A
+        bra     input_map_pb2_visible_row_to_full_cmd06_check_04
+        movlw   0x07
+        movwf   tx_data_staging_acc, A
+        return  0x0
+input_map_pb2_visible_row_to_full_cmd06_check_04:
+        movlw   0x04
+        cpfseq  (Common_RAM + 4), A
+        bra     input_map_pb2_visible_row_to_full_cmd06_check_05
+        movlw   0x08
+        movwf   tx_data_staging_acc, A
+        return  0x0
+input_map_pb2_visible_row_to_full_cmd06_check_05:
+        movlw   0x05
+        cpfseq  (Common_RAM + 4), A
+        bra     input_map_pb2_visible_row_to_full_cmd06_check_06
+        movlw   0x01
+        movwf   tx_data_staging_acc, A
+        return  0x0
+input_map_pb2_visible_row_to_full_cmd06_check_06:
+        movlw   0x06
+        cpfseq  (Common_RAM + 4), A
+        bra     input_map_pb2_visible_row_to_full_cmd06_check_07
+        movlw   0x02
+        movwf   tx_data_staging_acc, A
+        return  0x0
+input_map_pb2_visible_row_to_full_cmd06_check_07:
+        movlw   0x07
+        cpfseq  (Common_RAM + 4), A
+        bra     input_map_pb2_visible_row_to_full_cmd06_check_08
+        movlw   0x03
+        movwf   tx_data_staging_acc, A
+        return  0x0
+input_map_pb2_visible_row_to_full_cmd06_check_08:
+        movlw   0x08
+        cpfseq  (Common_RAM + 4), A
+        bra     input_map_pb2_visible_row_to_full_cmd06_return
+        movlw   0x04
+        movwf   tx_data_staging_acc, A
+input_map_pb2_visible_row_to_full_cmd06_return:
         return  0x0
 
 input_screen_stage_pb2_title_class:
@@ -8965,13 +9093,14 @@ input_screen_prepare_selected_row:
         bsf     STATUS, C, A
         return  0x0
 input_screen_prepare_selected_row_pb2_concrete:
-        decf    rx_ring_staging_b0, F, BANKED
+        call    input_map_pb2_visible_row_to_full_cmd06, 0x0
         movlb   0x01
         bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
         bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE, BANKED
         bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY, BANKED
+        movff   tx_data_staging_b0_phys, input_intent_pb2_b1_phys
         movlb   0x00
-        bcf     STATUS, C, A
+        bsf     STATUS, C, A
         return  0x0
 input_screen_prepare_selected_row_not_pb2_b0:
         movlb   0x00
@@ -9035,7 +9164,8 @@ input_screen_adjust_pb2_max_index:
         btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
         bra     input_screen_adjust_pb2_max_index_b0
         movlb   0x00
-        incf    menu_option_max_index_b0, F, BANKED
+        movlw   0x09
+        movwf   menu_option_max_index_b0, BANKED
         return  0x0
 input_screen_adjust_pb2_max_index_b0:
         movlb   0x00
@@ -9302,7 +9432,7 @@ input_pb2_same_as_pb1_table:
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x43, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x38, 0x00 ; "Rev x5C 20260628"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x44, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x39, 0x00 ; "Rev x5D 20260629"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -9310,8 +9440,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x5C                    ; V1.73 + monotonic release revision
-        db      0x20, 0x26, 0x06, 0x28                    ; build date 20260628 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x33, 0x5D                    ; V1.73 + monotonic release revision
+        db      0x20, 0x26, 0x06, 0x29                    ; build date 20260629 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800
