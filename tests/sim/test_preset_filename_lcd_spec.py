@@ -285,7 +285,11 @@ def _press(chain, key: str) -> None:  # type: ignore[no-untyped-def]
     chain.step_ticks(5_000_000)
     chain.set_control_pin(port, bit, True)
     chain.step_ticks(5_000_000)
-    for _ in range(8):
+    # Split-menu builds can pass through PB1/PB2 Diagnostics before wrapping
+    # back to Preset after standby/wake.  Use enough attempts for a full ring
+    # plus one debounce/transition slack pass instead of baking in the older
+    # six-page menu shape.
+    for _ in range(14):
         chain.step()
 
 
@@ -808,12 +812,17 @@ def _run_full_native_chain_filename_feature(hexes: tuple[Path, Path]) -> None:
     )
     assert lines == ("Preset         A", "521.4 22MG10F-v5")
 
-    lines = _wait_for_lcd(
+    legal_windows = _preset_filename_windows("A", slot_a, slot_b)
+    _assert_native_filename_cache_valid(
         chain,
-        lambda lcd: lcd[0] == "Preset         A" and lcd[1] == "LX521.4 22MG10F-",
-        attempts=120,
+        preset="A",
+        slot_a=slot_a,
+        slot_b=slot_b,
     )
-    assert lines == ("Preset         A", "LX521.4 22MG10F-")
+    for _ in range(20):
+        chain.step_ticks(1_000_000)
+        lines = chain.lcd_lines()
+        assert lines[0] == "Preset         A" and lines[1] in legal_windows
 
 
 def _run_full_native_chain_preset_state_matrix(

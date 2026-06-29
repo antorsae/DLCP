@@ -113,6 +113,10 @@ app_entry_defensive_stub:                                               ; addres
         call    lcd_command_or_eeprom_read, 0x0                           ; dest: 0x000190
         movlw   0x75
         movwf   (Common_RAM + 13), A                        ; reg: 0x00d
+        ; The full clear above can run after a Preset self-heal during
+        ; reconnect.  Re-mark row 0 not-ready so the parked Preset loop
+        ; performs one visible repaint after this overlay finishes.
+        call    v173_preset_lcd_invalidate, 0x0
         movlw   0x30
         goto    delay_short_inner_spin_from_w                                ; dest: 0x0001d8
 
@@ -1205,7 +1209,7 @@ rx_parser_entry__check_cmd1d_setting_cmd:                                       
 
         movlw   0x1d                                        ; CMD shared_cmd1d_setting (BL timeout / profile)
         cpfseq  rx_parsed_cmd_acc, A                        ; reg: 0x02f
-        goto    v171_bf08_case_check                      ; not 0x1D — try V1.72 BF/08
+        goto    v173_bf20_preset_case_check              ; not 0x1D — try preset echo, then BF/08
         movf    cmd1d_setting_cache_b0, W, B                                  ; reg: 0x0a7
         subwf   rx_parsed_data_acc, W, A                     ; reg: 0x030
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
@@ -1213,6 +1217,29 @@ rx_parser_entry__check_cmd1d_setting_cmd:                                       
         movff   rx_parsed_data_b0_phys, 0x0a7                    ; reg1: 0x030
         call    ir_profile_apply_cmd1d_mapping, 0x0                           ; dest: 0x000f54
         bra     rx_parser_entry__restart_after_frame                 ; 0x1D handled — exit
+
+v173_bf20_preset_case_check:
+        ; MAIN echoes host/chain preset changes as cmd 0x20.  Reflect that
+        ; value into CONTROL's local PRESET_BIT so the Preset row-0 A/B status
+        ; cell updates through the existing status patch service.  Ignore
+        ; these echoes while CONTROL is asleep/WAITING: an asleep user IR
+        ; preset intent must survive unrelated host traffic until wake.
+        movlw   0x20                                        ; CMD preset_select
+        cpfseq  rx_parsed_cmd_acc, A
+        goto    v171_bf08_case_check
+        btfss   control_flags_acc, 0x1, A
+        bra     rx_parser_entry__restart_after_frame
+        btfsc   rx_parsed_data_acc, 0, A
+        bra     v173_bf20_preset_set_b
+        btfss   control_flags_acc, PRESET_BIT, A
+        bra     rx_parser_entry__restart_after_frame
+        bcf     control_flags_acc, PRESET_BIT, A
+        bra     rx_parser_entry__restart_after_frame
+v173_bf20_preset_set_b:
+        btfsc   control_flags_acc, PRESET_BIT, A
+        bra     rx_parser_entry__restart_after_frame
+        bsf     control_flags_acc, PRESET_BIT, A
+        bra     rx_parser_entry__restart_after_frame
 
 v171_bf08_case_check:
         ; ---------------------------------------------------------------
@@ -1640,13 +1667,18 @@ v171_bf2x_have_effective_target:
         movwf   FSR0L, A
         movlw   0x01
         movwf   FSR0H, A
-        movff   rx_parsed_data_b0_phys, INDF0                     ; *(slot) = data
-        ; Do not redraw on every individual BF/2N cell.  The LCD is
-        ; rendered from the complete per-PB cache; mark DIRTY only when
-        ; the runtime burst completes (BF/27, via the health-freshness
-        ; helper below) or when the reset burst completes (BF/2B).
-        ; This keeps sustained Diagnostics pages from turning a single
-        ; query into seven full-screen LCD rewrites.
+        movf    rx_parsed_data_acc, W, A
+        cpfseq  INDF0, A
+        bra     v171_bf2x_store_changed
+        bra     v171_bf2x_store_done
+v171_bf2x_store_changed:
+        movwf   INDF0, A                                  ; *(slot) = data
+        movlb   0x01
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
+v171_bf2x_store_done:
+        ; Do not redraw on unchanged BF/2N cells.  The LCD is rendered from
+        ; the complete per-PB cache, so repeated identical diagnostics bursts
+        ; should preserve the poll cadence without burning full-screen writes.
         movlb   0x01
         ; Last-frame dispatch: col_offset 6 = BF/27 (RUNTIME LAST),
         ; col_offset 10 = BF/2B (Tier-1 RESET LAST).
@@ -1699,7 +1731,6 @@ v171_bf2x_check_reset_last:
         btfsc   v171_diag_effective_target_b1, 0, BANKED
         movlw   0x02                                      ; PB2 reset_seen bit
         iorwf   v171_diag_reset_seen_b1, F, BANKED
-        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
         bcf     v171_diag_flags_b1, V171_DIAG_FLAG_RESET_PENDING, BANKED
 v171_bf2x_check_reset_last_exit_bsr0:
         ; HOT FIX (real-HW disaster 2026-04-20): the prior `bra flow_
@@ -1756,15 +1787,31 @@ v171_health_mark_common_target_fresh:
         ; Used by the Diagnostics BF/27 last-frame path; a full addressed
         ; diagnostics reply is also a successful PB reachability proof.
         movlb   0x01
-        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
-        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
         btfsc   v171_diag_effective_target_b1, 0, BANKED
         bra     v171_health_mark_common_target_pb2
+        movf    v171_health_age_pb1_b1, F, BANKED
+        bnz     v171_health_mark_common_target_pb1_dirty
+        btfss   v171_health_seen_mask_b1, 0, BANKED
+        bra     v171_health_mark_common_target_pb1_dirty
+        bra     v171_health_mark_common_target_pb1_store
+v171_health_mark_common_target_pb1_dirty:
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
+v171_health_mark_common_target_pb1_store:
         clrf    v171_health_age_pb1_b1, BANKED
         bsf     v171_health_seen_mask_b1, 0, BANKED
         movlb   0x00
         return  0x0
 v171_health_mark_common_target_pb2:
+        movf    v171_health_age_pb2_b1, F, BANKED
+        bnz     v171_health_mark_common_target_pb2_dirty
+        btfss   v171_health_seen_mask_b1, 1, BANKED
+        bra     v171_health_mark_common_target_pb2_dirty
+        bra     v171_health_mark_common_target_pb2_store
+v171_health_mark_common_target_pb2_dirty:
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bsf     v171_diag_flags_b1, V171_DIAG_FLAG_DIRTY, BANKED
+v171_health_mark_common_target_pb2_store:
         clrf    v171_health_age_pb2_b1, BANKED
         bsf     v171_health_seen_mask_b1, 1, BANKED
         movlb   0x00
@@ -3342,6 +3389,10 @@ v171_service_rx_frame_gap:
         movf    rx_frame_position_b0, F, B
         btfsc   STATUS, Z, A
         bra     v171_service_rx_frame_gap_clear
+        movlb   0x02
+        btfsc   v172_fname_flags_b2, FNAME_PENDING, BANKED
+        bra     v171_service_rx_frame_gap_filename_pending
+        movlb   0x00
         movf    rx_ring_wr_b0, W, B
         cpfseq  rx_ring_rd_b0, B
         bra     v171_service_rx_frame_gap_reload
@@ -3360,6 +3411,14 @@ v171_service_rx_frame_gap_reload:
         movlw   V171_RX_FRAME_GAP_RELOAD
         movwf   v171_rx_frame_gap_timeout_b0, BANKED
         return  0x0
+
+v171_service_rx_frame_gap_filename_pending:
+        ; LCD-refresh throttling makes the foreground loop fast enough to
+        ; out-count inter-byte UART gaps during long filename replies.  While
+        ; the filename transaction owns a pending reply, let its deadline
+        ; handle true stalls instead of clearing a valid frame mid-byte.
+        movlb   0x00
+        bra     v171_service_rx_frame_gap_reload
 
 v171_service_rx_frame_gap_clear:
         clrf    v171_rx_frame_gap_timeout_b0, BANKED
@@ -3444,13 +3503,13 @@ v173_preset_lcd_invalidate:
         return  0x0
 
 v173_preset_row0_paint:
-        ; FIELD-3: paint Preset row 0 ("Preset" + spaces), seed the status
-        ; snap, patch cols 14/15, and mark row 0 ready.  Factored from
+        ; FIELD-3: paint Preset row 0 cols 0..13 ("Preset" + spaces), seed
+        ; the status snap, and patch cols 14/15.  Factored from
         ; v171_prs_screen_draw_body so the per-pass filename service can
         ; SELF-HEAL after any full LCD clear (the post-wake standby-path
         ; bounce blanks the LCD after the entry draw ran).  Enter any bank;
         ; exit BSR=0.
-        ; Row 0: "Preset          " (16 characters)
+        ; Row 0: cols 0..13 only; live status cells own cols 14/15.
         movlw   0x80
         movwf   (Common_RAM + 1), A
         movlw   0x80                                       ; LCD cursor row 0 col 0
@@ -3483,10 +3542,6 @@ v173_preset_row0_paint:
         call    lcd_char_write, 0x0
         movlw   ' '
         call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
-        movlw   ' '
-        call    lcd_char_write, 0x0
 
         ; Row 0 live status cells: col14 health glyph, col15 A/B/!.
         ; Seed snap invalid so two bounded status patch calls paint both cells.
@@ -3496,8 +3551,6 @@ v173_preset_row0_paint:
         movlb   0x00
         call    v172_preset_status_patch_service, 0x0
         call    v172_preset_status_patch_service, 0x0
-        movlb   0x02
-        bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
         movlb   0x00
         return  0x0
 
@@ -3766,18 +3819,30 @@ display_loop_iteration__clear_idle_and_return:                                  
 
 ir_dispatch_configured_or_fixed_shortcuts:                                               ; address: 0x000dce
 
-        movf    (Common_RAM + 27), F, A                     ; reg: 0x01b
+        movlb   0x02
+        movf    v173_power_repeat_guard_lo_b2, F, BANKED
+        bnz     ir_dispatch_configured_or_fixed_shortcuts__decrement_power_guard_lo
+        movf    v173_power_repeat_guard_hi_b2, F, BANKED
+        bz      ir_dispatch_configured_or_fixed_shortcuts__power_guard_done
+        decf    v173_power_repeat_guard_hi_b2, F, BANKED
+        decf    v173_power_repeat_guard_lo_b2, F, BANKED
+        bra     ir_dispatch_configured_or_fixed_shortcuts__power_guard_done
+ir_dispatch_configured_or_fixed_shortcuts__decrement_power_guard_lo:
+        decf    v173_power_repeat_guard_lo_b2, F, BANKED
+ir_dispatch_configured_or_fixed_shortcuts__power_guard_done:
+        movlb   0x00
+        movf    ir_rc5_inhibit_lo_acc, F, A                     ; reg: 0x01b
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    ir_dispatch_configured_or_fixed_shortcuts__decrement_inhibit_timer                                   ; dest: 0x000dde
-        movf    (Common_RAM + 28), F, A                     ; reg: 0x01c
+        movf    ir_rc5_inhibit_hi_acc, F, A                     ; reg: 0x01c
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         goto    ir_dispatch_configured_or_fixed_shortcuts__gate_on_ir_armed_flag                                   ; dest: 0x000de4
 
 ir_dispatch_configured_or_fixed_shortcuts__decrement_inhibit_timer:                                                  ; address: 0x000dde
 
-        decf    (Common_RAM + 27), F, A                     ; reg: 0x01b
+        decf    ir_rc5_inhibit_lo_acc, F, A                     ; reg: 0x01b
         movlw   0x00
-        subwfb  (Common_RAM + 28), F, A                     ; reg: 0x01c
+        subwfb  ir_rc5_inhibit_hi_acc, F, A                     ; reg: 0x01c
 
 ir_dispatch_configured_or_fixed_shortcuts__gate_on_ir_armed_flag:                                                  ; address: 0x000de4
 
@@ -3793,13 +3858,27 @@ ir_dispatch_configured_or_fixed_shortcuts__match_configured_codes:              
         movf    ir_decoded_cmd_acc, W, A                     ; reg: 0x01d
         cpfseq  (Common_RAM + 33), A                        ; reg: 0x021
         goto    ir_dispatch_configured_or_fixed_shortcuts__check_volume_up_code                                   ; dest: 0x000e0c
+        movlb   0x02
+        movf    v173_power_repeat_guard_lo_b2, F, BANKED
+        bnz     ir_dispatch_configured_or_fixed_shortcuts__ignore_guarded_power_repeat
+        movf    v173_power_repeat_guard_hi_b2, F, BANKED
+        bnz     ir_dispatch_configured_or_fixed_shortcuts__ignore_guarded_power_repeat
+        movlw   V173_POWER_REPEAT_GUARD_LO
+        movwf   v173_power_repeat_guard_lo_b2, BANKED
+        movlw   V173_POWER_REPEAT_GUARD_HI
+        movwf   v173_power_repeat_guard_hi_b2, BANKED
+        movlb   0x00
         movlw   0x50
-        movwf   (Common_RAM + 27), A                        ; reg: 0x01b
+        movwf   ir_rc5_inhibit_lo_acc, A                        ; reg: 0x01b
         movlw   0xc3
-        movwf   (Common_RAM + 28), A                        ; reg: 0x01c
+        movwf   ir_rc5_inhibit_hi_acc, A                        ; reg: 0x01c
         btg     control_flags_acc, 0x1, A                   ; reg: 0x01f
         bsf     control_flags_acc, 0x3, A                   ; reg: 0x01f
         goto    ir_dispatch_configured_or_fixed_shortcuts__stock_rearm_fallthrough
+ir_dispatch_configured_or_fixed_shortcuts__ignore_guarded_power_repeat:
+        movlb   0x00
+        bsf     control_flags_acc, IR_ARMED, A
+        return  0x0
 
 ir_dispatch_configured_or_fixed_shortcuts__check_volume_up_code:                                                  ; address: 0x000e0c
 
@@ -4228,6 +4307,7 @@ v171_send_preset_frame_and_persist_aborted:
         return  0x0
 
 v171_preset_screen:
+        call    v173_diag_active_invalidate, 0x0
         ; ---------------------------------------------------------------
         ; V1.72 inline (V1.61b): preset A/B menu screen body
         ; ---------------------------------------------------------------
@@ -4479,6 +4559,13 @@ v171_diag_pb_screen:
         movlb   0x01
         andlw   0x01                                       ; mask to 0 or 1
         movwf   v171_diag_render_pb_index_b1, BANKED
+        movlb   0x02
+        cpfseq  v173_diag_active_page_b2, BANKED
+        bra     v171_diag_pb_screen_new_entry
+        movlb   0x00
+        bra     v171_diag_loop
+v171_diag_pb_screen_new_entry:
+        movwf   v173_diag_active_page_b2, BANKED
         movlb   0x00
         ; fall through to v171_diag_screen
 
@@ -5782,6 +5869,8 @@ v172_preset_filename_service:
         movlb   0x02
         btfss   v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
         bra     v172_preset_filename_service_row0_ready
+        btfsc   v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED
+        bra     v172_preset_filename_service_row0_ready
         ; FIELD-3 self-heal: row 0 was invalidated (standby entry, reconnect,
         ; or a defensive LCD clear) while we are parked on the Preset page.
         ; Repaint it -- but only while awake/CONNECTED: in standby or WAITING
@@ -5790,23 +5879,11 @@ v172_preset_filename_service:
         btfss   control_flags_acc, 0x1, A
         return  0x0
         call    v173_preset_row0_paint, 0x0
+        movlb   0x02
+        bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
+        movlb   0x00
         return  0x0
 v172_preset_filename_service_row0_ready:
-        ; FIELD-3 belt: the post-wake bounce can blank row 0 through a
-        ; corrupted LCD byte sequence AFTER the entry repaint cleared the
-        ; not-ready latch, so flag bookkeeping alone cannot be trusted.
-        ; Re-assert row 0 every 32 service passes while awake on the Preset
-        ; page; rewriting identical characters is invisible on the HD44780.
-        incf    v173_row0_reassert_div_b2, F, BANKED
-        btfss   v173_row0_reassert_div_b2, 5, BANKED
-        bra     v173_row0_reassert_done
-        clrf    v173_row0_reassert_div_b2, BANKED
-        movlb   0x00
-        btfss   control_flags_acc, 0x1, A
-        return  0x0
-        call    v173_preset_row0_paint, 0x0
-        return  0x0
-v173_row0_reassert_done:
         movlb   0x00
         call    v172_fname_query_service, 0x0
         call    v172_fname_deadline_service, 0x0
@@ -6104,6 +6181,15 @@ v172_fname_row1_render_service:
         movlb   0x02
         btfss   v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED
         return  0x0
+        btfss   v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
+        bra     v172_fname_row1_render_cursor
+        movlb   0x00
+        btfss   control_flags_acc, 0x1, A
+        return  0x0
+        call    v173_preset_row0_paint, 0x0
+        movlb   0x02
+        bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED
+v172_fname_row1_render_cursor:
         movlb   0x00
         movlw   0xC0
         movlb   0x02
@@ -6541,6 +6627,13 @@ v171_health_send_query_busy:
 ; text such as the final "out)" of "Off (no timeout)".  Do not key this from
 ; 0x0A3:0x0A2; the menu helper leaves that pointer cached after exit.
 ; ---------------------------------------------------------------------------
+v171_health_suffix_invalidate:
+        movlb   0x01
+        setf    v171_health_suffix_mask_b1, BANKED
+        bsf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        movlb   0x00
+        return  0x0
+
 v171_health_patch_suffix:
         movlb   0x01
         btfsc   v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
@@ -6586,22 +6679,31 @@ v171_health_patch_suffix_return_b0:
         return  0x0
 v171_health_patch_suffix_top_level:
         movlb   0x01
-        clrf    v171_health_suffix_mask_b1, BANKED              ; suffix mask
+        clrf    (Common_RAM + 4), A                             ; new suffix mask
         movlw   V171_HEALTH_STALE_AGE
         cpfslt  v171_health_age_pb1_b1, BANKED                 ; age < stale? skip
-        bsf     v171_health_suffix_mask_b1, 0, BANKED
+        bsf     (Common_RAM + 4), 0, A
         movlw   V171_HEALTH_STALE_AGE
         cpfslt  v171_health_age_pb2_b1, BANKED
-        bsf     v171_health_suffix_mask_b1, 1, BANKED
+        bsf     (Common_RAM + 4), 1, A
         ; If PB1 is stale and PB2 has missed any health bucket, the ring
         ; cannot prove PB2 is currently reachable through PB1.  Surface the
         ; shared-path uncertainty as !1 2 instead of a misleading narrow !1.
-        btfss   v171_health_suffix_mask_b1, 0, BANKED
+        btfss   (Common_RAM + 4), 0, A
         bra     v171_health_patch_have_mask
         movf    v171_health_age_pb2_b1, F, BANKED
         bz      v171_health_patch_have_mask
-        bsf     v171_health_suffix_mask_b1, 1, BANKED
+        bsf     (Common_RAM + 4), 1, A
 v171_health_patch_have_mask:
+        movf    (Common_RAM + 4), W, A
+        cpfseq  v171_health_suffix_mask_b1, BANKED
+        bra     v171_health_patch_mask_changed
+        bcf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        movlb   0x00
+        return  0x0
+v171_health_patch_mask_changed:
+        movf    (Common_RAM + 4), W, A
+        movwf   v171_health_suffix_mask_b1, BANKED
         ; V1.73 (task #7): the GIE mask that used to wrap this five-byte
         ; suffix patch is retired.  It existed because the blocking in-ISR
         ; RC5 decode clobbered the LCD helpers' access-bank scratch; the
@@ -6899,6 +7001,13 @@ app_cold_init__zero_next_diag_cache_cell:
         clrf    input_pending_pb2_b1, BANKED
         clrf    input_pending_pb1_b1, BANKED
         call    v172_fname_cold_clear, 0x0
+        movlb   0x02
+        clrf    v173_power_repeat_guard_lo_b2, BANKED
+        clrf    v173_power_repeat_guard_hi_b2, BANKED
+        clrf    v173_volume_value_snapshot_b2, BANKED
+        clrf    v173_volume_input_snapshot_b2, BANKED
+        clrf    v173_volume_status_snapshot_b2, BANKED
+        setf    v173_diag_active_page_b2, BANKED
         movlb   0x00                                        ; restore default bank
         ; --- end Bug #44 fix ---
 
@@ -7409,6 +7518,7 @@ display_state_entry__rescan_and_route:                                          
 display_state_entry__enter_standby_waiting:                                                  ; address: 0x001250
 
         bcf     control_flags_acc, 0x1, A                   ; reg: 0x01f
+        call    v173_diag_active_invalidate, 0x0
         ; BUG-V34V173-3: the standby zzz overlay replaces the Preset LCD owner.
         call    v173_preset_lcd_invalidate, 0x0
         call    standby_wake_broadcast, 0x0                           ; dest: 0x000c98
@@ -7650,6 +7760,12 @@ reconnect_wait_loop__send_wake_and_rejoin:                                      
         bnc     reconnect_wait_loop__wake_frame_queued
         bra     reconnect_wait_loop                         ; retry whole reconnect cycle
 reconnect_wait_loop__wake_frame_queued:
+        ; BUG-IR-POWER-WAKE-RC5-DEAD: the live RB5 RC5 decoder is gated in
+        ; the ISR by the stock 0x01C:0x01B inhibit pair.  Once reconnect has
+        ; fresh MAIN status and the wake frame is queued, normal UI must not
+        ; resume with that shared gate still blocking non-power IR.
+        clrf    ir_rc5_inhibit_lo_acc, A
+        clrf    ir_rc5_inhibit_hi_acc, A
         movlw   0x61
         movwf   idle_timeout_lo_b0, BANKED                     ; 0x9D
         movlw   0xEA
@@ -7669,8 +7785,59 @@ input_menu_max_state_to_w:
         movlb   0x00
         return  0x0
 
+v173_diag_active_invalidate:
+        movlb   0x02
+        setf    v173_diag_active_page_b2, BANKED
+        movlb   0x00
+        return  0x0
+
+v173_volume_snapshot_visible_state:
+        movff   volume_cache_b0_phys, v173_volume_value_snapshot_b2_phys
+        movff   input_select_cache_b0_phys, v173_volume_input_snapshot_b2_phys
+        movlb   0x02
+        clrf    v173_volume_status_snapshot_b2, BANKED
+        btfsc   control_flags_acc, 0x5, A
+        bsf     v173_volume_status_snapshot_b2, 0, BANKED
+        btfsc   control_flags_acc, PRESET_BIT, A
+        bsf     v173_volume_status_snapshot_b2, 1, BANKED
+        btfsc   control_flags_acc, DSP_FAULT_BIT, A
+        bsf     v173_volume_status_snapshot_b2, 2, BANKED
+        movlb   0x00
+        return  0x0
+
+v173_volume_visible_state_changed:
+        movlb   0x02
+        movf    v173_volume_value_snapshot_b2, W, BANKED
+        movlb   0x00
+        xorwf   volume_cache_b0, W, B
+        bnz     v173_volume_visible_state_changed_yes
+        movlb   0x02
+        movf    v173_volume_input_snapshot_b2, W, BANKED
+        movlb   0x00
+        xorwf   input_select_cache_b0, W, B
+        bnz     v173_volume_visible_state_changed_yes
+        clrf    (Common_RAM + 4), A
+        btfsc   control_flags_acc, 0x5, A
+        bsf     (Common_RAM + 4), 0, A
+        btfsc   control_flags_acc, PRESET_BIT, A
+        bsf     (Common_RAM + 4), 1, A
+        btfsc   control_flags_acc, DSP_FAULT_BIT, A
+        bsf     (Common_RAM + 4), 2, A
+        movlb   0x02
+        movf    v173_volume_status_snapshot_b2, W, BANKED
+        movlb   0x00
+        xorwf   (Common_RAM + 4), W, A
+        bnz     v173_volume_visible_state_changed_yes
+        bcf     STATUS, C, A
+        return  0x0
+v173_volume_visible_state_changed_yes:
+        movlb   0x00
+        bsf     STATUS, C, A
+        return  0x0
+
 volume_screen__draw_current_menu_title:                                               ; address: 0x0012d0
 
+        call    v173_diag_active_invalidate, 0x0
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
@@ -7755,6 +7922,7 @@ volume_screen__draw_input_row_and_status_cell:                                  
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0xc0
         call    lcd_command, 0x0                           ; dest: 0x000066
+        call    v171_health_suffix_invalidate, 0x0
         call    lcd_write_16char_rom_entry, 0x0                           ; dest: 0x000940
 
         ; ---------------------------------------------------------------
@@ -7779,6 +7947,8 @@ volume_screen__draw_input_row_and_status_cell:                                  
         movlw   '!'
         call    lcd_char_write, 0x0
 
+        call    v173_volume_snapshot_visible_state, 0x0
+volume_screen__service_loop:
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
         ; LEFT/RIGHT are menu-navigation keys owned by the top dispatcher.
         ; Return before processing page-local controls so the previous page
@@ -7849,8 +8019,14 @@ volume_screen__loop_or_return:                                                  
         clrf    WREG, A                                     ; reg: 0xfe8
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     standby_display                                   ; dest: 0x0012e8
+        bra     volume_screen__maybe_repaint_or_service
         return  0x0
+volume_screen__maybe_repaint_or_service:
+        call    v173_volume_visible_state_changed, 0x0
+        bnc     volume_screen__service_without_repaint
+        goto    standby_display                                   ; dest: 0x0012e8
+volume_screen__service_without_repaint:
+        bra     volume_screen__service_loop
 menu_setup_bl_timeout_entry:                                                  ; address: 0x0013ee  (tblptr anchor)
         dcfsnz  (Common_RAM + 66), W, A                     ; reg: 0x042
         subfwb  (Common_RAM + 32), W, A                     ; reg: 0x020
@@ -7863,6 +8039,7 @@ menu_setup_bl_timeout_entry:                                                  ; 
 
 setup_screen:                                               ; address: 0x0013fe
 
+        call    v173_diag_active_invalidate, 0x0
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
@@ -7889,7 +8066,9 @@ setup_screen:                                               ; address: 0x0013fe
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0xc0
         call    lcd_command, 0x0                           ; dest: 0x000066
+        call    v171_health_suffix_invalidate, 0x0
         call    lcd_write_16char_rom_entry, 0x0                           ; dest: 0x000940
+setup_screen__service_loop:
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
         ; LEFT/RIGHT belong to the top menu dispatcher.  Do not redraw Setup
         ; or enter its editor after a menu-transition key has been latched.
@@ -7931,7 +8110,7 @@ setup_screen__loop_or_return:                                                  ;
         movlw   0x01
         iorwf   (Common_RAM + 24), F, A                     ; reg: 0x018
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
-        bra     setup_screen                                ; dest: 0x0013fe
+        bra     setup_screen__service_loop
         return  0x0
 
 backlight_timeout_load_threshold:                                               ; address: 0x001478
@@ -8607,6 +8786,64 @@ input_screen_stage_map_done:
         movlb   0x00
         return  0x0
 
+input_screen_stage_pb2_title_class:
+        movlb   0x01
+        bsf     v171_diag_render_pb_index_b1, 0, BANKED
+        call    v171_health_diag_check_stale, 0x0
+        movf    (Common_RAM + 4), F, A
+        bz      input_screen_stage_pb2_title_normal
+        movlw   0x01
+        cpfseq  (Common_RAM + 4), A
+        bra     input_screen_stage_pb2_title_lost
+        movlw   0x02                                      ; Input PB2 old
+        bra     input_screen_stage_pb2_title_done
+input_screen_stage_pb2_title_lost:
+        movlw   0x03                                      ; Input PB2 lost
+        bra     input_screen_stage_pb2_title_done
+input_screen_stage_pb2_title_normal:
+        movlw   0x01                                      ; Input PB2
+input_screen_stage_pb2_title_done:
+        movwf   tx_data_staging_acc, A
+        movlb   0x00
+        return  0x0
+
+input_screen_pb2_health_patch_title_if_changed:
+        call    input_screen_stage_pb2_title_class, 0x0
+        movlb   0x02
+        movf    v173_input_pb2_title_class_b2, W, BANKED
+        xorwf   tx_data_staging_acc, W, A
+        bnz     input_screen_pb2_title_changed
+        movlb   0x01
+        bcf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        movlb   0x00
+        return  0x0
+input_screen_pb2_title_changed:
+        movlb   0x00
+        movlw   0x80
+        movwf   (Common_RAM + 1), A
+        call    lcd_command, 0x0
+        call    input_screen_write_title, 0x0
+        return  0x0
+
+input_screen_stage_option_cache_key:
+        movlb   0x00
+        movf    rx_ring_staging_b0, W, BANKED
+        movwf   (Common_RAM + 4), A
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     input_screen_option_cache_key_ready
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_option_cache_key_ready_b0
+        movlb   0x00
+        bsf     (Common_RAM + 4), 4, A
+        bra     input_screen_option_cache_key_ready
+input_screen_option_cache_key_ready_b0:
+        movlb   0x00
+input_screen_option_cache_key_ready:
+        bsf     (Common_RAM + 4), 7, A
+        return  0x0
+
 input_screen_write_title:
         movlb   0x00
         movlw   0x03
@@ -8615,25 +8852,11 @@ input_screen_write_title:
         movlb   0x01
         btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
         bra     input_screen_title_legacy
-        bsf     v171_diag_render_pb_index_b1, 0, BANKED
-        call    v171_health_diag_check_stale, 0x0
-        movf    (Common_RAM + 4), F, A
-        bz      input_screen_title_pb2_normal
-        movlw   0x01
-        cpfseq  (Common_RAM + 4), A
-        bra     input_screen_title_pb2_lost
-        movlw   0x02                                      ; Input PB2 old
-        bra     input_screen_title_pb2_stage
-input_screen_title_pb2_lost:
-        movlw   0x03                                      ; Input PB2 lost
-        bra     input_screen_title_pb2_stage
-input_screen_title_pb2_normal:
-        movlw   0x01                                      ; Input PB2
-input_screen_title_pb2_stage:
+        call    input_screen_stage_pb2_title_class, 0x0
+        movff   tx_data_staging_b0_phys, v173_input_pb2_title_class_b2_phys
         movlb   0x01
         bcf     v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
         movlb   0x00
-        movwf   tx_data_staging_acc, A
         bra     input_screen_title_pb_table
 input_screen_title_state_2:
         movlb   0x01
@@ -8756,6 +8979,23 @@ input_screen_prepare_selected_row_not_pb2:
         bcf     STATUS, C, A
         return  0x0
 
+input_screen_restore_pb2_visible_row_after_commit:
+        movlb   0x00
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        return  0x0
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_restore_pb2_visible_row_done_b0
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bra     input_screen_restore_pb2_visible_row_done_b0
+        movlb   0x00
+        incf    rx_ring_staging_b0, F, BANKED                  ; restore PB2 display row after cmd06 mapping
+        return  0x0
+input_screen_restore_pb2_visible_row_done_b0:
+        movlb   0x00
+        return  0x0
+
 input_screen_prepare_option_label:
         movlb   0x00
         movff   rx_ring_staging_b0_phys, tx_data_staging_b0_phys
@@ -8803,9 +9043,13 @@ input_screen_adjust_pb2_max_index_b0:
 
 input_screen:                                               ; address: 0x001912
 
+        call    v173_diag_active_invalidate, 0x0
         call    input_screen_stage_selected_index, 0x0
         call    input_screen_compute_menu_max, 0x0
         call    input_screen_clamp_staged_row, 0x0
+        movlb   0x02
+        setf    v173_input_option_row_cache_b2, BANKED
+        movlb   0x00
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         call    lcd_command, 0x0                           ; dest: 0x000066
@@ -8857,12 +9101,55 @@ input_screen__status_unknown_sets_limit:
 input_screen__draw_option_and_service:                                                  ; address: 0x001974
 
         call    input_screen_adjust_pb2_max_index, 0x0
+        movlb   0x00
+        movf    button_event_latch_b0, F, B
+        btfss   STATUS, Z, A
+        bra     input_screen__handle_option_up
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     input_screen__write_option_row
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen__write_option_row_b0
+        btfss   v171_health_flags_b1, V171_HEALTH_FLAG_DISPLAY_DIRTY, BANKED
+        bra     input_screen__write_option_row_b0
+        movlb   0x00
+        call    input_screen_pb2_health_patch_title_if_changed, 0x0
+        bra     input_screen__check_control_redraw
+input_screen__write_option_row_b0:
+        movlb   0x00
+input_screen__write_option_row:
+        call    input_screen_stage_option_cache_key, 0x0
+        movlb   0x02
+        movf    v173_input_option_row_cache_b2, W, BANKED
+        xorwf   (Common_RAM + 4), W, A
+        bnz     input_screen__write_option_row_changed
+        movlb   0x00
+        call    display_loop_iteration, 0x0
+        bra     input_screen__after_display_loop
+input_screen__write_option_row_changed:
+        movff   0x004, v173_input_option_row_cache_b2_phys
+        movlb   0x00
         movlw   0x80
         movwf   (Common_RAM + 1), A                         ; reg: 0x001
         movlw   0xc0
         call    lcd_command, 0x0                           ; dest: 0x000066
+        movlw   0x03
+        cpfseq  display_state_index_b0, BANKED
+        bra     input_screen_invalidate_shared_suffix
+        movlb   0x01
+        btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     input_screen_skip_shared_suffix_invalidate
+        movlb   0x00
+input_screen_invalidate_shared_suffix:
+        call    v171_health_suffix_invalidate, 0x0
+        bra     input_screen_write_option_row
+input_screen_skip_shared_suffix_invalidate:
+        movlb   0x00
+input_screen_write_option_row:
         call    lcd_write_16char_rom_entry, 0x0                           ; dest: 0x000940
         call    display_loop_iteration, 0x0                           ; dest: 0x000cb2
+input_screen__after_display_loop:
         ; LEFT/RIGHT are menu-navigation keys owned by the top dispatcher.
         ; Return before processing page-local input controls so the old page
         ; cannot redraw itself after a requested menu transition.
@@ -8902,7 +9189,8 @@ input_screen__state_still_active:
         btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
         bra     input_screen__check_control_redraw_b0
         movlb   0x00
-        bra     input_screen
+        call    input_screen_pb2_health_patch_title_if_changed, 0x0
+        bra     input_screen__check_control_redraw
 input_screen__check_control_redraw_b0:
         movlb   0x00
         bra     input_screen__check_control_redraw
@@ -8945,6 +9233,7 @@ input_screen__commit_option_after_up:                                           
         bc      input_screen__send_option_after_up
         call    map_input_menu_index_to_cmd06_input_select, 0x0                           ; dest: 0x00076a
         call    input_commit_selected_input_intent, 0x0
+        call    input_screen_restore_pb2_visible_row_after_commit, 0x0
 input_screen__send_option_after_up:
         call    input_frame_send_current_input_page, 0x0
 
@@ -8976,6 +9265,7 @@ input_screen__commit_option_after_down:                                         
         bc      input_screen__send_option_after_down
         call    map_input_menu_index_to_cmd06_input_select, 0x0                           ; dest: 0x00076a
         call    input_commit_selected_input_intent, 0x0
+        call    input_screen_restore_pb2_visible_row_after_commit, 0x0
 input_screen__send_option_after_down:
         call    input_frame_send_current_input_page, 0x0
 
@@ -9012,7 +9302,7 @@ input_pb2_same_as_pb1_table:
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x38, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x37, 0x00 ; "Rev x58 20260627"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x43, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x38, 0x00 ; "Rev x5C 20260628"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -9020,8 +9310,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x58                    ; V1.73 + monotonic release revision
-        db      0x20, 0x26, 0x06, 0x27                    ; build date 20260627 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x33, 0x5C                    ; V1.73 + monotonic release revision
+        db      0x20, 0x26, 0x06, 0x28                    ; build date 20260628 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

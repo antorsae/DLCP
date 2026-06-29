@@ -1,6 +1,6 @@
 # Test Robustness Spec
 
-Last updated: 2026-06-27
+Last updated: 2026-06-29
 Status: Proposed
 Scope: DLCP firmware simulator, release-artifact, hardware-gate, and documentation tests under `tests/`, `scripts/`, and `docs/`.
 
@@ -77,7 +77,30 @@ Missing from those documents:
 
 ## Test Robustness Contract
 
-### 1. Exact LCD Assertions By Default
+### 1. IR Receiver-Layer And Dispatcher-Layer Separation
+
+IR tests must identify which layer they cover.
+
+Decoded-event tests that call `inject_decoded_ir_event` are dispatcher-layer
+tests.  They are appropriate for broad command matrices, wrong-address checks,
+menu-state permutations, and state-machine edge cases because they bypass the
+Manchester receiver and enter at the decoded command/address registers.
+
+Receiver-layer tests must drive CONTROL.RB5 with a real RC5 pulse train when a
+bug or feature claim depends on port-B IOC, RBIF rearming, inhibit timers, or
+the bit-bang Manchester decoder.  The current mandatory receiver smoke set is:
+
+- POWER wake from standby, followed by another real standby command;
+- volume, mute, preset shortcut, and input shortcut from the Volume menu;
+- explicit standby and wake shortcuts;
+- Diagnostics-page IR dispatch for both PB1 and PB2 pages.
+
+The receiver-layer smoke set should stay small.  Do not clone every dispatcher
+matrix into pulse-train form unless the bug is specifically in decode timing,
+RB5 edge handling, IR rearm/inhibit state, or a user-visible path that decoded
+event injection cannot prove.
+
+### 2. Exact LCD Assertions By Default
 
 For deterministic simulator tests, LCD row assertions must compare exact
 16-character strings by default.
@@ -92,7 +115,7 @@ Allowed exceptions:
 Any exception must include a short comment naming why prefix, containment, or
 row-length-only matching is acceptable.
 
-### 2. Stale-State And Upgrade Tests
+### 3. Stale-State And Upgrade Tests
 
 Any feature with cached, persisted, or cross-MCU state must include at least
 one test that seeds a stale prior value and then verifies the real refresh path
@@ -108,7 +131,7 @@ Required categories:
 - PB1/PB2 input selection after cold boot, PB2 rediscovery, and independent
   PB2 routing.
 
-### 3. Canonical Artifact Parity
+### 4. Canonical Artifact Parity
 
 Tests that guard release behavior must run against at least one canonical HEX
 artifact path when that is what operators flash.  Freshly assembled temp HEX
@@ -127,7 +150,7 @@ At minimum, canonical artifact coverage is required for:
 - release builder metadata/revision update contracts;
 - flash safety and preflight tests.
 
-### 4. Structural Guards For Layout-Sensitive Firmware
+### 5. Structural Guards For Layout-Sensitive Firmware
 
 Low-level tables and routines that depend on `LOW(label)+offset`,
 `TBLPTR`, page carry, banked RAM, fixed `org` regions, or release metadata
@@ -142,7 +165,7 @@ Structural tests must name the reason a movement is safe or unsafe.  Examples:
 - release metadata and bootloader regions must not overlap;
 - RAM-bank aliases must remain unique and covered by the RAM safety gate.
 
-### 5. Negative Or Mutation Proof For High-Risk Fixes
+### 6. Negative Or Mutation Proof For High-Risk Fixes
 
 For fixes in display rendering, parser state, routing, persistence, I2C/SRC
 recovery, or flash/release builders, tests should include a negative proof when
@@ -156,7 +179,7 @@ practical:
 The IMPL may skip mutation proof for a narrow change only when it records the
 reason and adds an equivalent stale-state or structural regression.
 
-### 6. Hardware Incident Promotion
+### 7. Hardware Incident Promotion
 
 Every significant hardware incident must be recorded in a test gap note or
 issue-like doc section with:
@@ -174,7 +197,7 @@ ports, command JSON, and media paths, are local-only.  Committed/shared
 incident evidence must use role labels, redacted or hash-only identifiers,
 cropped LCD-only media when media is needed, and stripped metadata.
 
-### 7. Test Evidence Standard
+### 8. Test Evidence Standard
 
 When a robustness test is added for a bug, its name or docstring must make clear
 which escaped behavior it would catch.  The final evidence must include:
@@ -201,7 +224,9 @@ This spec is implemented when:
 5. `docs/HARDWARE_TEST.md` or a linked doc records a mandatory incident
    template and how hardware incidents are promoted to simulator or hardware
    gates with sanitized evidence;
-6. focused and broader test commands are documented with expected scope and
+6. IR tests document whether they are receiver-layer or dispatcher-layer, with
+   current user-visible IR paths covered by real RB5 pulse trains;
+7. focused and broader test commands are documented with expected scope and
    skip policy.
 
 ## Open Questions

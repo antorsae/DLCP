@@ -10,8 +10,13 @@ entirely, so a regression in the port-B IOC -> RBIF -> stock in-ISR
 ``ir_rc5_decode`` path would not be detected by the inject-based tests.
 
 This file drives a real Manchester-encoded RC5 pulse train at
-CONTROL's RB5 input pin with 889 µs half-bit timing.  Three test
-shapes:
+CONTROL's RB5 input pin with 889 µs half-bit timing.  It is the
+receiver-layer companion to the decoded-event dispatcher matrices.
+Keep both layers: decoded-event tests are cheap and broad, while this
+file owns the small user-visible smoke set that proves real RB5 edges
+still reach dispatch.
+
+Test shapes:
 
   1. ``test_v171_rc5_pulse_train_decodes_standby_endpoint`` -- the
      original black-box gate: drives cmd=0x3A and asserts the
@@ -22,7 +27,14 @@ shapes:
      including the current Hypex profile-1 commands used by the
      Flipper hardware sender.
 
-  3. ``test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd`` --
+  3. V1.73 POWER wake regressions -- configured power-on by real RC5
+     must rearm the receiver so the next standby press is not ignored.
+
+  4. V1.73 receiver-dispatch smoke tests -- real RB5 frames exercise
+     volume, mute, preset shortcut, input shortcut, standby, wake, and
+     Diagnostics-page dispatch for the current V1.73/V3.5 line.
+
+  5. ``test_v171_rc5_pulse_train_decodes_inline_shortcut_cmd`` --
      parametrized over all four V1.71 inline cmds (0x38/0x39/0x3A/
      0x3B) and asserts on ``ir_decoded_cmd`` / ``ir_decoded_addr``
      registers post-decode.  This locks in the hardware-validated
@@ -47,7 +59,14 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import STOCK_CONTROL_HEX_V16B, V17_CONTROL_RAM_INC, V171_CONTROL_ASM
+from dlcp_fw.paths import (
+    STOCK_CONTROL_HEX_V16B,
+    V17_CONTROL_RAM_INC,
+    V171_CONTROL_ASM,
+    V173_CONTROL_ASM,
+    V173_CONTROL_HEX,
+    V35_MAIN_HEX,
+)
 from dlcp_fw.sim.v17_symbols import assemble_v17
 
 try:
@@ -112,6 +131,42 @@ IR_DECODED_CMD_PHYS = 0x01D
 IR_DECODED_ADDR_PHYS = 0x01E
 CONTROL_FLAGS_PHYS = 0x01F
 IR_ARMED_MASK = 0x01
+CONTROL_CONNECTED_MASK = 0x02
+CONTROL_MUTE_MASK = 0x20
+CONTROL_PRESET_B_MASK = 0x40
+IR_INHIBIT_LO_PHYS = 0x01B
+IR_INHIBIT_HI_PHYS = 0x01C
+VOLUME_CACHE_PHYS = 0x0B9
+INPUT_SELECT_CACHE_PHYS = 0x0B8
+RAW_STATUS_CACHE_PHYS = 0x0A1
+INPUT_SPLIT_FLAGS_PHYS = 0x1BA
+INPUT_INTENT_PB2_PHYS = 0x1BB
+INPUT_SPLIT_FLAG_PB2_SEEN = 0
+INPUT_SPLIT_FLAG_PB2_LINKED = 2
+IR_PROFILE_ADDR_PHYS = 0x020
+IR_PROFILE_POWER_PHYS = 0x021
+IR_PROFILE_VOL_UP_PHYS = 0x022
+IR_PROFILE_VOL_DOWN_PHYS = 0x023
+IR_PROFILE_INPUT_UP_PHYS = 0x024
+IR_PROFILE_INPUT_DOWN_PHYS = 0x025
+IR_PROFILE_MUTE_PHYS = 0x026
+MAIN_ACTIVE_FLAGS_PHYS = 0x05E
+MAIN_ACTIVE_GATE_MASK = 0x08
+MAIN_ACTIVE_PRESET_B_MASK = 0x04
+IR_ADDR_HYPEX = 0x10
+IR_CMD_HYPEX_POWER = 0x32
+IR_CMD_HYPEX_VOL_UP = 0x33
+IR_CMD_HYPEX_VOL_DOWN = 0x34
+IR_CMD_HYPEX_MUTE = 0x35
+IR_CMD_HYPEX_INPUT_UP = 0x36
+IR_CMD_HYPEX_INPUT_DOWN = 0x37
+IR_CMD_PRESET_TOGGLE = 0x3D
+IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE = 0x3F
+IR_CMD_STANDBY = 0x3A
+IR_CMD_WAKE = 0x3B
+COMMAND_SETTLE_TICKS = 12_000_000
+STANDBY_FRAME = (0xB0, 0x03, 0x00)
+WAKE_FRAME = (0xB0, 0x03, 0x01)
 
 
 def _require_rust() -> None:
@@ -131,6 +186,26 @@ def v171_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
     hex_out = tmp / "dlcp_control_v171.hex"
     assemble_v17(asm, hex_out)
     return hex_out
+
+
+@pytest.fixture(scope="module")
+def v173_hex(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    tmp = tmp_path_factory.mktemp("v173_ir_rc5_power_wake")
+    (tmp / V17_CONTROL_RAM_INC.name).write_bytes(V17_CONTROL_RAM_INC.read_bytes())
+    asm = tmp / V173_CONTROL_ASM.name
+    asm.write_bytes(V173_CONTROL_ASM.read_bytes())
+    hex_out = tmp / "dlcp_control_v173.hex"
+    assemble_v17(asm, hex_out)
+    return hex_out
+
+
+@pytest.fixture(scope="module", params=("source", "canonical"))
+def v173_control_image(request: pytest.FixtureRequest, v173_hex: Path) -> Path:
+    if request.param == "source":
+        return v173_hex
+    if not V173_CONTROL_HEX.is_file():
+        pytest.skip(f"missing canonical V1.73 CONTROL hex: {V173_CONTROL_HEX}")
+    return V173_CONTROL_HEX
 
 
 def _rc5_frame_bits(addr: int, cmd: int, toggle: int = 0) -> list[int]:
@@ -214,6 +289,17 @@ def _prime_for_rc5_decode(chain) -> None:  # type: ignore[no-untyped-def]
     chain.step_ticks(RC5_INTER_FRAME_GAP_TICKS)
 
 
+def _rearm_rc5_receiver_without_state_reset(chain) -> None:  # type: ignore[no-untyped-def]
+    chain.write_reg(IR_INHIBIT_LO_PHYS, 0x00)
+    chain.write_reg(IR_INHIBIT_HI_PHYS, 0x00)
+    chain.write_reg(IR_DECODED_CMD_PHYS, 0x00)
+    chain.write_reg(IR_DECODED_ADDR_PHYS, 0x00)
+    flags = chain.read_reg(CONTROL_FLAGS_PHYS)
+    chain.write_reg(CONTROL_FLAGS_PHYS, flags | IR_ARMED_MASK)
+    chain.set_control_pin("B", 5, True)
+    chain.step_ticks(RC5_INTER_FRAME_GAP_TICKS)
+
+
 def _wait_for_decoded(chain, *, addr: int, cmd: int, label: str) -> None:  # type: ignore[no-untyped-def]
     for _ in range(20):
         if (
@@ -228,6 +314,129 @@ def _wait_for_decoded(chain, *, addr: int, cmd: int, label: str) -> None:  # typ
         f"cmd=0x{chain.read_reg(IR_DECODED_CMD_PHYS):02X} "
         f"flags=0x{chain.read_reg(CONTROL_FLAGS_PHYS):02X}"
     )
+
+
+def _drive_rearmed_real_rc5(
+    chain,  # type: ignore[no-untyped-def]
+    *,
+    cmd: int,
+    label: str,
+    addr: int = IR_ADDR_HYPEX,
+    toggle: int = 0,
+    settle_ticks: int = COMMAND_SETTLE_TICKS,
+) -> list[tuple[int, int, int]]:
+    before_tx = len(chain.tx_frames())
+    _rearm_rc5_receiver_without_state_reset(chain)
+    _drive_rc5_pulse_train(chain, addr=addr, cmd=cmd, toggle=toggle)
+    _wait_for_decoded(chain, addr=addr, cmd=cmd, label=label)
+    chain.step_ticks(settle_ticks)
+    return [tuple(frame) for frame in chain.tx_frames()[before_tx:]]
+
+
+def _wait_until(chain, predicate, *, label: str, slices: int = 160) -> None:  # type: ignore[no-untyped-def]
+    for _ in range(slices):
+        if predicate():
+            return
+        chain.step_ticks(1_000_000)
+    pytest.fail(
+        f"{label}; lcd={chain.lcd_lines()!r} "
+        f"decoded=0x{chain.read_reg(IR_DECODED_ADDR_PHYS):02X}/"
+        f"0x{chain.read_reg(IR_DECODED_CMD_PHYS):02X} "
+        f"flags=0x{chain.read_reg(CONTROL_FLAGS_PHYS):02X} "
+        f"inhibit=0x{chain.read_reg(IR_INHIBIT_HI_PHYS):02X}"
+        f"{chain.read_reg(IR_INHIBIT_LO_PHYS):02X}"
+    )
+
+
+def _build_v173_v35_chain(control_hex_path: Path):  # type: ignore[no-untyped-def]
+    _require_rust()
+    if not V35_MAIN_HEX.is_file():
+        pytest.skip(f"missing V3.5 MAIN hex: {V35_MAIN_HEX}")
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(control_hex_path),
+        main_hex_path=str(V35_MAIN_HEX),
+    )
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    assert chain.is_connected() and not chain.is_waiting(), chain.lcd_lines()
+    return chain
+
+
+def _configure_hypex_ir_profile(chain) -> None:  # type: ignore[no-untyped-def]
+    for addr, value in (
+        (IR_PROFILE_ADDR_PHYS, IR_ADDR_HYPEX),
+        (IR_PROFILE_POWER_PHYS, IR_CMD_HYPEX_POWER),
+        (IR_PROFILE_VOL_UP_PHYS, IR_CMD_HYPEX_VOL_UP),
+        (IR_PROFILE_VOL_DOWN_PHYS, IR_CMD_HYPEX_VOL_DOWN),
+        (IR_PROFILE_INPUT_UP_PHYS, IR_CMD_HYPEX_INPUT_UP),
+        (IR_PROFILE_INPUT_DOWN_PHYS, IR_CMD_HYPEX_INPUT_DOWN),
+        (IR_PROFILE_MUTE_PHYS, IR_CMD_HYPEX_MUTE),
+    ):
+        chain.write_reg(addr, value)
+
+
+def _mark_pb2_seen_linked(chain) -> None:  # type: ignore[no-untyped-def]
+    chain.write_reg(
+        INPUT_SPLIT_FLAGS_PHYS,
+        (1 << INPUT_SPLIT_FLAG_PB2_SEEN) | (1 << INPUT_SPLIT_FLAG_PB2_LINKED),
+    )
+    chain.write_reg(INPUT_INTENT_PB2_PHYS, chain.read_reg(INPUT_SELECT_CACHE_PHYS))
+
+
+def _main_active_gates(chain) -> tuple[int, int]:  # type: ignore[no-untyped-def]
+    return tuple(
+        (chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS_PHYS) & MAIN_ACTIVE_GATE_MASK) >> 3
+        for unit in (0, 1)
+    )
+
+
+def _main_preset_bits(chain) -> tuple[int, int]:  # type: ignore[no-untyped-def]
+    return tuple(
+        (chain.read_main_reg(unit, MAIN_ACTIVE_FLAGS_PHYS) & MAIN_ACTIVE_PRESET_B_MASK) >> 2
+        for unit in (0, 1)
+    )
+
+
+def _navigate_to_diag_page(chain, pb_idx: int) -> None:  # type: ignore[no-untyped-def]
+    target = f"PB{pb_idx + 1}"
+    for _ in range(8):
+        if chain.lcd_lines()[0].startswith(target):
+            chain.step_ticks(COMMAND_SETTLE_TICKS)
+            return
+        chain.press("RIGHT")
+        chain.step_ticks(COMMAND_SETTLE_TICKS)
+    if chain.lcd_lines()[0].startswith(target):
+        chain.step_ticks(COMMAND_SETTLE_TICKS)
+        return
+    pytest.fail(f"did not reach {target} Diagnostics page; lcd={chain.lcd_lines()!r}")
+
+
+def _assert_rc5_inhibit_clear(chain, *, label: str) -> None:  # type: ignore[no-untyped-def]
+    assert chain.read_reg(IR_INHIBIT_LO_PHYS) == 0x00, (
+        f"{label}: inhibit low still 0x{chain.read_reg(IR_INHIBIT_LO_PHYS):02X}"
+    )
+    assert chain.read_reg(IR_INHIBIT_HI_PHYS) == 0x00, (
+        f"{label}: inhibit high still 0x{chain.read_reg(IR_INHIBIT_HI_PHYS):02X}"
+    )
+
+
+def _enter_standby_from_volume(chain) -> None:  # type: ignore[no-untyped-def]
+    chain.press("STBY")
+    assert "ZZZ" in chain.lcd_lines()[0].upper(), chain.lcd_lines()
+    chain.set_control_pin("B", 5, True)
+    chain.step_ticks(RC5_INTER_FRAME_GAP_TICKS)
+
+
+def _wait_for_volume_after_power_wake(chain, *, label: str) -> None:  # type: ignore[no-untyped-def]
+    _wait_until(
+        chain,
+        lambda: (
+            chain.is_connected()
+            and not chain.is_waiting()
+            and chain.lcd_lines()[0].startswith("Volume")
+        ),
+        label=label,
+    )
+    _assert_rc5_inhibit_clear(chain, label=label)
 
 
 @pytest.mark.dual_supported
@@ -281,6 +490,261 @@ def test_v16b_and_v171_rc5_pulse_train_decode_same_command_stress(
                     cmd=cmd,
                     label=f"{image_label} repeat {repeat + 1} {label}",
                 )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v173_power_wake_rearms_real_rc5_decoder_for_next_standby(
+    v173_control_image: Path,
+) -> None:
+    """Power-on by real Hypex RC5 pulse train must not leave IR dead.
+
+    This regression intentionally does not call ``_prime_for_rc5_decode``:
+    the bug is that the configured power key stores a long inhibit value in
+    ``0x01B/0x01C``, and the RBIF ISR skips ``ir_rc5_decode`` while those
+    bytes are nonzero.  Decoded-event tests and primed pulse tests mask that.
+    """
+    chain = _build_v173_v35_chain(v173_control_image)
+    _enter_standby_from_volume(chain)
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x32, toggle=1)
+    _wait_for_volume_after_power_wake(
+        chain,
+        label="power RC5 did not wake back to the Volume menu",
+    )
+    assert chain.read_reg(IR_DECODED_CMD_PHYS) == 0x32
+
+    before_tx = len(chain.tx_frames())
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x3A, toggle=0)
+    _wait_until(
+        chain,
+        lambda: "ZZZ" in chain.lcd_lines()[0].upper(),
+        label="first real RC5 standby frame after power wake was ignored",
+        slices=80,
+    )
+
+    assert STANDBY_FRAME in list(chain.tx_frames()[before_tx:])
+    assert chain.read_reg(IR_DECODED_CMD_PHYS) == 0x3A
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v173_power_wake_ignores_late_held_power_repeats_before_next_standby(
+    v173_control_image: Path,
+) -> None:
+    """Clearing the shared RC5 gate must not let a held POWER press bounce.
+
+    The extra POWER frames use the same toggle bit as the wake frame, matching
+    a user who holds the remote key across the reconnect exit boundary.
+    """
+    chain = _build_v173_v35_chain(v173_control_image)
+    _enter_standby_from_volume(chain)
+
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x32, toggle=1)
+    _wait_until(
+        chain,
+        lambda: chain.is_waiting() or not chain.is_connected(),
+        label="power RC5 did not enter reconnect/WAITING before repeats",
+        slices=40,
+    )
+
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x32, toggle=1)
+    chain.step_ticks(RC5_INTER_FRAME_GAP_TICKS)
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x32, toggle=1)
+
+    _wait_for_volume_after_power_wake(
+        chain,
+        label="power RC5 did not return to Volume after held repeats",
+    )
+
+    before_tx = len(chain.tx_frames())
+    for repeat in range(2):
+        _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x32, toggle=1)
+        chain.step_ticks(RC5_INTER_FRAME_GAP_TICKS)
+        assert chain.lcd_lines()[0].startswith("Volume"), (
+            f"held POWER repeat {repeat + 1} bounced to {chain.lcd_lines()!r}"
+        )
+        assert STANDBY_FRAME not in list(chain.tx_frames()[before_tx:])
+
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x3A, toggle=0)
+    _wait_until(
+        chain,
+        lambda: "ZZZ" in chain.lcd_lines()[0].upper(),
+        label="explicit standby after guarded POWER repeats was ignored",
+        slices=80,
+    )
+    assert STANDBY_FRAME in list(chain.tx_frames()[before_tx:])
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v173_power_repeat_guard_expires_for_deliberate_second_power_press(
+    v173_control_image: Path,
+) -> None:
+    chain = _build_v173_v35_chain(v173_control_image)
+    _enter_standby_from_volume(chain)
+
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x32, toggle=1)
+    _wait_for_volume_after_power_wake(
+        chain,
+        label="power RC5 did not wake before guard-expiry check",
+    )
+
+    before_tx = len(chain.tx_frames())
+    chain.step_ticks(48_000_000)
+    _drive_rc5_pulse_train(chain, addr=0x10, cmd=0x32, toggle=0)
+    _wait_until(
+        chain,
+        lambda: "ZZZ" in chain.lcd_lines()[0].upper(),
+        label="configured POWER did not toggle standby after guard expiry",
+        slices=80,
+    )
+    assert STANDBY_FRAME in list(chain.tx_frames()[before_tx:])
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v173_real_rc5_receiver_dispatches_volume_mute_preset_and_input_shortcuts(
+    v173_control_image: Path,
+) -> None:
+    """Current V1.73/V3.5 IR smoke must enter through RB5, not RAM injection.
+
+    Decoded-event matrices still own broad dispatcher permutations.  This
+    receiver-layer smoke covers the user-visible Hypex profile commands and
+    fixed F4/F5 shortcuts that would be missed if the Manchester decoder or
+    RBIF rearm path broke.
+    """
+    chain = _build_v173_v35_chain(v173_control_image)
+    _configure_hypex_ir_profile(chain)
+    chain.write_reg(VOLUME_CACHE_PHYS, 0x33)
+    chain.write_reg(INPUT_SELECT_CACHE_PHYS, 0x05)
+    chain.write_reg(RAW_STATUS_CACHE_PHYS, 0x03)
+    _mark_pb2_seen_linked(chain)
+    chain.write_reg(
+        CONTROL_FLAGS_PHYS,
+        (
+            chain.read_reg(CONTROL_FLAGS_PHYS)
+            & ~CONTROL_MUTE_MASK
+            & ~CONTROL_PRESET_B_MASK
+        )
+        | IR_ARMED_MASK,
+    )
+
+    frames = _drive_rearmed_real_rc5(
+        chain,
+        cmd=IR_CMD_HYPEX_VOL_UP,
+        label="V1.73/V3.5 Hypex volume-up receiver dispatch",
+    )
+    assert chain.read_reg(VOLUME_CACHE_PHYS) == 0x34
+    assert (0xB0, 0x07, 0x34) in frames
+
+    frames = _drive_rearmed_real_rc5(
+        chain,
+        cmd=IR_CMD_HYPEX_MUTE,
+        label="V1.73/V3.5 Hypex mute receiver dispatch",
+    )
+    assert chain.read_reg(CONTROL_FLAGS_PHYS) & CONTROL_MUTE_MASK
+    assert (0xB0, 0x03, 0x02) in frames
+
+    frames = _drive_rearmed_real_rc5(
+        chain,
+        cmd=IR_CMD_PRESET_TOGGLE,
+        label="V1.73/V3.5 F4 preset-toggle receiver dispatch",
+        settle_ticks=80_000_000,
+    )
+    _wait_until(
+        chain,
+        lambda: _main_preset_bits(chain) == (1, 1),
+        label="real-RB5 F4 preset toggle did not reach both MAINs",
+    )
+    assert chain.read_reg(CONTROL_FLAGS_PHYS) & CONTROL_PRESET_B_MASK
+    assert chain.read_control_eeprom_byte(0x74) == 0x01
+    assert (0xB0, 0x20, 0x01) in frames
+
+    frames = _drive_rearmed_real_rc5(
+        chain,
+        cmd=IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE,
+        label="V1.73/V3.5 F5 Optical/S/PDIF receiver dispatch",
+        settle_ticks=20_000_000,
+    )
+    assert chain.read_reg(INPUT_SELECT_CACHE_PHYS) == 0x08
+    assert (0xB0, 0x06, 0x08) in frames
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+def test_v173_real_rc5_receiver_dispatches_standby_and_wake_shortcuts(
+    v173_control_image: Path,
+) -> None:
+    chain = _build_v173_v35_chain(v173_control_image)
+    _configure_hypex_ir_profile(chain)
+
+    frames = _drive_rearmed_real_rc5(
+        chain,
+        cmd=IR_CMD_STANDBY,
+        label="V1.73/V3.5 explicit standby receiver dispatch",
+        settle_ticks=20_000_000,
+    )
+    assert STANDBY_FRAME in frames
+    _wait_until(
+        chain,
+        lambda: "ZZZ" in chain.lcd_lines()[0].upper(),
+        label="real-RB5 explicit standby did not reach Zzz display",
+    )
+    _wait_until(
+        chain,
+        lambda: _main_active_gates(chain) == (0, 0),
+        label="real-RB5 explicit standby did not close both MAIN gates",
+    )
+
+    frames = _drive_rearmed_real_rc5(
+        chain,
+        cmd=IR_CMD_WAKE,
+        label="V1.73/V3.5 explicit wake receiver dispatch",
+        settle_ticks=80_000_000,
+    )
+    assert WAKE_FRAME in frames
+    _wait_until(
+        chain,
+        lambda: (
+            chain.is_connected()
+            and bool(chain.read_reg(CONTROL_FLAGS_PHYS) & CONTROL_CONNECTED_MASK)
+            and "ZZZ" not in chain.lcd_lines()[0].upper()
+        ),
+        label="real-RB5 explicit wake did not return to connected UI",
+    )
+    _wait_until(
+        chain,
+        lambda: _main_active_gates(chain) == (1, 1),
+        label="real-RB5 explicit wake did not reopen both MAIN gates",
+    )
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_real_rc5_receiver_dispatches_hypex_mute_from_diag_pages(
+    v173_control_image: Path,
+    pb_idx: int,
+) -> None:
+    """Diagnostics pages must not rely only on decoded-event IR coverage."""
+    chain = _build_v173_v35_chain(v173_control_image)
+    _configure_hypex_ir_profile(chain)
+    _mark_pb2_seen_linked(chain)
+    chain.write_reg(
+        CONTROL_FLAGS_PHYS,
+        (chain.read_reg(CONTROL_FLAGS_PHYS) & ~CONTROL_MUTE_MASK) | IR_ARMED_MASK,
+    )
+    _navigate_to_diag_page(chain, pb_idx)
+
+    frames = _drive_rearmed_real_rc5(
+        chain,
+        cmd=IR_CMD_HYPEX_MUTE,
+        label=f"V1.73/V3.5 PB{pb_idx + 1} Diag mute receiver dispatch",
+        settle_ticks=20_000_000,
+    )
+    assert chain.read_reg(CONTROL_FLAGS_PHYS) & CONTROL_MUTE_MASK
+    assert (0xB0, 0x03, 0x02) in frames
+    assert chain.lcd_lines()[0].startswith(f"PB{pb_idx + 1}"), chain.lcd_lines()
 
 
 @pytest.mark.dual_supported

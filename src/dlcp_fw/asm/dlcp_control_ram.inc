@@ -10,6 +10,8 @@
 Common_RAM                 equ  0x000000
 
 ; --- Named RAM variables (from v16b.asm RAM-layout block) ---
+ir_rc5_inhibit_lo          equ  0x01B    ; stock RC5 inhibit low byte; ISR live-decoder gate
+ir_rc5_inhibit_hi          equ  0x01C    ; stock RC5 inhibit high byte; ISR live-decoder gate
 ir_decoded_cmd             equ  0x01D    ; RC5 cmd byte (from ir_rc5_decode)
 ir_decoded_addr            equ  0x01E    ; RC5 addr byte
 control_flags              equ  0x01F    ; bit0=ir_armed bit1=connected bit2=rx_route_seen
@@ -432,7 +434,7 @@ V171_HEALTH_FLAG_DISPLAY_DIRTY  equ 0x02
 v171_health_poll_target    equ  0x0B4  ; physical 0x1B4; 0 PB1, 1 PB2
 v171_health_tick_div       equ  0x0B5  ; physical 0x1B5
 v171_health_pending_ticks  equ  0x0B6  ; physical 0x1B6
-v171_health_suffix_mask    equ  0x0B7  ; physical 0x1B7; LCD suffix scratch
+v171_health_suffix_mask    equ  0x0B7  ; physical 0x1B7; last rendered LCD suffix mask
 v171_diag_effective_target equ  0x0B8  ; physical 0x1B8; BF/2N parser routing snapshot
 v171_health_age_tmp        equ  0x0B9  ; physical 0x1B9; Diag stale/lost classifier scratch
 V171_HEALTH_PENDING_TICKS  equ  0x20
@@ -606,19 +608,28 @@ v172_fname_tmp             equ  0x05C
 ; cleared on successful reception (FNAME_VALID set) and on Preset page
 ; entry, so each page visit gets a fresh budget.
 v172_fname_retry           equ  0x05D
-v173_row0_reassert_div     equ  0x05E    ; bank2 0x25E: Preset row-0 re-assert pass divider (FIELD-3)
+v173_input_pb2_title_class equ  0x05E    ; bank2 0x25E: cached Input PB2 title class (normal/old/lost)
+v173_input_option_row_cache equ  0x05F   ; bank2 0x25F: cached Input option row key
 v173_isr_decode_save       equ  0x060    ; bank2 0x260..0x26A: 11-byte save area for the foreground
                                          ; scratch the blocking in-ISR RC5 decode clobbers
                                          ; (0x005,0x008,0x00C,0x00D,0x00E,0x010..0x013,0x014,0x015)
 v173_mute_reassert_div     equ  0x06B    ; bank2 0x26B: health-poll divider for the periodic
                                          ; idempotent mute re-assert (session-49 lost-frame heal)
+v173_power_repeat_guard_lo equ  0x06F    ; bank2 0x26F: post-reconnect configured-power repeat guard lo
+v173_power_repeat_guard_hi equ  0x070    ; bank2 0x270: post-reconnect configured-power repeat guard hi
+v173_volume_value_snapshot equ  0x071    ; bank2 0x271: last rendered Volume value byte
+v173_volume_input_snapshot equ  0x072    ; bank2 0x272: last rendered Volume input byte
+v173_volume_status_snapshot equ 0x073    ; bank2 0x273: last rendered Volume mute/preset/fault bits
+v173_diag_active_page      equ  0x074    ; bank2 0x274: last entered Diag PB page, 0xFF when inactive
+V173_POWER_REPEAT_GUARD_LO equ  0x00
+V173_POWER_REPEAT_GUARD_HI equ  0x20
 FNAME_RETRY_MAX            equ  0x03  ; initial query + 2 spaced retries
 FNAME_PENDING_DEADLINE_HI  equ  0x40
 FNAME_PENDING_DEADLINE_LO  equ  0x00
 FNAME_QUERY_DELAY_A_HI     equ  0x30
 FNAME_QUERY_DELAY_B_HI     equ  0x40
 FNAME_QUERY_DELAY_LO       equ  0x00
-FNAME_SCROLL_DIV_HI        equ  0x08
+FNAME_SCROLL_DIV_HI        equ  0x18
 FNAME_SCROLL_DIV_LO        equ  0x00
 FNAME_SCROLL_REST_HOLD     equ  0x06
 FNAME_SCROLL_FAR_HOLD      equ  0x03
@@ -631,6 +642,18 @@ stock_010_acc_phys               EQU  0x010    ; physical address for movff/lfsr
 stock_010_b0                     EQU  0x010    ; phys 0x010, bank 0, owner stock-derived
 stock_010_b0_op                  EQU  0x10     ; 8-bit f operand for stock_010_b0
 stock_010_b0_phys                EQU  0x010    ; physical address for movff/lfsr
+ir_rc5_inhibit_lo_acc            EQU  0x01B    ; phys 0x01B, bank 0, owner ir_rc5_inhibit_lo
+ir_rc5_inhibit_lo_acc_op         EQU  0x1B     ; 8-bit f operand for ir_rc5_inhibit_lo_acc
+ir_rc5_inhibit_lo_acc_phys       EQU  0x01B    ; physical address for movff/lfsr
+ir_rc5_inhibit_lo_b0             EQU  0x01B    ; phys 0x01B, bank 0, owner ir_rc5_inhibit_lo
+ir_rc5_inhibit_lo_b0_op          EQU  0x1B     ; 8-bit f operand for ir_rc5_inhibit_lo_b0
+ir_rc5_inhibit_lo_b0_phys        EQU  0x01B    ; physical address for movff/lfsr
+ir_rc5_inhibit_hi_acc            EQU  0x01C    ; phys 0x01C, bank 0, owner ir_rc5_inhibit_hi
+ir_rc5_inhibit_hi_acc_op         EQU  0x1C     ; 8-bit f operand for ir_rc5_inhibit_hi_acc
+ir_rc5_inhibit_hi_acc_phys       EQU  0x01C    ; physical address for movff/lfsr
+ir_rc5_inhibit_hi_b0             EQU  0x01C    ; phys 0x01C, bank 0, owner ir_rc5_inhibit_hi
+ir_rc5_inhibit_hi_b0_op          EQU  0x1C     ; 8-bit f operand for ir_rc5_inhibit_hi_b0
+ir_rc5_inhibit_hi_b0_phys        EQU  0x01C    ; physical address for movff/lfsr
 ir_decoded_cmd_acc               EQU  0x01D    ; phys 0x01D, bank 0, owner ir_decoded_cmd
 ir_decoded_cmd_acc_op            EQU  0x1D     ; 8-bit f operand for ir_decoded_cmd_acc
 ir_decoded_cmd_acc_phys          EQU  0x01D    ; physical address for movff/lfsr
@@ -1246,9 +1269,12 @@ v172_fname_tmp_b2_phys           EQU  0x25C    ; physical address for movff/lfsr
 v172_fname_retry_b2              EQU  0x25D    ; phys 0x25D, bank 2, owner v172_fname_retry
 v172_fname_retry_b2_op           EQU  0x5D     ; 8-bit f operand for v172_fname_retry_b2
 v172_fname_retry_b2_phys         EQU  0x25D    ; physical address for movff/lfsr
-v173_row0_reassert_div_b2        EQU  0x25E    ; phys 0x25E, bank 2, owner v173_row0_reassert_div
-v173_row0_reassert_div_b2_op     EQU  0x5E     ; 8-bit f operand for v173_row0_reassert_div_b2
-v173_row0_reassert_div_b2_phys   EQU  0x25E    ; physical address for movff/lfsr
+v173_input_pb2_title_class_b2    EQU  0x25E    ; phys 0x25E, bank 2, owner v173_input_pb2_title_class
+v173_input_pb2_title_class_b2_op EQU  0x5E     ; 8-bit f operand for v173_input_pb2_title_class_b2
+v173_input_pb2_title_class_b2_phys EQU  0x25E    ; physical address for movff/lfsr
+v173_input_option_row_cache_b2   EQU  0x25F    ; phys 0x25F, bank 2, owner v173_input_option_row_cache
+v173_input_option_row_cache_b2_op EQU  0x5F     ; 8-bit f operand for v173_input_option_row_cache_b2
+v173_input_option_row_cache_b2_phys EQU  0x25F    ; physical address for movff/lfsr
 v173_isr_decode_save_b2          EQU  0x260    ; phys 0x260, bank 2, owner v173_isr_decode_save
 v173_isr_decode_save_b2_op       EQU  0x60     ; 8-bit f operand for v173_isr_decode_save_b2
 v173_isr_decode_save_b2_phys     EQU  0x260    ; physical address for movff/lfsr
@@ -1264,4 +1290,22 @@ v173_diag_id_pb2_rev_hi_b2_phys  EQU  0x26D    ; physical address for movff/lfsr
 v173_diag_id_tmp_rev_lo_b2       EQU  0x26E    ; phys 0x26E, bank 2, owner v173_diag_id_tmp_rev_lo
 v173_diag_id_tmp_rev_lo_b2_op    EQU  0x6E     ; 8-bit f operand for v173_diag_id_tmp_rev_lo_b2
 v173_diag_id_tmp_rev_lo_b2_phys  EQU  0x26E    ; physical address for movff/lfsr
+v173_power_repeat_guard_lo_b2    EQU  0x26F    ; phys 0x26F, bank 2, owner v173_power_repeat_guard_lo
+v173_power_repeat_guard_lo_b2_op EQU  0x6F     ; 8-bit f operand for v173_power_repeat_guard_lo_b2
+v173_power_repeat_guard_lo_b2_phys EQU  0x26F    ; physical address for movff/lfsr
+v173_power_repeat_guard_hi_b2    EQU  0x270    ; phys 0x270, bank 2, owner v173_power_repeat_guard_hi
+v173_power_repeat_guard_hi_b2_op EQU  0x70     ; 8-bit f operand for v173_power_repeat_guard_hi_b2
+v173_power_repeat_guard_hi_b2_phys EQU  0x270    ; physical address for movff/lfsr
+v173_volume_value_snapshot_b2    EQU  0x271    ; phys 0x271, bank 2, owner v173_volume_value_snapshot
+v173_volume_value_snapshot_b2_op EQU  0x71     ; 8-bit f operand for v173_volume_value_snapshot_b2
+v173_volume_value_snapshot_b2_phys EQU  0x271    ; physical address for movff/lfsr
+v173_volume_input_snapshot_b2    EQU  0x272    ; phys 0x272, bank 2, owner v173_volume_input_snapshot
+v173_volume_input_snapshot_b2_op EQU  0x72     ; 8-bit f operand for v173_volume_input_snapshot_b2
+v173_volume_input_snapshot_b2_phys EQU  0x272    ; physical address for movff/lfsr
+v173_volume_status_snapshot_b2   EQU  0x273    ; phys 0x273, bank 2, owner v173_volume_status_snapshot
+v173_volume_status_snapshot_b2_op EQU  0x73     ; 8-bit f operand for v173_volume_status_snapshot_b2
+v173_volume_status_snapshot_b2_phys EQU  0x273    ; physical address for movff/lfsr
+v173_diag_active_page_b2         EQU  0x274    ; phys 0x274, bank 2, owner v173_diag_active_page
+v173_diag_active_page_b2_op      EQU  0x74     ; 8-bit f operand for v173_diag_active_page_b2
+v173_diag_active_page_b2_phys    EQU  0x274    ; physical address for movff/lfsr
 ; --- RAM bank safety generated aliases: END ---

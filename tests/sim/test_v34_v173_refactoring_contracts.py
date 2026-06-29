@@ -7,15 +7,15 @@ from pathlib import Path
 
 import pytest
 
-from dlcp_fw.paths import V173_CONTROL_ASM, V34_MAIN_ASM
+from dlcp_fw.paths import V17_CONTROL_RAM_INC, V173_CONTROL_ASM, V34_MAIN_ASM
 
 
 def _label_body(text: str, label: str, next_labels: list[str] | tuple[str, ...]) -> str:
-    start = re.search(rf"(?m)^{re.escape(label)}:\s*$", text)
+    start = re.search(rf"(?m)^{re.escape(label)}:\s*(?:;.*)?$", text)
     assert start is not None, f"missing label: {label}"
     ends: list[int] = []
     for next_label in next_labels:
-        match = re.search(rf"(?m)^{re.escape(next_label)}:\s*$", text[start.end() :])
+        match = re.search(rf"(?m)^{re.escape(next_label)}:\s*(?:;.*)?$", text[start.end() :])
         if match is not None:
             ends.append(start.end() + match.start())
     end = min(ends) if ends else len(text)
@@ -121,6 +121,99 @@ def test_v173_identity_literals_are_v173_owned() -> None:
     assert re.search(r"\bdb\s+0x01,\s*0x07,\s*0x33,\s*0x[0-9A-Fa-f]{2}\b", metadata)
     assert "db      0x01, 0x07, 0x32" not in metadata
     assert "EEPROM 0x72: .3. (V1.73)" in text
+
+
+def test_v173_rc5_inhibit_and_power_guard_ram_contract_is_named() -> None:
+    text = V17_CONTROL_RAM_INC.read_text(encoding="utf-8", errors="replace")
+
+    assert re.search(r"(?m)^ir_rc5_inhibit_lo\s+equ\s+0x01B\b", text)
+    assert re.search(r"(?m)^ir_rc5_inhibit_hi\s+equ\s+0x01C\b", text)
+    assert "ir_rc5_inhibit_lo_acc" in text
+    assert "ir_rc5_inhibit_hi_acc" in text
+    assert re.search(r"(?m)^v173_power_repeat_guard_lo\s+equ\s+0x06F\b", text)
+    assert re.search(r"(?m)^v173_power_repeat_guard_hi\s+equ\s+0x070\b", text)
+    assert "v173_power_repeat_guard_lo_b2" in text
+    assert "v173_power_repeat_guard_hi_b2" in text
+    assert "V173_POWER_REPEAT_GUARD_HI" in text
+
+
+def test_v173_reconnect_success_clears_live_rc5_gate_before_ui_resume() -> None:
+    text = V173_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
+    body = _label_body(
+        text,
+        "reconnect_wait_loop__send_wake_and_rejoin",
+        ["input_menu_max_state_to_w"],
+    )
+    retry_path = body.split("reconnect_wait_loop__wake_frame_queued:", 1)[0]
+    success = _label_body(
+        text,
+        "reconnect_wait_loop__wake_frame_queued",
+        ["input_menu_max_state_to_w"],
+    )
+
+    _assert_ordered(
+        body,
+        "call    standby_wake_broadcast, 0x0",
+        "bnc     reconnect_wait_loop__wake_frame_queued",
+        "bra     reconnect_wait_loop",
+        "reconnect_wait_loop__wake_frame_queued:",
+    )
+    assert "ir_rc5_inhibit_lo_acc" not in retry_path
+    assert "ir_rc5_inhibit_hi_acc" not in retry_path
+    _assert_ordered(
+        success,
+        "clrf    ir_rc5_inhibit_lo_acc, A",
+        "clrf    ir_rc5_inhibit_hi_acc, A",
+        "bra     post_connect_init",
+    )
+
+
+def test_v173_configured_power_uses_separate_post_reconnect_repeat_guard() -> None:
+    text = V173_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
+    body = _label_body(
+        text,
+        "ir_dispatch_configured_or_fixed_shortcuts",
+        ["ir_dispatch_configured_or_fixed_shortcuts__check_volume_up_code"],
+    )
+
+    _assert_ordered(
+        body,
+        "v173_power_repeat_guard_lo_b2",
+        "ir_dispatch_configured_or_fixed_shortcuts__power_guard_done:",
+        "movf    ir_rc5_inhibit_lo_acc",
+        "ir_dispatch_configured_or_fixed_shortcuts__match_configured_codes:",
+        "movf    v173_power_repeat_guard_lo_b2",
+        "ir_dispatch_configured_or_fixed_shortcuts__ignore_guarded_power_repeat",
+        "movlw   V173_POWER_REPEAT_GUARD_LO",
+        "movwf   v173_power_repeat_guard_lo_b2",
+        "movlw   V173_POWER_REPEAT_GUARD_HI",
+        "movwf   v173_power_repeat_guard_hi_b2",
+        "movwf   ir_rc5_inhibit_lo_acc",
+        "movwf   ir_rc5_inhibit_hi_acc",
+    )
+    ignore = _label_body(
+        text,
+        "ir_dispatch_configured_or_fixed_shortcuts__ignore_guarded_power_repeat",
+        ["ir_dispatch_configured_or_fixed_shortcuts__check_volume_up_code"],
+    )
+    assert "bsf     control_flags_acc, IR_ARMED, A" in ignore
+    assert "btg     control_flags_acc" not in ignore
+
+
+def test_v173_bf20_preset_echo_is_ignored_while_asleep_or_waiting() -> None:
+    text = V173_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
+    body = _label_body(text, "v173_bf20_preset_case_check", ["v171_bf08_case_check"])
+
+    _assert_ordered(
+        body,
+        "movlw   0x20                                        ; CMD preset_select",
+        "cpfseq  rx_parsed_cmd_acc, A",
+        "goto    v171_bf08_case_check",
+        "btfss   control_flags_acc, 0x1, A",
+        "bra     rx_parser_entry__restart_after_frame",
+        "btfsc   rx_parsed_data_acc, 0, A",
+        "bra     v173_bf20_preset_set_b",
+    )
 
 
 def test_v34_v173_listing_size_gates_keep_refactoring_headroom() -> None:
@@ -3400,33 +3493,49 @@ def test_v173_preset_row0_readiness_gates_row1_filename_rendering() -> None:
     text = V173_CONTROL_ASM.read_text(encoding="utf-8", errors="replace")
     draw = _label_body(text, "v171_prs_screen_draw_body", ["v171_prs_screen_cache_check"])
     service = _label_body(text, "v172_preset_filename_service", ["v172_fname_query_service"])
+    row1_service = _label_body(text, "v172_fname_row1_render_service", ["v171_diag_send_query"])
 
-    # FIELD-3 factoring (2026-06-11): the row-0 paint (including the
-    # readiness bcf) moved into v173_preset_row0_paint so the per-pass
-    # filename service can self-heal a blanked row 0; the draw body
-    # delegates to it before blanking row 1.
+    # LCD refresh-budget fix (2026-06-28): row-0 paint owns only cols 0..13
+    # plus bounded status-cell patches.  Page entry leaves NOT_READY set
+    # through the row-1 blank/reset sequence; the row-1 renderer performs a
+    # one-shot row-0 repaint and clears readiness immediately before filename
+    # text starts rendering.  Standalone self-heal still clears after repaint.
     paint = _label_body(text, "v173_preset_row0_paint", ["v171_preset_screen"])
-    assert "FNAME_ROW0_NOT_READY" in paint
+    assert "bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY" not in paint
     assert "FNAME_ROW0_NOT_READY" in service
     assert "call    v173_preset_row0_paint" in draw
     _assert_ordered(
         paint,
+        "movlw   0xFF",
         "call    v172_preset_status_patch_service",
-        "bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED",
+        "call    v172_preset_status_patch_service",
+        "return  0x0",
     )
     _assert_ordered(
         draw,
         "call    v173_preset_row0_paint",
         "v172_preset_blank_row1_entry",
     )
+    assert "bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY" not in draw
     _assert_ordered(
         service,
         "btfss   v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED",
+        "btfsc   v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED",
+        "call    v173_preset_row0_paint",
+        "bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED",
         "v172_preset_filename_service_row0_ready",
         "call    v172_preset_status_patch_service",
         "bc      v172_preset_filename_service_done",
         "call    v172_fname_row1_render_service",
     )
+    _assert_ordered(
+        row1_service,
+        "btfss   v172_fname_flags_b2, FNAME_ROW_DIRTY, BANKED",
+        "call    v173_preset_row0_paint",
+        "bcf     v172_fname_row0_status_snap_b2, FNAME_ROW0_NOT_READY, BANKED",
+        "v172_fname_row1_render_cursor",
+    )
+    assert "v173_row0_reassert" not in service
 
 
 def test_v173_does_not_introduce_preset_row0_full_redraw_recovery_hack() -> None:

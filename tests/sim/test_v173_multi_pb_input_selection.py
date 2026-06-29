@@ -446,7 +446,11 @@ def _rediscover_pb2_with_raw_status(chain, raw_status: int = 0x03) -> None:  # t
 
 
 def _force_settings_save(chain) -> None:  # type: ignore[no-untyped-def]
-    chain.write_reg(IDLE_TIMEOUT_LO, 0x60)
+    # Arm one tick before the firmware's 0xEA60 save sentinel.  Writing the
+    # exact sentinel is phase-sensitive: if the simulator is already past the
+    # check in display_loop_iteration, firmware advances to 0xEA61 and the
+    # dirty-state save does not run.
+    chain.write_reg(IDLE_TIMEOUT_LO, 0x5F)
     chain.write_reg(IDLE_TIMEOUT_HI, 0xEA)
     chain.step_ticks(120_000_000)
 
@@ -2420,6 +2424,9 @@ def test_pb2_menu_state_and_malformed_row_are_gated_by_split_flag() -> None:
     assert "cpfsgt  rx_ring_staging_b0, BANKED" in compute_max
     assert "INPUT_SPLIT_FLAG_PB2_LINKED" in prepare
     assert "decf    rx_ring_staging_b0, F, BANKED" in prepare
+    assert "input_screen_restore_pb2_visible_row_after_commit:" in text
+    assert "restore PB2 display row after cmd06 mapping" in text
+    assert text.count("call    input_screen_restore_pb2_visible_row_after_commit, 0x0") == 2
     assert "bc      input_screen__send_option_after_up" in text
     assert "split state 3 -> Input PB2" in dispatch
     assert "split state 4 -> Setup" in dispatch

@@ -1737,7 +1737,7 @@ future route/TAS regressions.
 ### Prerequisites
 
 - CONTROL flashed with canonical V1.73 for the target validation; the current
-  multi-PB/test-robustness artifact is rev `0x57`.
+  multi-PB/test-robustness/IR/LCD artifact is rev `0x5C`.
 - both MAINs flashed with canonical V3.5, currently rev `0x0091`.
 - known audio source available on at least one fixed digital input and through
   Auto Detect; if possible, exercise `S/PDIF`, `USB Audio`, `AES`, and

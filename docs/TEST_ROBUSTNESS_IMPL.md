@@ -58,6 +58,14 @@ Deployment docs:
   - Has clean boot identity tests for V1.72/V3.3, V1.73/V3.4, and V1.73/V3.5.
   - Includes canonical `test_v173_v35_canonical_diag_ok_title_shows_visible_main_identity` and `test_v173_v35_canonical_diag_entry_invalidates_stale_identity_cache`, which derive expected V3.5 identity text from `V35_MAIN_HEX`.
   - Remaining permissive predicates are used for page detection or issue-state token tests where token order/count can vary.
+- `tests/sim/test_v171_ir_rc5_pulse_train.py`
+  - Owns receiver-layer IR coverage by driving a real Manchester RC5 waveform at CONTROL.RB5.
+  - Keeps the POWER-wake regression unprimed so stale inhibit/rearm state is observable.
+  - Adds current V1.73/V3.5 receiver smoke for Hypex volume/mute, F4 preset, F5 input, explicit standby/wake, and PB1/PB2 Diagnostics-page dispatch.
+- `tests/sim/test_v171_ir_command_matrix.py`
+  - Is intentionally dispatcher-layer coverage: it uses `inject_decoded_ir_event` for broad command and sequence matrices without re-validating the RB5 Manchester decoder on every case.
+- `tests/sim/test_ir_coverage_policy.py`
+  - Guards the IR testing mental model by requiring decoded-event tests to document dispatcher scope and requiring the real RB5 suite/docs to name current receiver-layer paths.
 - `tests/sim/test_v173_multi_pb_input_selection.py`
   - Contains strong PB1/PB2 persistence coverage, including `test_pb1_spdif_persists_across_cold_boot_with_independent_pb2_aes`.
   - Contains canonical CONTROL HEX coverage in `test_canonical_hex_split_menu_visible_behavior_regression`.
@@ -100,6 +108,10 @@ Missing or weak:
 - No shared helper or audit rule to make exact 16-character LCD assertions the default.
 - Several high-risk LCD tests still use `startswith` without documenting why partial matching is safe.
 - Canonical HEX coverage exists in some files but is uneven and not named as a release-artifact contract.
+- Before the 2026-06-29 follow-up, decoded-event IR injection and real receiver
+  coverage were easy to conflate.  The suite now treats decoded-event tests as
+  dispatcher-layer coverage and real RB5 pulse-train tests as receiver-layer
+  coverage.
 - Hardware incidents are recorded ad hoc in chat/runbooks rather than through a consistent incident-to-regression workflow.
 - Mutation/negative proof is inconsistent; some fixes rely only on happy-path convergence.
 - Pathless `dlcp_diag.py --json --cmd44-only` can return a valid empty report when zero MAIN HID devices enumerate, so it is not a sufficient hardware smoke by itself.
@@ -118,7 +130,7 @@ test inputs:
 Current canonical artifact metadata under test:
 
 - MAIN `V35_MAIN_HEX`: V3.5 EEPROM rev `0x91`, SHA-256 `2e17a79dfd0686d95559275d70b2d830cf40de3dda4f61984c3a8b7b40819f7e`.
-- CONTROL `V173_CONTROL_HEX`: V1.73 rev `0x57`, build `20260627`, SHA-256 `27fd91c6f0b09bed8e05268b7a5f2ce370e994290ce7840e1897856f20a4e88a`.
+- CONTROL `V173_CONTROL_HEX`: V1.73 rev `0x5C`, build `20260628`, SHA-256 `04223d7b6f677671431cef3fac6e1b39986b3f5041e95a7eab722a91c96cdb4f`.
 
 | Artifact constant | Canonical path | Contract under test | Expected-value source | Required coverage |
 | --- | --- | --- | --- | --- |
@@ -135,6 +147,7 @@ Implementation evidence:
 
 | Test node / command | Escaped behavior guarded | Artifacts used | Expected source | Old-behavior result | Focused result | Broader result | Hardware status |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+| `test_v173_power_wake_rearms_real_rc5_decoder_for_next_standby`, `test_v173_real_rc5_receiver_dispatches_volume_mute_preset_and_input_shortcuts`, `test_v173_real_rc5_receiver_dispatches_standby_and_wake_shortcuts`, `test_v173_real_rc5_receiver_dispatches_hypex_mute_from_diag_pages`, and `test_ir_coverage_policy.py` | IR receiver/dispatcher conflation; decoded-event tests could pass while RB5 edge decode, inhibit clearing, or Diagnostics-page real IR dispatch failed | source-assembled V1.73 and canonical `V173_CONTROL_HEX` paired with `V35_MAIN_HEX`; policy tests read docs/test files | real RB5 pulse-train helper for receiver-layer behavior; `inject_decoded_ir_event` reserved for dispatcher-layer matrices | The POWER-wake regression fails without clearing shared RC5 inhibit/rearm state; other rows are future guards for receiver/dispatcher coverage drift | Focused receiver/policy gate: `11 passed in 132.60s` | Full pulse-train module: `20 passed in 303.34s` | Not run; simulator-only coverage model change |
 | `test_v173_v35_canonical_diag_ok_title_shows_visible_main_identity` and `test_v173_v35_canonical_diag_entry_invalidates_stale_identity_cache` | Stale/malformed PB1/PB2 Diagnostics identity such as `PB1 OK v330091` | `V173_CONTROL_HEX` + `V35_MAIN_HEX` | V3.5 identity parsed from canonical MAIN HEX EEPROM/cmd25 bytes | Seeded stale V3.3 valid-cache state is overwritten; stale healthy `PBn OK v3.3 0091` is not final | Included in focused gate: `55 passed in 75.48s` | Full sim: `2082 passed, 2 skipped, 4 xfailed, 10 warnings in 1001.77s` | Not run; no explicit live hardware approval for this docs/tests-only pass |
 | `test_v173_canonical_pb1_spdif_pb2_aes_persisted_inputs_survive_cold_boot`, `test_v173_canonical_pb1_pb2_dirty_save_commits_eeprom_and_clean_save_no_churn`, invalid/erased/corrupt canonical tests | PB1/PB2 input persistence divergence, immediate-write mistakes, corrupt-byte import, ambiguous BF/06 import | `V173_CONTROL_HEX` + `V35_MAIN_HEX` | CONTROL EEPROM bytes `0x5E`/`0x5F`, simulator routing state, dirty-save instrumentation | Would fail if PB1/PB2 wrote instantly, never persisted, repeated clean saves, or imported corrupt PB2 intent | Included in focused gate: `55 passed in 75.48s` | Full sim passed | Not run; live persistence/audio gates still required for field closure |
 | `test_canonical_hex_split_menu_visible_behavior_regression` and exact LCD helper users | Leading-space, suffix, page-owner, and row-1 blanking regressions on static menu rows | `V173_CONTROL_HEX` + `V35_MAIN_HEX` plus source fixtures where needed | Exact 16-character LCD rows | Leading-space ` Volume...`, missing source row, or wrong page title now fails exact two-row comparison | Included in focused gate: `55 passed in 75.48s` | Full sim passed | Not run |
