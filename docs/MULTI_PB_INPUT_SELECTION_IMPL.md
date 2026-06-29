@@ -50,7 +50,7 @@ addendum. Do not reintroduce references to those retired files.
 
 ## Current Implementation Evidence
 
-CONTROL V1.73 rev `0x57` contains split-input runtime behavior and PB1/PB2
+CONTROL V1.73 rev `0x5F` contains split-input runtime behavior and PB1/PB2
 CONTROL-owned persistence:
 
 - `EEPROM_PB1_INPUT_ADDR equ 0x5E`
@@ -76,7 +76,8 @@ Current CONTROL V1.73 also contains the runtime pieces that must be kept:
 - PB1 and PB2 input screens are adjacent in the setup menu.
 - PB2 defaults to linked.
 - PB2 concrete mode uses addressed command `0x06` frames.
-- Linked mode may broadcast PB1 input intent.
+- Linked mode uses addressed PB1 and PB2 command `0x06` frames with the PB1
+  payload; `B0/06` broadcast input routing is forbidden.
 - PB2 discovery/fallback code prevents PB1 from becoming unusable when PB2 is
   not yet seen.
 - RC5 `0x3F` toggles PB1 between Optical and S/PDIF.
@@ -284,8 +285,8 @@ Add or update focused tests in `tests/sim/test_v173_multi_pb_input_selection.py`
   when `0x5E` and `0x5F` already match the encoded runtime intent.
 - CONTROL release-flash safety preserves `0x5E` and `0x5F`.
 - Updated CONTROL with stock/legacy MAIN still boots single-PB, defers PB1
-  migration unless a valid source is proven, and uses broadcast `cmd 0x06`
-  before PB2 discovery.
+  migration unless a valid source is proven, and sends only addressed PB1
+  `cmd 0x06` before PB2 discovery.
 
 Run the earlier MAIN route-table/channel-6 tests only if MAIN or routing
 behavior changes:

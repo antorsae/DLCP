@@ -189,7 +189,8 @@ Input selection continues to use command `0x06`.
 When PB2 is linked:
 
 - PB1 and PB2 should receive the same selected input.
-- CONTROL may use the existing broadcast behavior where safe.
+- CONTROL sends separate addressed `B1/06` and `B2/06` frames once both boards
+  are known; linked mode does not use `B0/06`.
 - A later PB1 change updates both boards.
 
 When PB2 is concrete:
@@ -245,6 +246,11 @@ MAIN1 becomes healthy. While PB2 is not yet seen:
 - PB2 display may show the stored mode.
 - PB2 command application can be deferred or retried.
 - PB1 behavior must remain usable.
+
+Input routing must never use broadcast `B0/06` frames. PB1 changes are sent as
+`B1/06/<PB1 intent>` when only PB1 is known. Once PB2 is discovered, linked mode
+sends addressed PB1 and PB2 frames carrying the PB1 intent, and concrete mode
+sends PB2's stored concrete intent only to PB2.
 
 ## IR Shortcuts
 

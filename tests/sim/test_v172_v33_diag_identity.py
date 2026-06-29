@@ -59,6 +59,10 @@ V171_DIAG_TARGET_PHYS = 0x196
 V171_DIAG_PRESENT_PHYS = 0x197
 V171_DIAG_FLAGS_PHYS = 0x19C
 V171_DIAG_FLAG_DIRTY = 0
+V171_HEALTH_AGE_PB1_PHYS = 0x1B0
+V171_HEALTH_AGE_PB2_PHYS = 0x1B1
+V171_HEALTH_FLAGS_PHYS = 0x1B3
+V171_HEALTH_FLAG_DISPLAY_DIRTY = 2
 V172_DIAG_ID_PB1_MAJOR_PHYS = 0x245
 V172_DIAG_ID_PB1_MINOR_PHYS = 0x246
 V172_DIAG_ID_PB1_REV_PHYS = 0x247
@@ -67,10 +71,17 @@ V172_DIAG_ID_PB2_MINOR_PHYS = 0x249
 V172_DIAG_ID_PB2_REV_PHYS = 0x24A
 V172_DIAG_ID_VALID_MASK_PHYS = 0x24B
 V172_DIAG_ID_SEEN_MASK_PHYS = 0x24C
+V172_DIAG_ID_PENDING_ID_PHYS = 0x24D
 V172_DIAG_ID_FLAGS_PHYS = 0x24E
 V172_DIAG_ID_TIMEOUT_PHYS = 0x24F
+V172_DIAG_ID_EXPECTED_CMD_PHYS = 0x251
 V173_DIAG_ID_PB1_REV_HI_PHYS = 0x26C
 V173_DIAG_ID_PB2_REV_HI_PHYS = 0x26D
+V172_DIAG_ID_FLAG_PENDING = 0
+V172_DIAG_ID_FLAG_TARGET = 1
+V172_DIAG_ID_FLAG_RETRIED = 2
+V172_DIAG_ID_PENDING_MASK = 1 << V172_DIAG_ID_FLAG_PENDING
+V172_DIAG_ID_TARGET_MASK = 1 << V172_DIAG_ID_FLAG_TARGET
 
 DIAG_I_PHYS = 0x2E5
 
@@ -379,6 +390,41 @@ def _poison_identity_seen_without_valid(chain, pb_idx: int) -> None:  # type: ig
     chain.write_reg(V171_DIAG_FLAGS_PHYS, chain.read_reg(V171_DIAG_FLAGS_PHYS) | (1 << V171_DIAG_FLAG_DIRTY))
 
 
+def _identity_mask(pb_idx: int) -> int:
+    return 1 << pb_idx
+
+
+def _arm_identity_pending(
+    chain,  # type: ignore[no-untyped-def]
+    pb_idx: int,
+    *,
+    pending_id: int = 0x12,
+    expected_cmd: int = 0x4F,
+) -> int:
+    mask = _identity_mask(pb_idx)
+    chain.write_reg(V172_DIAG_ID_VALID_MASK_PHYS, chain.read_reg(V172_DIAG_ID_VALID_MASK_PHYS) & ~mask)
+    chain.write_reg(V172_DIAG_ID_SEEN_MASK_PHYS, chain.read_reg(V172_DIAG_ID_SEEN_MASK_PHYS) & ~mask)
+    for addr in _diag_identity_cells(pb_idx):
+        chain.write_reg(addr, 0x00)
+    query_id = (pending_id & 0x1E) | pb_idx
+    flags = V172_DIAG_ID_PENDING_MASK
+    if pb_idx:
+        flags |= V172_DIAG_ID_TARGET_MASK
+    chain.write_reg(V172_DIAG_ID_PENDING_ID_PHYS, query_id)
+    chain.write_reg(V172_DIAG_ID_EXPECTED_CMD_PHYS, expected_cmd)
+    chain.write_reg(V172_DIAG_ID_TIMEOUT_PHYS, 0x04)
+    chain.write_reg(V172_DIAG_ID_FLAGS_PHYS, flags)
+    return query_id
+
+
+def _inject_control_rx_frames(chain, frames: list[tuple[int, int, int]]) -> None:  # type: ignore[no-untyped-def]
+    raw: list[int] = []
+    for route, cmd, data in frames:
+        raw.extend([route & 0xFF, cmd & 0xFF, data & 0xFF])
+    assert chain.inject_control_rx_bytes(raw)
+    chain.step_ticks(2_000_000)
+
+
 def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
     """MAIN space is tight: cmd 0x25 must stay compact, not unroll 5 frames."""
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
@@ -665,6 +711,207 @@ def test_v173_v35_canonical_diag_ok_title_shows_visible_main_identity(
         expected,
         context=f"canonical V1.73/V3.5 PB{pb_idx + 1} final Diag identity",
     )
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_v35_canonical_diag_identity_retries_seen_without_valid_after_runtime_reply(
+    pb_idx: int,
+) -> None:
+    chain = _connected_chain(V173_CONTROL_HEX, V35_MAIN_HEX)
+    _navigate_to_diag_page(chain, pb_idx)
+
+    expected = _expected_ok_diag_lcd(pb_idx, _expected_canonical_v35_diag_title(pb_idx))
+    wait_for_lcd_exact(
+        chain,
+        expected,
+        limit=700,
+        context=f"canonical PB{pb_idx + 1} identity precondition",
+    )
+
+    _poison_identity_seen_without_valid(chain, pb_idx)
+    suffixless = (f"PB{pb_idx + 1} OK          ", "O1              ")
+    wait_for_lcd_exact(
+        chain,
+        suffixless,
+        limit=1400,
+        context=f"canonical PB{pb_idx + 1} seen-without-valid poison",
+    )
+
+    before = len(chain.tx_frames())
+    final_lines = wait_for_lcd_exact(
+        chain,
+        expected,
+        limit=2400,
+        context=f"canonical PB{pb_idx + 1} identity retry after poison",
+    )
+
+    route = 0xB1 if pb_idx == 0 else 0xB2
+    assert any(
+        frame[0] == route and frame[1] == 0x25
+        for frame in chain.tx_frames()[before:]
+    )
+    assert_lcd_exact(final_lines, expected)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+@pytest.mark.parametrize(
+    ("case", "frames", "pending_after"),
+    [
+        (
+            "wrong-start-id-keeps-pending",
+            [(0xBF, 0x4F, 0x13)],
+            True,
+        ),
+        (
+            "out-of-order-aborts",
+            [(0xBF, 0x4F, 0x12), (0xBF, 0x52, 0x03)],
+            False,
+        ),
+        (
+            "bad-nibble-aborts-with-filename-traffic",
+            [(0xBF, 0x2D, 0x12), (0xBF, 0x4F, 0x12), (0xBF, 0x50, 0x10), (0xBF, 0x4E, 0x12)],
+            False,
+        ),
+    ],
+    ids=lambda value: value if isinstance(value, str) else None,
+)
+def test_v173_v35_canonical_diag_identity_malformed_replies_do_not_validate_or_poison_retry(
+    pb_idx: int,
+    case: str,
+    frames: list[tuple[int, int, int]],
+    pending_after: bool,
+) -> None:
+    chain = _connected_chain(V173_CONTROL_HEX, V35_MAIN_HEX)
+    _navigate_to_diag_page(chain, pb_idx)
+    expected = _expected_ok_diag_lcd(pb_idx, _expected_canonical_v35_diag_title(pb_idx))
+    wait_for_lcd_exact(
+        chain,
+        expected,
+        limit=700,
+        context=f"canonical PB{pb_idx + 1} identity precondition for {case}",
+    )
+
+    query_id = _arm_identity_pending(chain, pb_idx, pending_id=0x12)
+    concrete_frames = [
+        (
+            route,
+            cmd,
+            (query_id ^ 0x02)
+            if case == "wrong-start-id-keeps-pending"
+            else query_id
+            if (route, cmd, data) == (0xBF, 0x4F, 0x12)
+            else data,
+        )
+        for route, cmd, data in frames
+    ]
+    _inject_control_rx_frames(chain, concrete_frames)
+
+    mask = _identity_mask(pb_idx)
+    assert not (chain.read_reg(V172_DIAG_ID_VALID_MASK_PHYS) & mask)
+    assert bool(chain.read_reg(V172_DIAG_ID_FLAGS_PHYS) & V172_DIAG_ID_PENDING_MASK) is pending_after
+    assert all(chain.read_reg(addr) == 0x00 for addr in _diag_identity_cells(pb_idx))
+
+    if pending_after:
+        chain.write_reg(
+            V172_DIAG_ID_FLAGS_PHYS,
+            chain.read_reg(V172_DIAG_ID_FLAGS_PHYS) & ~V172_DIAG_ID_PENDING_MASK,
+        )
+
+    final_lines = wait_for_lcd_exact(
+        chain,
+        expected,
+        limit=2400,
+        context=f"canonical PB{pb_idx + 1} identity recovery after {case}",
+    )
+    assert_lcd_exact(final_lines, expected)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+@pytest.mark.parametrize(
+    ("age", "label"),
+    [(0x03, "old"), (0x0A, "lost")],
+    ids=["old", "lost"],
+)
+def test_v173_v35_canonical_diag_old_lost_rows_clear_identity_suffix(
+    pb_idx: int,
+    age: int,
+    label: str,
+) -> None:
+    chain = _connected_chain(V173_CONTROL_HEX, V35_MAIN_HEX)
+    _navigate_to_diag_page(chain, pb_idx)
+    expected = _expected_ok_diag_lcd(pb_idx, _expected_canonical_v35_diag_title(pb_idx))
+    wait_for_lcd_exact(
+        chain,
+        expected,
+        limit=700,
+        context=f"canonical PB{pb_idx + 1} identity precondition for {label}",
+    )
+
+    chain.set_blackout(True)
+    age_addr = V171_HEALTH_AGE_PB1_PHYS if pb_idx == 0 else V171_HEALTH_AGE_PB2_PHYS
+    chain.write_reg(age_addr, age)
+    chain.write_reg(
+        V171_HEALTH_FLAGS_PHYS,
+        chain.read_reg(V171_HEALTH_FLAGS_PHYS) | (1 << V171_HEALTH_FLAG_DISPLAY_DIRTY),
+    )
+
+    expected_row0 = f"PB{pb_idx + 1} {label}".ljust(16)
+    lines = wait_for_lcd_exact(
+        chain,
+        (expected_row0, " " * 16),
+        limit=700,
+        context=f"canonical PB{pb_idx + 1} {label} row clears identity suffix",
+    )
+
+    mask = _identity_mask(pb_idx)
+    assert_lcd_exact(lines, (expected_row0, " " * 16))
+    assert not (chain.read_reg(V172_DIAG_ID_VALID_MASK_PHYS) & mask)
+    assert "v3." not in lines[0]
+
+
+@pytest.mark.slow
+def test_v173_v35_canonical_pb2_old_main_reentry_does_not_restore_stale_suffix() -> None:
+    chain = _connected_chain(V173_CONTROL_HEX, V35_MAIN_HEX)
+    pb_idx = 1
+    _navigate_to_diag_page(chain, pb_idx)
+    expected = _expected_ok_diag_lcd(pb_idx, _expected_canonical_v35_diag_title(pb_idx))
+    wait_for_lcd_exact(
+        chain,
+        expected,
+        limit=700,
+        context="canonical PB2 identity precondition before old-MAIN re-entry",
+    )
+
+    chain.set_blackout(True)
+    chain.write_reg(V171_HEALTH_AGE_PB2_PHYS, 0x03)
+    chain.write_reg(
+        V171_HEALTH_FLAGS_PHYS,
+        chain.read_reg(V171_HEALTH_FLAGS_PHYS) | (1 << V171_HEALTH_FLAG_DISPLAY_DIRTY),
+    )
+    old_row = ("PB2 old         ", " " * 16)
+    wait_for_lcd_exact(
+        chain,
+        old_row,
+        limit=700,
+        context="canonical PB2 old row before page re-entry",
+    )
+
+    _tap_key(chain, "RIGHT")
+    assert not _is_diag_page(chain, pb_idx) or chain.lcd_lines() == old_row
+    _navigate_to_diag_page(chain, pb_idx)
+    lines = wait_for_lcd_exact(
+        chain,
+        old_row,
+        limit=900,
+        context="canonical PB2 old row after page re-entry",
+    )
+
+    assert_lcd_exact(lines, old_row)
+    assert "v3." not in lines[0]
+    assert not (chain.read_reg(V172_DIAG_ID_VALID_MASK_PHYS) & _identity_mask(pb_idx))
 
 
 @pytest.mark.slow

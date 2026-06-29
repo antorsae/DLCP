@@ -449,7 +449,7 @@ V171_HEALTH_LOST_AGE       equ  0x0A
 input_split_flags          equ  0x0BA  ; physical 0x1BA
 INPUT_SPLIT_FLAG_PB2_SEEN  equ  0x00   ; latched until cold boot
 INPUT_SPLIT_FLAG_SYNC_TARGET equ 0x01  ; next full-sync target: 0 PB1, 1 PB2
-INPUT_SPLIT_FLAG_PB2_LINKED equ 0x02   ; PB2 input follows PB1 via broadcast
+INPUT_SPLIT_FLAG_PB2_LINKED equ 0x02   ; PB2 input follows PB1 via addressed pair
 INPUT_SPLIT_FLAG_PB2_PENDING_CONCRETE equ 0x03 ; sanitized persisted PB2 value is concrete
 INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY equ 0x04 ; user changed PB2 setting; save once
 INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE equ 0x05 ; unavailable persisted PB2 is temporarily linked

@@ -26,27 +26,33 @@ def test_split_input_senders_reserve_three_bytes_before_enqueue() -> None:
 
 def test_split_full_sync_does_not_advance_target_on_saturation() -> None:
     text = V173_CONTROL_ASM.read_text(encoding="utf-8")
-    body = _body(text, "input_frame_send_split_sync", "input_frame_send_split_sync_legacy")
+    body = _body(text, "input_frame_send_split_sync", "input_frame_send_current_input_page")
+    assert "btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED" in body
+    assert "bra     input_frame_send_pb1_targeted" in body
     assert "btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED" in body
-    assert "bra     input_frame_send_split_sync_legacy" in body
+    assert "bra     input_frame_send_split_sync_linked" in body
     assert re.search(
         r"rcall\s+input_frame_send_targeted\s*\n\s*"
         r"bc\s+input_frame_send_split_sync_done",
         body,
     )
-    assert "btg     input_split_flags_b1, INPUT_SPLIT_FLAG_SYNC_TARGET, BANKED" in body
+    assert body.index("bc      input_frame_send_split_sync_done") < body.index(
+        "btg     input_split_flags_b1, INPUT_SPLIT_FLAG_SYNC_TARGET, BANKED"
+    )
 
 
-def test_legacy_broadcast_input_sender_atomic_expectations_are_unchanged() -> None:
+def test_input_sender_dispatches_only_to_addressed_helpers() -> None:
     text = V173_CONTROL_ASM.read_text(encoding="utf-8")
-    legacy = _body(text, "input_frame_send", "input_frame_send_aborted")
-    assert "INPUT_SPLIT_FLAG_PB2_LINKED" in legacy
-    assert re.search(r"(?:r)?call\s+tx_ring_reserve_3", legacy)
-    assert legacy.index("tx_ring_reserve_3") < legacy.index("tx_byte_enqueue")
-    assert len(re.findall(r"call\s+tx_byte_enqueue", legacy)) == 3
+    dispatch = _body(text, "input_frame_send", "input_frame_send_current_input_page")
+    assert "INPUT_SPLIT_FLAG_PB2_LINKED" in dispatch
+    assert "input_frame_send_pb1_targeted" in dispatch
+    assert "input_frame_send_pb2_targeted" in dispatch
+    assert "input_frame_send_linked_pair" in dispatch
+    assert "tx_byte_enqueue" not in dispatch
+    assert "movlw   0xB0" not in dispatch
 
 
-def test_current_input_page_linked_pb2_uses_broadcast_not_addressed() -> None:
+def test_current_input_page_linked_pb2_uses_addressed_pair_not_broadcast() -> None:
     text = V173_CONTROL_ASM.read_text(encoding="utf-8")
     body = _body(text, "input_frame_send_current_input_page", "input_frame_send_targeted")
     assert "movlw   0x03" in body
@@ -57,3 +63,4 @@ def test_current_input_page_linked_pb2_uses_broadcast_not_addressed() -> None:
         body,
     )
     assert "goto    input_frame_send_pb2_targeted" in body
+    assert "movlw   0xB0" not in body

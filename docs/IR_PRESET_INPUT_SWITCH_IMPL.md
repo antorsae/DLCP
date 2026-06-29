@@ -57,9 +57,9 @@ MAIN V3.5 protocol changes are out of scope.  F5 must reuse existing
   `EECON1.WR` clears and exposes no EEPROM-abort status.  Therefore F4 can
   inherit/test TX saturation restore, but EEPROM-abort restore is not an
   observable current contract.
-- `input_frame_send` already emits broadcast `B0/06/<input>` before PB2 is
-  seen or while PB2 is linked, and targeted PB1 `B1/06/<input>` when PB2 is
-  independent.
+- `input_frame_send` emits addressed input frames only: PB1 `B1/06/<input>`
+  before PB2 is seen, addressed PB1/PB2 frames while PB2 is linked, and
+  addressed PB1 only when PB2 is independent.
 - `map_cmd06_input_select_to_menu_index` maps a `cmd 0x06` payload to the LCD
   row through raw-status-dependent logic.  F5 must not hard-code S/PDIF or
   Optical row numbers.

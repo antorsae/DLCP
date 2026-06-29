@@ -175,6 +175,8 @@ filename_dirty_flags     EQU  0x0BD   ; bit5 = stock filename RAM slot dirty
                                        ;        clobber RAM via
                                        ;        preset_load_filename mid-
                                        ;        HOLDING)
+; stock_094.bit4 latches a suspect DSP preset image after a preset-table
+; header mismatch; only a full reset/wake image rebuild may clear it.
 ; stock_094.bit5 is the V3.4 user-mute latch. stock_094.bit6 is the compact
 ; FIELD-10 barrier_pending state and stock_094.bit7 is the per-dispatch
 ; bit1-attempt marker; event_flags.bit1 is the late_bit1_pending retry token
@@ -1411,6 +1413,8 @@ cmd_dispatch_gated__input_route_write_complete:
     bsf         filename_dirty_flags_b0, 0, BANKED
     bra         timer0_rearm_50ms_low_window_trampoline
 cmd_dispatch_gated__apply_unmuted_volume_dirty:
+    btfsc       main_runtime_latch_flags_b0, 4, BANKED
+    bra         cmd_dispatch_gated__suspect_preset_zero_volume
     bsf         event_flags_b0, 6, BANKED
     clrf        channel_enable_mask_b0, BANKED
     clrf        channel_enable_shadow_b0, BANKED
@@ -1481,6 +1485,10 @@ cmd_dispatch_gated__volume_write_complete:
     movlb       0x0
     bsf         filename_dirty_flags_b0, 0, BANKED
     rcall       timer0_rearm_50ms_low_window_trampoline
+    bra         cmd_dispatch_gated__check_reconnect_reapply
+cmd_dispatch_gated__suspect_preset_zero_volume:
+    rcall       tas3108_write_zero_volume_coeff_mid_window
+    bra         cmd_dispatch_gated__volume_write_complete
 cmd_dispatch_gated__check_reconnect_reapply:
     btfss       active_flags_acc, 7, ACCESS
     bra         cmd_dispatch_gated__check_mute_dirty
@@ -1900,6 +1908,8 @@ uart_link_parser__mute_query_reply:
 cmd03_mute_off_handler:
     btfsc       main_runtime_latch_flags_b0, 3, BANKED                 ; HID query mode?
     bra         uart_link_parser__mute_query_reply
+    btfsc       main_runtime_latch_flags_b0, 4, BANKED
+    bra         uart_link_parser__handler_return_tail
     bcf         main_runtime_latch_flags_b0, 5, BANKED                  ; explicit user unmute
     ; V3.2: during a force-muted preset job, suppress the actual mute-off
     ; so the DSP stays muted while the table apply is in progress.
@@ -2307,7 +2317,7 @@ restore_eeprom_settings_on_boot__read_preset_a_filename:
     rcall       eeprom_write_runtime_version_03_at_w
     movlw       0x82
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x83                            ; V3.4_RUNTIME_EEPROM_REV_LO
+    movlw       0x85                            ; V3.4_RUNTIME_EEPROM_REV_LO
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
     bra         eeprom_write_byte_if_changed_rcall_trampoline
 
@@ -3939,6 +3949,8 @@ adc_boot_gate__start_dsp_cold_init:
     movlw       0x01
     rcall       timer3_blocking_delay_ms_from_w_trampoline ; W04-E08 factored (1 ms)
     call        mssp_hard_reset_smp_master, 0x0
+    movlb       0x0
+    bcf         main_runtime_latch_flags_b0, 4, BANKED
     bsf         LATA, 6, ACCESS
     rcall       tas3108_write_zero_volume_coeff_mid_window  ; W03-E02: factored 5-line pattern
     movlb       0x0
@@ -5431,6 +5443,8 @@ preset_table_async_regular:
     bcf         STATUS, 0, ACCESS
     return      0
 preset_table_async_header_mismatch:
+    movlb       0x0
+    bsf         main_runtime_latch_flags_b0, 4, BANKED
     bcf         i2c_flag_or_flash_math_uart_cmd_scratch_byte, 0, ACCESS            ; mismatch is not a PEN timeout
     bsf         STATUS, 0, ACCESS
     return      0
@@ -9170,7 +9184,7 @@ cmd25_identity_query_handler:
     movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS
     movlw       0x08                        ; V3.4_IDENTITY_REV_LO_HI
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x03                        ; V3.4_IDENTITY_REV_LO_LO
+    movlw       0x05                        ; V3.4_IDENTITY_REV_LO_LO
     movwf       flash_end_high_or_loop_mask_scratch_byte, ACCESS
     movlw       0x00                        ; V3.4_IDENTITY_REV_HI_HI
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
@@ -10338,7 +10352,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x04, 0x83, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
+    db  0x03, 0x04, 0x85, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.4 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

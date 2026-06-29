@@ -3219,11 +3219,14 @@ poll_frame_send__orphan_unreachable_tail_send_frame:                            
 ; ===========================================================================
 ; input_frame_send @ 0x000C22 — input_frame_send  (V1.6b refactor)
 ; ---------------------------------------------------------------------------
-; Emits legacy [B0, 0x06, <0x0B8>] before PB2 is discovered, and keeps that
-; broadcast behavior while PB2 is linked as "Same as PB1".  Independent split
-; mode emits addressed PB1 [B1,0x06,<PB1 intent>]; PB2 uses
-; input_frame_send_pb2_targeted.  0x0B8 remains PB1 intent and the boot
-; handshake sentinel. NOTE: in V1.4 this same address held a
+; Emits input route changes only to MAINs known reachable by CONTROL.  PB1 uses
+; addressed [B1,0x06,<PB1 intent>].  When PB2 is discovered and linked as
+; "Same as PB1", CONTROL emits addressed PB1+PB2 frames with the PB1 input
+; payload; independent split mode sends PB2 through input_frame_send_pb2_targeted.
+; If PB2 has persisted concrete intent but has not been discovered yet, that
+; intent remains pending and no B2 or legacy B0 broadcast is emitted.  0x0B8
+; remains PB1 intent and the boot handshake sentinel. NOTE: in V1.4 this same
+; address held a
 ; *channel_17_config* sender — refactor moved to dedicated helpers per cmd in
 ; V1.5b+.
 ; ===========================================================================
@@ -3232,27 +3235,27 @@ input_frame_send:                                               ; address: 0x000
 
         movlb   0x01
         btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
-        bra     input_frame_send_broadcast
+        bra     input_frame_send_pb1_targeted
         btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
         bra     input_frame_send_pb1_targeted
-input_frame_send_broadcast:
-        movlb   0x00
-        ; V1.72 atomic 3-byte frame (see tx_ring_reserve_3 header).
-        call    tx_ring_reserve_3, 0x0
-        bc      input_frame_send_aborted
-        movlw   0xb0                                        ; ROUTE broadcast CONTROL→MAIN
-        movwf   tx_data_staging_acc, A                        ; reg: 0x027
-        call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movlw   0x06                                        ; CMD input_select
-        movwf   tx_data_staging_acc, A                        ; reg: 0x027
-        call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        movff   0x0b8, tx_data_staging_b0_phys                    ; reg2: 0x027
-        call    tx_byte_enqueue, 0x0                           ; dest: 0x0005ec
-        clrf    full_sync_lo_b0, B                                     ; reg: 0x09f
-        clrf    full_sync_hi_b0, B                                     ; reg: 0x0a0
-        return  0x0
+        bra     input_frame_send_linked_pair
 
 input_frame_send_aborted:
+        return  0x0
+
+input_frame_send_linked_pair:
+        movlb   0x00
+        movf    input_select_cache_b0, W, B
+        movlb   0x01
+        movwf   input_intent_pb2_b1, BANKED
+        bcf     input_send_target_b1, 0, BANKED
+        rcall   input_frame_send_targeted
+        bc      input_frame_send_linked_pair_done
+        movlb   0x01
+        bsf     input_send_target_b1, 0, BANKED
+        rcall   input_frame_send_targeted
+input_frame_send_linked_pair_done:
+        movlb   0x00
         return  0x0
 
 input_frame_send_pb1_targeted:
@@ -3268,9 +3271,9 @@ input_frame_send_pb2_targeted:
 input_frame_send_split_sync:
         movlb   0x01
         btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
-        bra     input_frame_send_split_sync_legacy
+        bra     input_frame_send_pb1_targeted
         btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
-        bra     input_frame_send_split_sync_legacy
+        bra     input_frame_send_split_sync_linked
         bcf     input_send_target_b1, 0, BANKED
         btfsc   input_split_flags_b1, INPUT_SPLIT_FLAG_SYNC_TARGET, BANKED
         bsf     input_send_target_b1, 0, BANKED
@@ -3281,9 +3284,8 @@ input_frame_send_split_sync:
 input_frame_send_split_sync_done:
         movlb   0x00
         return  0x0
-input_frame_send_split_sync_legacy:
-        movlb   0x00
-        goto    input_frame_send
+input_frame_send_split_sync_linked:
+        bra     input_frame_send_linked_pair
 
 input_frame_send_current_input_page:
         movlb   0x00
@@ -5452,6 +5454,8 @@ v171_diag_redraw_skip:
 
 v171_diag_check_buttons:
         bcf     control_flags_acc, 0x3, A                      ; clear event_exit
+        btfsc   button_event_latch_b0, 0x0, B                               ; STBY pressed?
+        bra     v171_diag_front_panel_standby
         clrf    WREG, A
         btfsc   button_event_latch_b0, 0x5, B                               ; RIGHT pressed?
         movlw   0x01
@@ -5466,6 +5470,10 @@ v171_diag_check_buttons:
         iorwf   (Common_RAM + 24), F, A
         btfsc   STATUS, Z, A
         bra     v171_diag_loop                             ; no exit — keep ticking
+        movlb   0x00
+        return  0x0
+v171_diag_front_panel_standby:
+        bcf     control_flags_acc, 0x1, A
         movlb   0x00
         return  0x0
 
@@ -9432,7 +9440,7 @@ input_pb2_same_as_pb1_table:
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x44, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x39, 0x00 ; "Rev x5D 20260629"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x46, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x39, 0x00 ; "Rev x5F 20260629"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -9440,7 +9448,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x5D                    ; V1.73 + monotonic release revision
+        db      0x01, 0x07, 0x33, 0x5F                    ; V1.73 + monotonic release revision
         db      0x20, 0x26, 0x06, 0x29                    ; build date 20260629 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---

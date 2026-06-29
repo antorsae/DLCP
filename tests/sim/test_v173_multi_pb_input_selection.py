@@ -25,10 +25,12 @@ except Exception as exc:  # pragma: no cover
     _RUST_CHAIN_IMPORT_ERROR = exc
 
 BUTTON_PINS = {
+    "SELECT": ("A", 1),
     "RIGHT": ("A", 4),
     "LEFT": ("C", 5),
     "UP": ("C", 0),
     "DOWN": ("A", 2),
+    "STBY": ("A", 3),
 }
 
 DISPLAY_STATE = 0x0BF
@@ -272,6 +274,16 @@ def _assert_last_cmd06(
     frames = _cmd06_frames(chain, start)
     assert frames
     assert frames[-1] == (expected_route, 0x06, expected_data)
+
+
+def _assert_no_cmd06_broadcast(frames: list[tuple[int, int, int]]) -> None:
+    assert not any(frame[0] == 0xB0 for frame in frames)
+
+
+def _assert_linked_cmd06_pair(frames: list[tuple[int, int, int]], expected_data: int) -> None:
+    assert (0xB1, 0x06, expected_data) in frames
+    assert (0xB2, 0x06, expected_data) in frames
+    _assert_no_cmd06_broadcast(frames)
 
 
 def _preset_frames(chain, start: int = 0) -> list[tuple[int, int, int]]:  # type: ignore[no-untyped-def]
@@ -673,7 +685,7 @@ def test_v173_ir_f5_toggles_pb1_payload_via_existing_cmd06_path(
     before = len(chain.tx_frames())
     _inject_ir(chain, IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE)
 
-    _assert_last_cmd06(chain, before, 0xB0, expected_payload)
+    _assert_linked_cmd06_pair(_cmd06_frames(chain, before), expected_payload)
     assert chain.read_reg(INPUT_SELECT_CACHE) == expected_payload
 
 
@@ -701,7 +713,7 @@ def test_v173_ir_f5_keeps_input_pb1_lcd_row_coherent_across_raw_status(
 
 
 @pytest.mark.slow
-def test_v173_ir_f5_linked_pb2_broadcasts_and_routes_both_mains_to_optical(
+def test_v173_ir_f5_linked_pb2_addresses_both_mains_to_optical(
     v173_multi_pb_hex: Path,
 ) -> None:
     chain = _boot_chain(v173_multi_pb_hex)
@@ -713,7 +725,7 @@ def test_v173_ir_f5_linked_pb2_broadcasts_and_routes_both_mains_to_optical(
     before = len(chain.tx_frames())
     _inject_ir(chain, IR_CMD_INPUT_OPTICAL_SPDIF_TOGGLE, ticks=20_000_000)
 
-    _assert_last_cmd06(chain, before, 0xB0, 0x08)
+    _assert_linked_cmd06_pair(_cmd06_frames(chain, before), 0x08)
     _wait_for_main_input_route(chain, 0, 0x08, ROUTE_OPTICAL, SRC_PAIR_OPTICAL)
     _wait_for_main_input_route(chain, 1, 0x08, ROUTE_OPTICAL, SRC_PAIR_OPTICAL)
 
@@ -868,7 +880,7 @@ def test_pb2_latch_remaps_existing_menu_state_without_page_jump(
 
 
 @pytest.mark.slow
-def test_legacy_pb2_unknown_input_page_stays_broadcast_and_six_state(
+def test_legacy_pb2_unknown_input_page_uses_pb1_address_and_six_state(
     v173_multi_pb_hex: Path,
 ) -> None:
     chain = _boot_single_main_chain(v173_multi_pb_hex)
@@ -880,7 +892,8 @@ def test_legacy_pb2_unknown_input_page_stays_broadcast_and_six_state(
     before = len(chain.tx_frames())
     _press(chain, "UP")
     frames = _cmd06_frames(chain, before)
-    assert frames and frames[-1][0] == 0xB0
+    assert frames and frames[-1][0] == 0xB1
+    assert not any(frame[0] in (0xB0, 0xB2) for frame in frames)
 
     _navigate_right(chain, 4)
     assert chain.read_reg(DISPLAY_STATE) == STATE_VOLUME
@@ -892,7 +905,7 @@ def test_legacy_pb2_unknown_input_page_stays_broadcast_and_six_state(
 
 
 @pytest.mark.slow
-def test_linked_pb1_input_change_broadcasts_to_all_pbs(v173_multi_pb_hex: Path) -> None:
+def test_linked_pb1_input_change_addresses_all_known_pbs(v173_multi_pb_hex: Path) -> None:
     chain = _boot_chain(v173_multi_pb_hex)
     _latch_split(chain, linked=True)
 
@@ -902,8 +915,8 @@ def test_linked_pb1_input_change_broadcasts_to_all_pbs(v173_multi_pb_hex: Path) 
     _press(chain, "UP")
     frames = _cmd06_frames(chain, before)
 
-    assert frames and frames[-1][0] == 0xB0
-    assert not any(frame[0] in (0xB1, 0xB2) for frame in frames)
+    assert frames
+    _assert_linked_cmd06_pair(frames, frames[-1][2])
     assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
 
     _press(chain, "RIGHT")
@@ -912,7 +925,7 @@ def test_linked_pb1_input_change_broadcasts_to_all_pbs(v173_multi_pb_hex: Path) 
 
 
 @pytest.mark.slow
-def test_pb2_same_as_pb1_row_restores_linked_broadcast_mode(
+def test_pb2_same_as_pb1_row_restores_linked_addressed_mode(
     v173_multi_pb_hex: Path,
 ) -> None:
     chain = _boot_chain(v173_multi_pb_hex)
@@ -929,7 +942,8 @@ def test_pb2_same_as_pb1_row_restores_linked_broadcast_mode(
 
     assert chain.lcd_lines() == ("Input PB2:      ", "Same as PB1     ")
     assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
-    assert frames and frames[-1][0] == 0xB0
+    assert frames
+    _assert_linked_cmd06_pair(frames, frames[-1][2])
 
 
 @pytest.mark.slow
@@ -1067,8 +1081,8 @@ def test_linked_and_independent_full_sync_use_correct_route_style(
     _latch_split(chain, linked=True)
     chain.write_reg(INPUT_SELECT_CACHE, 0x08)
     chain.write_reg(INPUT_INTENT_PB2, 0x03)
-    linked = _force_full_sync_input_step(chain)
-    assert linked and linked[-1] == (0xB0, 0x06, 0x08)
+    linked_first = _force_full_sync_input_step(chain)
+    _assert_linked_cmd06_pair(linked_first, 0x08)
 
     chain.write_reg(INPUT_SPLIT_FLAGS, 1 << INPUT_SPLIT_FLAG_PB2_SEEN)
     chain.write_reg(INPUT_SELECT_CACHE, 0x08)
@@ -1115,7 +1129,7 @@ def test_health_only_pb2_discovery_survives_wake_and_health_loss_route_style(
             INPUT_SPLIT_FLAGS,
             (1 << INPUT_SPLIT_FLAG_PB2_SEEN) | (1 << INPUT_SPLIT_FLAG_PB2_LINKED),
         )
-        assert _force_full_sync_input_step(chain)[-1] == (0xB0, 0x06, 0x08)
+        _assert_linked_cmd06_pair(_force_full_sync_input_step(chain), 0x08)
     else:
         chain.write_reg(INPUT_SPLIT_FLAGS, 1 << INPUT_SPLIT_FLAG_PB2_SEEN)
         assert _force_full_sync_input_step(chain)[-1] == (0xB1, 0x06, 0x08)
@@ -1137,7 +1151,7 @@ def test_health_only_pb2_discovery_survives_wake_and_health_loss_route_style(
     assert chain.read_reg(DISPLAY_STATE) == STATE_INPUT_PB2
     if linked:
         assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
-        assert _force_full_sync_input_step(chain)[-1] == (0xB0, 0x06, 0x08)
+        _assert_linked_cmd06_pair(_force_full_sync_input_step(chain), 0x08)
     else:
         assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))
         assert _force_full_sync_input_step(chain)[-1] == (0xB1, 0x06, 0x08)
@@ -1159,7 +1173,7 @@ def test_bf06_echo_updates_linked_mode_but_is_quarantined_when_independent(
     assert chain.read_reg(INPUT_SELECT_CACHE) == 0x01
     assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
     linked_sync = _force_full_sync_input_step(chain)
-    assert linked_sync and linked_sync[-1] == (0xB0, 0x06, 0x01)
+    _assert_linked_cmd06_pair(linked_sync, 0x01)
 
     chain.write_reg(INPUT_SPLIT_FLAGS, 1 << INPUT_SPLIT_FLAG_PB2_SEEN)
     chain.write_reg(INPUT_SELECT_CACHE, 0x08)
@@ -1479,8 +1493,9 @@ def test_pb2_persisted_erased_unknown_and_legacy_bytes_default_to_linked(
     _navigate_right(chain, 3)
     assert chain.lcd_lines() == ("Input PB2:      ", "Same as PB1     ")
     frames = _force_full_sync_input_step(chain)
-    assert frames and frames[-1][0] == 0xB0
+    assert frames
     assert frames[-1][2] <= 0x08
+    _assert_linked_cmd06_pair(frames, frames[-1][2])
 
 
 @pytest.mark.slow
@@ -1688,6 +1703,74 @@ def test_v173_canonical_pb1_spdif_pb2_aes_persisted_inputs_survive_cold_boot() -
 
 
 @pytest.mark.slow
+def test_v173_canonical_pb1_optical_pb2_spdif_survives_reconnect_and_standby_wake() -> None:
+    chain = _new_chain(V173_CONTROL_HEX)
+    chain.write_control_eeprom_byte(
+        CONTROL_PB1_INPUT_EEPROM,
+        PB1_EEPROM_CONCRETE_BASE | 0x08,
+    )
+    chain.write_control_eeprom_byte(
+        CONTROL_PB2_INPUT_EEPROM,
+        PB2_EEPROM_CONCRETE_BASE | 0x05,
+    )
+    chain.write_main_eeprom_byte(0, MAIN_EEPROM_INPUT_SELECT, 0x07)
+    chain.write_main_eeprom_byte(1, MAIN_EEPROM_INPUT_SELECT, 0x00)
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    _prepare_mains_for_source_status(chain)
+
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == (
+        PB1_EEPROM_CONCRETE_BASE | 0x08
+    )
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == (
+        PB2_EEPROM_CONCRETE_BASE | 0x05
+    )
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x08
+    assert chain.read_reg(INPUT_PENDING_PB2) == 0x05
+
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x05
+    _navigate_right(chain, 2)
+    assert_lcd_exact(chain, ("Input PB1:      ", "Optical         "))
+    _press(chain, "RIGHT")
+    assert_lcd_exact(chain, ("Input PB2:      ", "S/PDIF          "))
+
+    first = _force_full_sync_input_step(chain)
+    second = _force_full_sync_input_step(chain)
+    assert first and first[-1] == (0xB1, 0x06, 0x08)
+    assert second and second[-1] == (0xB2, 0x06, 0x05)
+    _assert_no_cmd06_broadcast(first + second)
+    _wait_for_main_input_route(chain, 0, 0x08, ROUTE_OPTICAL, SRC_PAIR_OPTICAL)
+    _wait_for_main_input_route(chain, 1, 0x05, ROUTE_SPDIF, SRC_PAIR_SPDIF)
+
+    _rediscover_pb2_with_raw_status(chain, 0x03)
+    first = _force_full_sync_input_step(chain)
+    second = _force_full_sync_input_step(chain)
+    assert first and first[-1] == (0xB1, 0x06, 0x08)
+    assert second and second[-1] == (0xB2, 0x06, 0x05)
+    _assert_no_cmd06_broadcast(first + second)
+
+    _press(chain, "STBY")
+    assert "ZZZ" in chain.lcd_lines()[0].upper()
+    _press(chain, "STBY")
+    chain.step_ticks(120_000_000)
+    for _ in range(8):
+        if chain.read_reg(DISPLAY_STATE) == STATE_INPUT_PB2:
+            break
+        _press(chain, "RIGHT")
+    assert_lcd_exact(chain, ("Input PB2:      ", "S/PDIF          "))
+    assert chain.read_reg(INPUT_SELECT_CACHE) == 0x08
+    assert chain.read_reg(INPUT_INTENT_PB2) == 0x05
+    assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == (
+        PB1_EEPROM_CONCRETE_BASE | 0x08
+    )
+    assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == (
+        PB2_EEPROM_CONCRETE_BASE | 0x05
+    )
+    _wait_for_main_input_route(chain, 0, 0x08, ROUTE_OPTICAL, SRC_PAIR_OPTICAL)
+    _wait_for_main_input_route(chain, 1, 0x05, ROUTE_SPDIF, SRC_PAIR_SPDIF)
+
+
+@pytest.mark.slow
 def test_v173_canonical_pb1_pb2_dirty_save_commits_eeprom_and_clean_save_no_churn() -> None:
     chain = _new_chain(V173_CONTROL_HEX)
     chain.write_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM, 0xFF)
@@ -1793,7 +1876,7 @@ def test_v173_canonical_invalid_erased_corrupt_input_eeprom_does_not_import_ambi
 
     assert chain.read_control_eeprom_byte(CONTROL_PB1_INPUT_EEPROM) == pb1_erased
     assert chain.read_control_eeprom_byte(CONTROL_PB2_INPUT_EEPROM) == pb2_corrupt
-    assert _force_full_sync_input_step(chain)[-1][0] == 0xB0
+    _assert_linked_cmd06_pair(_force_full_sync_input_step(chain), 0x00)
     assert [
         record for record in chain.memory_trace_records()
         if record["kind"] == "EepromCommit"
@@ -1915,7 +1998,8 @@ def test_valid_pb2_eeprom_stays_pending_on_single_pb_chain_until_discovery(
     before = len(chain.tx_frames())
     _press(chain, "UP")
     frames = _cmd06_frames(chain, before)
-    assert frames and frames[-1][0] == 0xB0
+    assert frames and frames[-1][0] == 0xB1
+    assert not any(frame[0] in (0xB0, 0xB2) for frame in frames)
     assert not any(frame[0] == 0xB2 for frame in frames)
 
 
@@ -1999,7 +2083,7 @@ def test_malformed_bf06_payloads_do_not_change_pb1_or_pb2_intents(
     assert bool(flags & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)) is linked
     first = _force_full_sync_input_step(chain)
     if linked:
-        assert first[-1] == (0xB0, 0x06, 0x08)
+        _assert_linked_cmd06_pair(first, 0x08)
     else:
         assert first[-1] == (0xB1, 0x06, 0x08)
 
@@ -2140,7 +2224,8 @@ def test_bug_v173_unknown_raw_status_legacy_pb1_uses_full_input_table(
         assert chain.read_reg(MENU_OPTION_MAX) == 0x08
         assert chain.lcd_lines()[1].startswith(expected_label.strip())
         assert chain.read_reg(INPUT_SELECT_CACHE) == expected_data
-        _assert_last_cmd06(chain, before, 0xB0, expected_data)
+        _assert_last_cmd06(chain, before, 0xB1, expected_data)
+        _assert_no_cmd06_broadcast(_cmd06_frames(chain, before))
 
 
 @pytest.mark.slow
@@ -2233,7 +2318,8 @@ def test_bug_v173_unknown_raw_status_ir_previous_next_use_full_input_table(
     chain.step_ticks(COMMAND_SETTLE_TICKS)
     assert chain.read_reg(INPUT_SELECT_CACHE) == 0x04
     assert chain.read_reg(RAW_STATUS_CACHE) == 0x80
-    _assert_last_cmd06(chain, before, 0xB0, 0x04)
+    _assert_last_cmd06(chain, before, 0xB1, 0x04)
+    _assert_no_cmd06_broadcast(_cmd06_frames(chain, before))
 
     chain.write_reg(RAW_STATUS_CACHE, 0xFF)
     chain.write_reg(INPUT_SELECTED_INDEX, 0x08)
@@ -2242,14 +2328,15 @@ def test_bug_v173_unknown_raw_status_ir_previous_next_use_full_input_table(
     chain.step_ticks(COMMAND_SETTLE_TICKS)
     assert chain.read_reg(INPUT_SELECT_CACHE) == 0x00
     assert chain.read_reg(RAW_STATUS_CACHE) == 0xFF
-    _assert_last_cmd06(chain, before, 0xB0, 0x00)
+    _assert_last_cmd06(chain, before, 0xB1, 0x00)
+    _assert_no_cmd06_broadcast(_cmd06_frames(chain, before))
 
 
 @pytest.mark.slow
 @pytest.mark.parametrize(
-    ("linked", "expected_route"),
-    [(True, 0xB0), (False, 0xB1)],
-    ids=["linked-broadcast", "independent-pb1"],
+    "linked",
+    [True, False],
+    ids=["linked-addressed", "independent-pb1"],
 )
 @pytest.mark.parametrize(
     ("ir_cmd", "start_index", "expected_input"),
@@ -2262,7 +2349,6 @@ def test_bug_v173_unknown_raw_status_ir_previous_next_use_full_input_table(
 def test_bug_v173_split_ir_previous_next_keep_route_style_and_pb2_intent(
     v173_multi_pb_hex: Path,
     linked: bool,
-    expected_route: int,
     ir_cmd: int,
     start_index: int,
     expected_input: int,
@@ -2281,11 +2367,12 @@ def test_bug_v173_split_ir_previous_next_keep_route_style_and_pb2_intent(
     chain.step_ticks(COMMAND_SETTLE_TICKS)
 
     frames = _cmd06_frames(chain, before)
-    assert frames and frames[-1] == (expected_route, 0x06, expected_input)
     if linked:
-        assert not any(frame[0] in (0xB1, 0xB2) for frame in frames)
+        assert frames
+        _assert_linked_cmd06_pair(frames, expected_input)
         assert chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED)
     else:
+        assert frames and frames[-1] == (0xB1, 0x06, expected_input)
         assert not any(frame[0] in (0xB0, 0xB2) for frame in frames)
         assert chain.read_reg(INPUT_INTENT_PB2) == 0x03
         assert not (chain.read_reg(INPUT_SPLIT_FLAGS) & (1 << INPUT_SPLIT_FLAG_PB2_LINKED))

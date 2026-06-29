@@ -732,10 +732,6 @@ def _main_mutes(chain: Chain) -> tuple[int, int]:
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="DIAG-STBY open repro: Diagnostics pages ignore front-panel STBY",
-)
 @pytest.mark.parametrize("pb_idx", [0, 1], ids=["pb1-diag", "pb2-diag"])
 def test_diag_page_front_panel_stby_enters_standby_and_closes_both_main_gates(
     pb_idx: int,
@@ -743,8 +739,11 @@ def test_diag_page_front_panel_stby_enters_standby_and_closes_both_main_gates(
     chain = _new_chain()
     _navigate_to_diag_page(chain, pb_idx)
 
-    chain.press("STBY")
+    before = len(chain.tx_frames())
+    _tap_key(chain, "STBY")
+    frames = [tuple(frame) for frame in chain.tx_frames()[before:]]
 
+    assert (0xB0, 0x03, 0x00) in frames
     _wait_until(
         chain,
         lambda: "ZZZ" in chain.lcd_lines()[0].upper(),

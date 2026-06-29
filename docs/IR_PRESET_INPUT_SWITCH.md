@@ -74,7 +74,8 @@ by the current fixed shortcut constants.
      local cache state.
    - It must update the PB1 input cache and emit the existing input-select
      frame path.
-   - If PB2 is linked as `Same as PB1`, reuse existing broadcast behavior.
+   - If PB2 is linked as `Same as PB1`, emit addressed PB1/PB2 input frames
+     once PB2 is known; before PB2 discovery, emit only the PB1-addressed frame.
    - If PB2 is independently configured, reuse existing targeted PB1 behavior
      and do not overwrite PB2 intent.  This preserves the recommended tandem
      setup: `Input PB1: Auto Detect` or a concrete external source, and
