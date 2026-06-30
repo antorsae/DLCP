@@ -2481,6 +2481,10 @@ def test_pb2_menu_state_and_malformed_row_are_gated_by_split_flag() -> None:
         text.index("input_screen_prepare_selected_row:"):
         text.index("input_screen_prepare_option_label:")
     ]
+    mapper = text[
+        text.index("input_map_pb2_visible_row_to_full_cmd06:"):
+        text.index("input_screen_stage_pb2_title_class:")
+    ]
     compute_max = text[
         text.index("input_screen_compute_menu_max:"):
         text.index("input_screen_prepare_selected_row:")
@@ -2520,7 +2524,9 @@ def test_pb2_menu_state_and_malformed_row_are_gated_by_split_flag() -> None:
     assert "input_map_cmd06_to_full_menu_index:" in text
     assert "input_map_pb2_visible_row_to_full_cmd06:" in text
     assert "call    input_map_pb2_visible_row_to_full_cmd06, 0x0" in prepare
-    assert "movff   tx_data_staging_b0_phys, input_intent_pb2_b1_phys" in prepare
+    assert "clrf    input_intent_pb2_b1, BANKED" in mapper
+    assert "movwf   input_intent_pb2_b1, BANKED" in mapper
+    assert "movff   tx_data_staging_b0_phys, input_intent_pb2_b1_phys" not in prepare
     assert "bsf     STATUS, C, A" in prepare
     assert "input_screen_restore_pb2_visible_row_after_commit:" in text
     assert "restore PB2 display row after cmd06 mapping" in text

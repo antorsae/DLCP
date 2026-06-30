@@ -436,7 +436,9 @@ def test_v173_v34_chain_mute_survives_periodic_full_sync_refresh(
         tuple(chunk)
         for chunk in zip(*[iter(chain.ctl_tx_record_since_last_capture())] * 3)
     ]
-    assert any(frame[0] == 0xB0 and frame[1] == 0x06 for frame in frames), frames
+    assert (0xB1, 0x06, 0x00) in frames, frames
+    assert (0xB2, 0x06, 0x00) in frames, frames
+    assert not any(frame[0] == 0xB0 and frame[1] == 0x06 for frame in frames), frames
     assert not any(frame == (0xB0, 0x03, 0x03) for frame in frames), frames
     for unit in (0, 1):
         assert chain.read_main_reg(unit, PRESET_JOB_STATE) == 0

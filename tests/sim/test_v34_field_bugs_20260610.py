@@ -26,7 +26,7 @@ from pathlib import Path
 import pytest
 
 import dlcp_fw.flash.dlcp_main_flash as main_flash
-from dlcp_fw.paths import V17_CONTROL_RAM_INC, V173_CONTROL_ASM, V34_MAIN_ASM
+from dlcp_fw.paths import V17_CONTROL_RAM_INC, V173_CONTROL_ASM, V173_CONTROL_HEX, V34_MAIN_ASM, V35_MAIN_HEX
 from dlcp_fw.sim.v17_symbols import assemble_v17
 from dlcp_fw.sim.v30_symbols import assemble_v30
 from tests.sim.test_v34_mute_refresh_bug import (
@@ -174,6 +174,17 @@ def _connected_field_chain(field_chain_hexes: tuple[Path, Path]):
     chain = RustChain.from_v171_v32(
         control_hex_path=str(control_hex),
         main_hex_path=str(main_hex),
+    )
+    assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
+    return chain
+
+
+def _connected_current_field_chain():
+    if RustChain is None:  # pragma: no cover
+        pytest.fail(f"rust facade not importable: {_RUST_CHAIN_IMPORT_ERROR!r}")
+    chain = RustChain.from_v171_v32(
+        control_hex_path=str(V173_CONTROL_HEX),
+        main_hex_path=str(V35_MAIN_HEX),
     )
     assert chain.run_until_connected(limit=300) < 300, chain.lcd_lines()
     return chain
@@ -436,11 +447,9 @@ def test_field10_barrier_retry_recovers_and_only_then_restores_volume(
     )
 
 
-def test_field10_barrier_retry_preserves_user_mute_until_explicit_unmute(
-    field_chain_hexes: tuple[Path, Path],
-) -> None:
+def test_field10_barrier_retry_preserves_user_mute_until_explicit_unmute() -> None:
     unit = 0
-    chain = _connected_field_chain(field_chain_hexes)
+    chain = _connected_current_field_chain()
     _inject_unit_broadcast_frame(chain, unit=unit, cmd=0x03, data=0x02)
     chain.step_ticks(12_000_000)
     assert chain.read_main_reg(unit, STOCK_094) & USER_MUTE_LATCH_MASK

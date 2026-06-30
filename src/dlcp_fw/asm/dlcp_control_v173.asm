@@ -8862,63 +8862,61 @@ input_map_pb2_visible_row_to_full_cmd06:
         movf    rx_ring_staging_b0, W, BANKED
         addlw   0xFF
         movwf   (Common_RAM + 4), A
-        clrf    tx_data_staging_acc, A
+        movlb   0x01
+        clrf    input_intent_pb2_b1, BANKED
+        movlb   0x00
         movf    (Common_RAM + 4), F, A
         bz      input_map_pb2_visible_row_to_full_cmd06_return
         movlw   0x01
         cpfseq  (Common_RAM + 4), A
         bra     input_map_pb2_visible_row_to_full_cmd06_check_02
         movlw   0x05
-        movwf   tx_data_staging_acc, A
-        return  0x0
+        bra     input_map_pb2_visible_row_to_full_cmd06_store
 input_map_pb2_visible_row_to_full_cmd06_check_02:
         movlw   0x02
         cpfseq  (Common_RAM + 4), A
         bra     input_map_pb2_visible_row_to_full_cmd06_check_03
         movlw   0x06
-        movwf   tx_data_staging_acc, A
-        return  0x0
+        bra     input_map_pb2_visible_row_to_full_cmd06_store
 input_map_pb2_visible_row_to_full_cmd06_check_03:
         movlw   0x03
         cpfseq  (Common_RAM + 4), A
         bra     input_map_pb2_visible_row_to_full_cmd06_check_04
         movlw   0x07
-        movwf   tx_data_staging_acc, A
-        return  0x0
+        bra     input_map_pb2_visible_row_to_full_cmd06_store
 input_map_pb2_visible_row_to_full_cmd06_check_04:
         movlw   0x04
         cpfseq  (Common_RAM + 4), A
         bra     input_map_pb2_visible_row_to_full_cmd06_check_05
         movlw   0x08
-        movwf   tx_data_staging_acc, A
-        return  0x0
+        bra     input_map_pb2_visible_row_to_full_cmd06_store
 input_map_pb2_visible_row_to_full_cmd06_check_05:
         movlw   0x05
         cpfseq  (Common_RAM + 4), A
         bra     input_map_pb2_visible_row_to_full_cmd06_check_06
         movlw   0x01
-        movwf   tx_data_staging_acc, A
-        return  0x0
+        bra     input_map_pb2_visible_row_to_full_cmd06_store
 input_map_pb2_visible_row_to_full_cmd06_check_06:
         movlw   0x06
         cpfseq  (Common_RAM + 4), A
         bra     input_map_pb2_visible_row_to_full_cmd06_check_07
         movlw   0x02
-        movwf   tx_data_staging_acc, A
-        return  0x0
+        bra     input_map_pb2_visible_row_to_full_cmd06_store
 input_map_pb2_visible_row_to_full_cmd06_check_07:
         movlw   0x07
         cpfseq  (Common_RAM + 4), A
         bra     input_map_pb2_visible_row_to_full_cmd06_check_08
         movlw   0x03
-        movwf   tx_data_staging_acc, A
-        return  0x0
+        bra     input_map_pb2_visible_row_to_full_cmd06_store
 input_map_pb2_visible_row_to_full_cmd06_check_08:
         movlw   0x08
         cpfseq  (Common_RAM + 4), A
         bra     input_map_pb2_visible_row_to_full_cmd06_return
         movlw   0x04
-        movwf   tx_data_staging_acc, A
+input_map_pb2_visible_row_to_full_cmd06_store:
+        movlb   0x01
+        movwf   input_intent_pb2_b1, BANKED
+        movlb   0x00
 input_map_pb2_visible_row_to_full_cmd06_return:
         return  0x0
 
@@ -9106,7 +9104,6 @@ input_screen_prepare_selected_row_pb2_concrete:
         bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
         bcf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_FALLBACK_ACTIVE, BANKED
         bsf     input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY, BANKED
-        movff   tx_data_staging_b0_phys, input_intent_pb2_b1_phys
         movlb   0x00
         bsf     STATUS, C, A
         return  0x0
@@ -9440,7 +9437,7 @@ input_pb2_same_as_pb1_table:
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x35, 0x46, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x32, 0x39, 0x00 ; "Rev x5F 20260629"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x36, 0x30, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x33, 0x30, 0x00 ; "Rev x60 20260630"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -9448,8 +9445,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x5F                    ; V1.73 + monotonic release revision
-        db      0x20, 0x26, 0x06, 0x29                    ; build date 20260629 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x33, 0x60                    ; V1.73 + monotonic release revision
+        db      0x20, 0x26, 0x06, 0x30                    ; build date 20260630 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

@@ -2325,7 +2325,7 @@ restore_eeprom_settings_on_boot__read_preset_a_filename:
     rcall       eeprom_write_runtime_version_byte_at_w
     movlw       0x82
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x93                            ; V3.5_RUNTIME_EEPROM_REV_LO
+    movlw       0x95                            ; V3.5_RUNTIME_EEPROM_REV_LO
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
     bra         eeprom_write_byte_if_changed_rcall_trampoline
 
@@ -3811,6 +3811,9 @@ float32_divide_primary_by_secondary_in_place__advance_remainder_next_bit:
 ; eeprom_read_byte_at_w call runs it replaces.
 ; STATUS is NOT preserved (unlike raw movff runs) — every converted site was
 ; audited: no following instruction consumes pre-chain flags.
+; TOS rewrite is GIE-safe: the exit path preserves the caller's GIE state,
+; masks only the TOSL/TOSH commit window, then restores GIE iff the caller had
+; it set.
 ; 0xFF is a safe sentinel: no converted descriptor copies cell 0xXFF.
 ; ---------------------------------------------------------------------------
 chain_copy:
@@ -3828,11 +3831,22 @@ chain_copy__read_next_block_or_finish:
     bra         chain_copy__load_block_header
     btfsc       TBLPTRL, 0, ACCESS          ; odd resume PC -> consume the pad
     tblrd*+
-    movlb       0x00                        ; uniform exit contract: BSR = 0
+    btfss       INTCON, 7, ACCESS
+    bra         chain_copy__commit_tos_gie_already_clear
+    bcf         INTCON, 7, ACCESS
     movf        TBLPTRL, W, ACCESS          ; movff may not target TOSx
     movwf       TOSL, ACCESS
     movf        TBLPTRH, W, ACCESS
     movwf       TOSH, ACCESS
+    bsf         INTCON, 7, ACCESS
+    movlb       0x00                        ; uniform exit contract: BSR = 0
+    return      0
+chain_copy__commit_tos_gie_already_clear:
+    movf        TBLPTRL, W, ACCESS          ; movff may not target TOSx
+    movwf       TOSL, ACCESS
+    movf        TBLPTRH, W, ACCESS
+    movwf       TOSH, ACCESS
+    movlb       0x00                        ; uniform exit contract: BSR = 0
     return      0
 chain_copy__load_block_header:
     movff       TABLAT, chain_copy_srcl_b3_phys ; block source low byte
@@ -9229,7 +9243,7 @@ cmd25_identity_query_handler:
     movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS
     movlw       0x09                        ; V3.5_IDENTITY_REV_LO_HI
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x03                        ; V3.5_IDENTITY_REV_LO_LO
+    movlw       0x05                        ; V3.5_IDENTITY_REV_LO_LO
     movwf       flash_end_high_or_loop_mask_scratch_byte, ACCESS
     movlw       0x00                        ; V3.5_IDENTITY_REV_HI_HI
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
@@ -10487,7 +10501,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x05, 0x93, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
+    db  0x03, 0x05, 0x95, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

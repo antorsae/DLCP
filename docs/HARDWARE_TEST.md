@@ -1676,7 +1676,7 @@ gate unless the current operator has explicitly approved live hardware access.
 
 ### Prerequisites
 
-- MAIN flashed with canonical V3.5 rev `0x0091` or newer.
+- MAIN flashed with canonical V3.5 rev `0x0095` or newer.
 - Known locked digital source on the selected input.
 - Explicit HID path for the MAIN under test.  Use `--all` only when the goal is
   to query every attached MAIN.
@@ -1737,8 +1737,8 @@ future route/TAS regressions.
 ### Prerequisites
 
 - CONTROL flashed with canonical V1.73 for the target validation; the current
-  multi-PB/test-robustness/IR/LCD artifact is rev `0x5C`.
-- both MAINs flashed with canonical V3.5, currently rev `0x0091`.
+  multi-PB/test-robustness/IR/LCD artifact is rev `0x60`.
+- both MAINs flashed with canonical V3.5, currently rev `0x0095`.
 - known audio source available on at least one fixed digital input and through
   Auto Detect; if possible, exercise `S/PDIF`, `USB Audio`, `AES`, and
   `Optical` individually.

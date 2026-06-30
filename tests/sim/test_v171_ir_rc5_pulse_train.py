@@ -681,7 +681,9 @@ def test_v173_real_rc5_receiver_dispatches_volume_mute_preset_and_input_shortcut
         settle_ticks=20_000_000,
     )
     assert chain.read_reg(INPUT_SELECT_CACHE_PHYS) == 0x08
-    assert (0xB0, 0x06, 0x08) in frames
+    assert (0xB1, 0x06, 0x08) in frames
+    assert (0xB2, 0x06, 0x08) in frames
+    assert (0xB0, 0x06, 0x08) not in frames
 
 
 @pytest.mark.dual_supported

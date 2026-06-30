@@ -82,7 +82,7 @@ Confirmed bugs fixed in this pass:
 
 Suspicious / recommended follow-up:
 
-- Interrupt safety around firmware TOS-rewrite helpers remains a firmware-level concern. V3.4 `chain_copy` rewrites TOS and the Python suite already carries an xfail for post-GIE call-site safety.
+- Interrupt safety around firmware TOS-rewrite helpers remains a firmware-level concern for historical V3.4 source review. Current V3.5 rev `0x0095` fixes `chain_copy` by preserving the caller's `GIE`, masking only the `TOSL/TOSH` commit window, and restoring `GIE` only if it was previously set; the strict chain-copy xfail was replaced by `tests/sim/test_v34_v173_refactoring_contracts.py::test_v35_chain_copy_tos_rewrite_masks_and_restores_prior_gie`.
 - The multicore diagnostics stale-health path now intentionally expects the current `PB1 old` layout when PB1 health age exceeds the stale threshold. Operator hardware evidence from 2026-06-14 reported the same `old` LCD symptom while `scripts/dlcp_diag.py` saw V3.4 `DEGRADED (i2c_transport_faults=6)`, matching the current PB Diagnostics stale-health contract rather than a CPU-core regression.
 - Add an ISA-level property/fuzz pack for writable core SFRs and indirect targets so future executor work probes PCL, PCLATH/PCLATU, STKPTR flags, TOSU masking, STATUS via indirect, and FSR-to-virtual-register accesses across multiple instructions, not only curated examples.
 
