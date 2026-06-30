@@ -363,14 +363,16 @@ fn commit_tblwt_long_write(core: &mut Core, eecon1_value: u8) {
     let free = (eecon1_value & crate::peripherals::eeprom::Eeprom::eecon1_free_bit()) != 0;
 
     if !cfgs {
-        let block_size = core.tblwt_block_size();
-        let base = (tblptr as usize) & !(block_size - 1);
         if free {
+            let erase_block_size = core.program_erase_block_size();
+            let base = (tblptr as usize) & !(erase_block_size - 1);
             let limit = core.variant().implemented_program_memory_bytes();
-            for addr in base..(base + block_size).min(limit) {
+            for addr in base..(base + erase_block_size).min(limit) {
                 core.flash_mut()[addr] = 0xFF;
             }
         } else {
+            let block_size = core.tblwt_block_size();
+            let base = (tblptr as usize) & !(block_size - 1);
             let holding = core.tblwt_holding;
             let limit = core.variant().implemented_program_memory_bytes();
             for (slot, &byte) in holding.iter().take(block_size).enumerate() {
@@ -2450,6 +2452,49 @@ mod tests {
                 variant
             );
         }
+    }
+
+    #[test]
+    fn program_flash_erase_block_size_is_64_bytes_on_supported_variants() {
+        let core_2455 = Core::new(Variant::Pic18F2455);
+        let core_k20 = Core::new(Variant::Pic18F25K20);
+        assert_eq!(core_2455.program_erase_block_size(), 64);
+        assert_eq!(core_k20.program_erase_block_size(), 64);
+    }
+
+    #[test]
+    fn program_flash_erase_covers_full_64_byte_row() {
+        let mut core = Core::new(Variant::Pic18F25K20);
+        for addr in 0x7780..0x77C0 {
+            core.flash_mut()[addr] = 0x00;
+        }
+        core.flash_mut()[0x77C0] = 0x00;
+        write_tblptr(&mut core, 0x77B0);
+        core.peripherals.eeprom.on_sfr_write(
+            crate::peripherals::eeprom::EECON2_ADDR,
+            0x55,
+            &mut core.memory,
+        );
+        core.peripherals.eeprom.on_sfr_write(
+            crate::peripherals::eeprom::EECON2_ADDR,
+            0xAA,
+            &mut core.memory,
+        );
+
+        // EEPGD | FREE | WREN | WR: program-memory row erase.
+        commit_tblwt_long_write(&mut core, 0x96);
+
+        assert_eq!(core.flash()[0x7780], 0xFF);
+        assert_eq!(
+            core.flash()[0x77BF],
+            0xFF,
+            "erase must cover the second 32-byte half of the row"
+        );
+        assert_eq!(
+            core.flash()[0x77C0],
+            0x00,
+            "erase must stop at the 64-byte row boundary"
+        );
     }
 
     /// Task #14: OSCCON bits 3 (OSTS) and 2 (IOFS) are

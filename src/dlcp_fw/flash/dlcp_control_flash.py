@@ -22,6 +22,7 @@ import dataclasses
 import hashlib
 import json
 from pathlib import Path
+import sys
 import time
 from typing import Dict, List, Optional
 
@@ -47,6 +48,10 @@ class HexParseError(RuntimeError):
 
 
 class PreflightError(RuntimeError):
+    pass
+
+
+class ControlRelayNotArmedError(RuntimeError):
     pass
 
 
@@ -408,6 +413,16 @@ def _hid_write64_expect_response(
     return resp
 
 
+def _relay_not_armed_message(*, context: str, status: int) -> str:
+    return (
+        f"CONTROL flash relay was not armed after {context}: "
+        f"MAIN returned cmd 0x42 status 0x{status:02X}. "
+        "Power-cycle the DLCP while holding CONTROL UP+DOWN for at least 6s, "
+        "keep holding until the bootloader prompt is active, do not press SELECT, "
+        "then retry against the same MAIN HID path."
+    )
+
+
 def flash_control(
     *,
     vid: int,
@@ -476,6 +491,18 @@ def flash_control(
                 context=f"control stream report {report_i + 1}",
                 timeout_ms=report_timeout_ms,
             )
+            if resp[1] != 0x00:
+                if resp[1] == 0x12:
+                    raise ControlRelayNotArmedError(
+                        _relay_not_armed_message(
+                            context=f"control stream report {report_i + 1}",
+                            status=resp[1],
+                        )
+                    )
+                raise RuntimeError(
+                    f"control stream report {report_i + 1} failed: "
+                    f"MAIN returned cmd 0x42 status 0x{resp[1]:02X}"
+                )
 
             pos += 30
             report_i += 1
@@ -512,7 +539,12 @@ def flash_control(
             if verbose:
                 print("verify resp[0..7] =", " ".join(f"{x:02x}" for x in resp[:8]))
             if not ok:
-                raise RuntimeError(f"CRC verify failed (resp[2]=0x{resp[2]:02X}, expected 0xAA)")
+                raise RuntimeError(
+                    f"CRC verify failed (resp[2]=0x{resp[2]:02X}, expected 0xAA). "
+                    "If the stream reports all returned 0x42/0x00 on an older MAIN, "
+                    "the CONTROL bootloader may not have been armed; retry only after "
+                    "power-cycling with UP+DOWN held for bootloader mode."
+                )
 
             if verbose:
                 print("CRC verify OK.")
@@ -612,18 +644,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         # Most users should just omit --path.
         path = args.path.encode("utf-8")
 
-    flash_control(
-        vid=args.vid,
-        pid=args.pid,
-        path=path,
-        stream=stream,
-        pace_ms=max(0, args.pace_ms),
-        init_delay_ms=max(0, args.init_delay_ms),
-        verify=not args.no_verify,
-        dry_run=args.dry_run or args.preflight_only,
-        verbose=args.verbose,
-        report_timeout_ms=max(1, args.report_timeout_ms),
-    )
+    try:
+        flash_control(
+            vid=args.vid,
+            pid=args.pid,
+            path=path,
+            stream=stream,
+            pace_ms=max(0, args.pace_ms),
+            init_delay_ms=max(0, args.init_delay_ms),
+            verify=not args.no_verify,
+            dry_run=args.dry_run or args.preflight_only,
+            verbose=args.verbose,
+            report_timeout_ms=max(1, args.report_timeout_ms),
+        )
+    except ControlRelayNotArmedError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 1
     return 0
 
 

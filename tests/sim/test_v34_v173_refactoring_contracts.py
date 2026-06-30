@@ -218,13 +218,98 @@ def test_v173_bf20_preset_echo_is_ignored_while_asleep_or_waiting() -> None:
 
 def test_v34_v173_listing_size_gates_keep_refactoring_headroom() -> None:
     v34_lst = V34_MAIN_ASM.with_suffix(".lst")
+    v35_lst = V35_MAIN_ASM.with_suffix(".lst")
     v173_lst = V173_CONTROL_ASM.with_suffix(".lst")
     assert v34_lst.exists(), f"missing listing: {v34_lst}"
+    assert v35_lst.exists(), f"missing listing: {v35_lst}"
     assert v173_lst.exists(), f"missing listing: {v173_lst}"
     # V3.4 is a historical line; keep a floor at the current 1980-byte margin
     # so accidental growth still fails without requiring another V3.4 reclaim.
     _assert_listing_fits_before(v34_lst, 0x4C00, min_margin=1980)
+    _assert_listing_fits_before(v35_lst, 0x4C00, min_margin=1700)
     _assert_listing_fits_before(v173_lst, 0x77B0, min_margin=128)
+
+
+def test_v35_control_flash_relay_rejects_unarmed_session_before_empty_status() -> None:
+    text = V35_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    body = _label_body(
+        text,
+        "fw_update_init_sequence__gate_relay_session",
+        ["hid_command_dispatch__validate_fw_update_signature"],
+    )
+
+    _assert_ordered(
+        body,
+        "movf        fw_update_relay_session_active_b0, W, BANKED",
+        "bz          fw_update_init_sequence__reject_unarmed_relay",
+        "fw_update_init_sequence__run_relay_session:",
+        "rcall       fw_update_relay",
+        "bra         hid_command_dispatch__emit_opcode_status",
+        "fw_update_init_sequence__reject_unarmed_relay:",
+        "rcall       fw_update_clear_relay_status_accumulators",
+        "movff       i2c_coeff_2_b0_phys, usb_hid_ep1_in_report_selector_phys",
+        "call        stage_hid_ep1_in_report_from_selector, 0x0",
+        "movlw       0x12",
+        "movwf       usb_hid_ep1_in_report_byte1_b1, BANKED",
+        "bra         hid_command_dispatch__clear_opcode_and_return",
+    )
+    assert "bz          hid_command_dispatch__emit_opcode_status" not in body
+
+    helper = _label_body(
+        text,
+        "fw_update_clear_relay_status_accumulators",
+        ["hid_command_dispatch__decode_opcode_xor_chain"],
+    )
+    assert "clrf        fw_update_relay_session_active_b0, BANKED" in helper
+
+
+def test_v35_control_flash_relay_flushes_final_app_record_before_limit() -> None:
+    text = V35_MAIN_ASM.read_text(encoding="utf-8", errors="replace")
+    range_body = _label_body(
+        text,
+        "fw_update_relay__check_crc_region_limit",
+        ["fw_update_relay__check_saved_status_addr"],
+    )
+    _assert_ordered(
+        range_body,
+        "movlw       0xC0",
+        "rcall       fw_update_compare_relay_addr_limit_w",
+        "bc          fw_update_relay__maybe_flush_final_saved_record",
+        "fw_update_relay__maybe_flush_final_saved_record:",
+        "movf        fw_update_relay_saved_addr_hi_b0, W, BANKED",
+        "iorwf       fw_update_relay_saved_addr_lo_b0, W, BANKED",
+        "bz          fw_update_relay__advance_cursor_trampoline",
+        "bra         fw_update_relay__emit_saved_addr_checksum",
+    )
+
+    retry_body = _label_body(
+        text,
+        "fw_update_relay__retry_until_response_matches",
+        ["fw_update_relay__clear_retry_delay_counter"],
+    )
+    _assert_ordered(
+        retry_body,
+        "bnz         fw_update_relay__handle_status_response_match",
+        "fw_update_relay__handle_status_response_match:",
+        "movlw       0xC0",
+        "rcall       fw_update_compare_relay_addr_limit_w",
+        "bnc         fw_update_relay__maybe_delay_before_status_emit",
+        "clrf        fw_update_relay_saved_addr_lo_b0, BANKED",
+        "clrf        fw_update_relay_saved_addr_hi_b0, BANKED",
+        "bra         fw_update_relay__advance_cursor_trampoline",
+    )
+
+    forward_body = _label_body(
+        text,
+        "fw_update_relay__forward_payload_byte",
+        ["fw_update_relay__stage_odd_payload_byte"],
+    )
+    _assert_ordered(
+        forward_body,
+        "movlw       0xC0",
+        "rcall       fw_update_compare_relay_addr_limit_w",
+        "bc          fw_update_relay__clear_checksum_after_range",
+    )
 
 
 def test_v34_src4382_cold_init_table_preserves_exact_ordered_writes() -> None:

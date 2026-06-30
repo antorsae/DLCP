@@ -183,6 +183,7 @@ for the full surface.
 | `run_until_connected(limit)`   | Step until CONTROL marks itself connected, or `limit` chunks |
 | `run_until_waiting(limit)`     | Step until CONTROL transitions to WAITING (Zzz) |
 | `step_until_pc_hit(core_idx, pc_lo, pc_hi, max_tcy)` | gpsim `break e <addr>` analog |
+| `firmware_hid_report_full_chain(unit, report, ...)` | Stage one MAIN HID report and keep the full CONTROL+MAIN chain running until the MAIN HID dispatcher returns; used for CONTROL-through-MAIN flash relay simulations where MAIN waits on real CONTROL UART bootloader traffic |
 
 ### Stimulus injection
 
@@ -216,6 +217,14 @@ P4-followup ticket and add the PyO3 wrapper.
 | `bridge_byte_stats()`          | Per-link byte-count snapshot (P4-followup #99) |
 | `uart_tx_records_full()`       | Full `(tick, src, dst, byte)` TX history |
 | `uart_rx_records_full()`       | Full `(tick, src, dst, byte)` RX-accepted history |
+
+`firmware_hid_report_full_chain(...)` is intentionally separate from
+`firmware_hid_report(...)`.  The latter is a focused MAIN app-HID dispatcher
+helper.  The full-chain variant advances the native event scheduler while the
+MAIN dispatcher runs, and can reset CONTROL into bootloader mode during the
+first report.  Use it for tests that must prove prompt cadence, Intel HEX
+ACKs, CONTROL flash mutation, EOF/finalize behavior, and readback through the
+real simulated CONTROL bootloader path.
 
 ### Mutation (overlay primitives, P4-followup #103)
 

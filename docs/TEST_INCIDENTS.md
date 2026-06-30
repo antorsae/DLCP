@@ -38,6 +38,77 @@ Regression or hardware gate:
 Disposition:
 ```
 
+## TR-20260630-003 CONTROL Flash Relay Not Armed But Stream ACKs
+
+Incident ID: `TR-20260630-003`
+Date: 2026-06-30
+
+Firmware artifacts:
+
+- MAIN: failing path observed on pre-fix canonical V3.5; fixed in
+  `firmware/patched/releases/DLCP_Firmware_V3.5.hex` rev `0x0099`
+- CONTROL: old deployed V1.73 rev `0x5F` build `20260629` to target V1.73 rev
+  `0x60` build `20260630`
+
+Artifact-derived identity:
+
+- MAIN: fixed canonical V3.5 rev `0x0099`, SHA-256
+  `fcc882e9ef1ec7cd0c5923530cd7a8e4e63c893a02bf08e418b575fb0ca76e92`
+- CONTROL: target payload CRC `0x2780`, stream length `0x77C0`
+
+Observed state:
+
+- LCD rows: normal app screen before flash; manual bootloader mode not confirmed
+  for the failing app-mode run
+- USB/HID enumeration: MAIN HID relay accepted host reports
+- Audio state: not involved
+
+Operator actions:
+
+- Ran CONTROL flash through MAIN from app mode.  Stream reached 99-100 percent
+  with `resp[0..3]=42 00 00 00`, then final `0x41` verify returned
+  `41 11 00 00 00 00 00 00`.
+
+Raw evidence:
+
+- Local chat/operator trace with no raw HID path committed.
+
+Sanitized evidence:
+
+- `docs/CONTROL_FLASH_RELAY_HANDSHAKE_FAILURE.md`
+
+Simulator reproducibility:
+
+- Old-to-new app-mode simulation reproduced first-pass `41 11 00` with MAIN
+  relay session clear and signature accumulator `0x0000`.  A continuous
+  two-pass simulation failed both passes, so the reported real second-pass
+  success remains a hardware/simulator-fidelity gap.
+- Fixed V3.5 app-mode/unarmed simulation now returns `42 12 00 00` on the first
+  `0x42` report; the repo flasher aborts before report 2.
+- Full-chain simulated manual-bootloader flashes now pass for current-bad to
+  fixed target and fixed-good to newer-good, including final `41 00 aa`, target
+  application-window readback, and CONTROL release-metadata readback.  The sim
+  fix required EUSART `RCREG` latch fidelity and 64-byte program erase rows.
+
+Regression or hardware gate:
+
+- Deterministic regressions:
+  `tests/sim/test_dlcp_control_flash_safety.py::test_source_assembled_v35_unarmed_relay_rejects_first_42_report`,
+  `tests/sim/test_dlcp_control_flash_safety.py::test_canonical_v35_unarmed_relay_rejects_first_42_report_after_release_build`,
+  `tests/sim/test_dlcp_control_flash_safety.py::test_old_relay_false_ack_behavior_reproduces_with_temp_mutation`,
+  `tests/sim/test_dlcp_control_flash_safety.py::test_full_chain_fixed_main_flashes_control_v173_through_real_bootloader`,
+  and
+  `tests/sim/test_dlcp_control_flash_safety.py::test_full_chain_fixed_main_flashes_newer_v173_through_real_bootloader`.
+- Remaining hardware gate: live CONTROL flash confirmation through an explicit
+  relay MAIN HID path after manual `UP+DOWN` bootloader entry.
+
+Disposition:
+
+- Fixed in MAIN V3.5 rev `0x0099` for simulator-backed firmware/flasher
+  behavior.  Manual CONTROL bootloader entry remains the live flashing procedure
+  unless app-mode handoff is separately validated; live hardware was not run for
+  this fix.
+
 ## TR-20260630-001 V3.5 `chain_copy` TOS Rewrite Interrupt Safety
 
 Incident ID: `TR-20260630-001`
@@ -50,7 +121,7 @@ Firmware artifacts:
 
 Artifact-derived identity:
 
-- MAIN: V3.5 EEPROM rev `0x0095` from canonical MAIN HEX
+- MAIN: V3.5 EEPROM rev `0x0095` at fix time; current canonical MAIN is newer
 - CONTROL: not involved
 
 Observed state:
@@ -105,7 +176,7 @@ Firmware artifacts:
 
 Artifact-derived identity:
 
-- MAIN: V3.5 EEPROM rev `0x0095` from canonical MAIN HEX
+- MAIN: V3.5 EEPROM rev `0x0099` from canonical MAIN HEX
 - CONTROL: V1.73 rev `0x60` build `20260630` from canonical CONTROL HEX
 
 Observed state:

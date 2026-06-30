@@ -736,10 +736,18 @@ fw_update_init_sequence__clear_failed_session:
 fw_update_init_sequence__gate_relay_session:
     movlb       0x0
     movf        fw_update_relay_session_active_b0, W, BANKED
-    bz          hid_command_dispatch__emit_opcode_status
+    bz          fw_update_init_sequence__reject_unarmed_relay
 fw_update_init_sequence__run_relay_session:
     rcall       fw_update_relay
     bra         hid_command_dispatch__emit_opcode_status
+fw_update_init_sequence__reject_unarmed_relay:
+    rcall       fw_update_clear_relay_status_accumulators
+    movff       i2c_coeff_2_b0_phys, usb_hid_ep1_in_report_selector_phys
+    call        stage_hid_ep1_in_report_from_selector, 0x0
+    movlw       0x12
+    movlb       0x1
+    movwf       usb_hid_ep1_in_report_byte1_b1, BANKED
+    bra         hid_command_dispatch__clear_opcode_and_return
 hid_command_dispatch__validate_fw_update_signature:
     movff       usb_hid_out_arg3_phys, i2c_coeff_1_b0_phys
     movff       usb_hid_out_arg4_phys, i2c_coeff_0_b0_phys
@@ -781,6 +789,7 @@ fw_update_clear_buffer_from_003_len_w:
     goto        clear_ram_span_from_staged_addr_count
 
 fw_update_clear_relay_status_accumulators:
+    clrf        fw_update_relay_session_active_b0, BANKED
     clrf        fw_update_relay_signature_accum_lo_b0, BANKED
     clrf        fw_update_relay_signature_accum_hi_b0, BANKED
     clrf        fw_update_relay_checksum_accum_lo_b0, BANKED
@@ -988,7 +997,7 @@ fw_update_relay__check_minimum_flash_addr:
 fw_update_relay__check_crc_region_limit:
     movlw       0xC0
     rcall       fw_update_compare_relay_addr_limit_w
-    bc          fw_update_relay__advance_cursor_trampoline
+    bc          fw_update_relay__maybe_flush_final_saved_record
 fw_update_relay__check_address_alignment:
     movlw       0x0F
     andwf       fw_update_relay_addr_lo_b0, W, BANKED
@@ -999,6 +1008,11 @@ fw_update_relay__check_address_alignment:
     bra         fw_update_relay__forward_payload_byte
 fw_update_relay__advance_cursor_trampoline:
     bra         fw_update_relay__advance_payload_cursor
+fw_update_relay__maybe_flush_final_saved_record:
+    movf        fw_update_relay_saved_addr_hi_b0, W, BANKED
+    iorwf       fw_update_relay_saved_addr_lo_b0, W, BANKED
+    bz          fw_update_relay__advance_cursor_trampoline
+    bra         fw_update_relay__emit_saved_addr_checksum
 fw_update_relay__check_saved_status_addr:
     movf        fw_update_relay_saved_addr_hi_b0, W, BANKED
     iorwf       fw_update_relay_saved_addr_lo_b0, W, BANKED
@@ -1094,12 +1108,19 @@ fw_update_relay__return_after_retry_exhausted:
     return      0
 fw_update_relay__retry_until_response_matches:
     movf        fw_update_line_checksum_ok_acc, W, ACCESS
-    bnz         fw_update_relay__maybe_delay_before_status_emit
+    bnz         fw_update_relay__handle_status_response_match
     bra         fw_update_relay__poll_status_response
+fw_update_relay__handle_status_response_match:
+    movlw       0xC0
+    rcall       fw_update_compare_relay_addr_limit_w
+    bnc         fw_update_relay__maybe_delay_before_status_emit
+    clrf        fw_update_relay_saved_addr_lo_b0, BANKED
+    clrf        fw_update_relay_saved_addr_hi_b0, BANKED
+    bra         fw_update_relay__advance_cursor_trampoline
 fw_update_relay__clear_retry_delay_counter:
     clrf        fw_update_relay_retry_delay_count_b0, BANKED
 fw_update_relay__maybe_delay_before_status_emit:
-    movlw       0xBF
+    movlw       0xC0
     rcall       fw_update_compare_relay_addr_limit_w
     bc          fw_update_relay__forward_payload_byte
     movlw       0x04
@@ -1135,7 +1156,7 @@ fw_update_relay__emit_active_addr_status_line:
     clrf        fw_update_relay_checksum_accum_lo_b0, BANKED
     clrf        fw_update_relay_checksum_accum_hi_b0, BANKED
 fw_update_relay__forward_payload_byte:
-    movlw       0xBF
+    movlw       0xC0
     rcall       fw_update_compare_relay_addr_limit_w
     bc          fw_update_relay__clear_checksum_after_range
     btfss       fw_update_relay_addr_lo_b0, 0, BANKED
@@ -2325,7 +2346,7 @@ restore_eeprom_settings_on_boot__read_preset_a_filename:
     rcall       eeprom_write_runtime_version_byte_at_w
     movlw       0x82
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x95                            ; V3.5_RUNTIME_EEPROM_REV_LO
+    movlw       0x99                            ; V3.5_RUNTIME_EEPROM_REV_LO
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
     bra         eeprom_write_byte_if_changed_rcall_trampoline
 
@@ -9243,7 +9264,7 @@ cmd25_identity_query_handler:
     movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS
     movlw       0x09                        ; V3.5_IDENTITY_REV_LO_HI
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x05                        ; V3.5_IDENTITY_REV_LO_LO
+    movlw       0x09                        ; V3.5_IDENTITY_REV_LO_LO
     movwf       flash_end_high_or_loop_mask_scratch_byte, ACCESS
     movlw       0x00                        ; V3.5_IDENTITY_REV_HI_HI
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
@@ -10501,7 +10522,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x05, 0x95, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
+    db  0x03, 0x05, 0x99, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................

@@ -221,6 +221,12 @@ function_003:
   ; If retry count (0x9F) reaches 0x19 (25): abort → label_109
 ```
 
+V3.5 rev `0x0099` pins the MAIN relay side of this boundary: `0x77BF` is still
+inside the flashable CONTROL application window, and `0x77C0` is the exclusive
+bootloader limit.  The relay must flush the saved final `0x77B0` Intel HEX
+record before final host `0x41`; otherwise CRC can appear to succeed while the
+CONTROL release-metadata row remains erased.
+
 ### 2.3 Hex Digit Lookup Table
 
 At flash address 0x1019, the firmware stores an ASCII hex lookup table:

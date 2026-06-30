@@ -2064,6 +2064,237 @@ impl Chain {
         Ok((response, dispatch_hits))
     }
 
+    /// Execute one 64-byte DLCP app-mode HID feature report through MAIN while
+    /// the normal multi-core scheduler advances CONTROL and the peer MAIN.
+    ///
+    /// This keeps the same host-visible USB boundary as
+    /// `firmware_hid_report`, but the redirected MAIN subroutine is driven by
+    /// the chain event queue instead of an inline MAIN-only loop.  Relay tests
+    /// use this when MAIN's HID command waits for real CONTROL bootloader UART
+    /// traffic.
+    #[pyo3(signature = (
+        unit,
+        report,
+        max_ticks=250_000_000,
+        main_usb_service_pc=None,
+        hid_command_dispatch_pc=None,
+        control_bootloader_reset_after_ticks=None,
+    ))]
+    fn firmware_hid_report_full_chain(
+        &mut self,
+        unit: u8,
+        report: Vec<u8>,
+        max_ticks: u64,
+        main_usb_service_pc: Option<u32>,
+        hid_command_dispatch_pc: Option<u32>,
+        control_bootloader_reset_after_ticks: Option<u64>,
+    ) -> PyResult<(Vec<u8>, usize, u64)> {
+        const HID_REPORT_LEN: usize = 64;
+        const DEFAULT_MAIN_USB_SERVICE_3A26_PC: u32 = 0x3436;
+        const DEFAULT_HID_COMMAND_DISPATCH_PC: u32 = 0x10AC;
+        const RETURN_SENTINEL_PC: u32 = 0x001F_FFFE;
+
+        const RAM_USB_STATE: u16 = 0x00CD;
+        const RAM_HID_STAGED: u16 = 0x00C0;
+        const ACTIVE_FLAGS: u16 = 0x005E;
+        const PORTC_ADDR: u16 = 0x0F82;
+        const UCON_ADDR: u16 = 0x0F6D;
+        const UEP1_ADDR: u16 = 0x0F71;
+        const BDT_EP1_OUT_STAT: u16 = 0x040C;
+        const BDT_EP1_OUT_COUNT: u16 = 0x040D;
+        const BDT_EP1_OUT_ADDR_LO: u16 = 0x040E;
+        const BDT_EP1_OUT_ADDR_HI: u16 = 0x040F;
+        const BDT_EP1_IN_STAT: u16 = 0x0410;
+        const BDT_EP1_IN_COUNT: u16 = 0x0411;
+        const BDT_EP1_IN_ADDR_LO: u16 = 0x0412;
+        const BDT_EP1_IN_ADDR_HI: u16 = 0x0413;
+        const EP1_OUT_BUFFER: u16 = 0x042C;
+        const EP1_IN_BUFFER: u16 = 0x046C;
+
+        if report.len() > HID_REPORT_LEN {
+            return Err(PyValueError::new_err(format!(
+                "firmware_hid_report_full_chain: report must be <= {HID_REPORT_LEN} bytes; got {}",
+                report.len()
+            )));
+        }
+        if max_ticks == 0 {
+            return Err(PyValueError::new_err(
+                "firmware_hid_report_full_chain: max_ticks must be > 0",
+            ));
+        }
+        let main_usb_service_pc = main_usb_service_pc.unwrap_or(DEFAULT_MAIN_USB_SERVICE_3A26_PC);
+        let hid_command_dispatch_pc =
+            hid_command_dispatch_pc.unwrap_or(DEFAULT_HID_COMMAND_DISPATCH_PC);
+
+        let i_main = match unit {
+            0 => self.i_main0,
+            1 => self.i_main1,
+            other => {
+                return Err(PyValueError::new_err(format!(
+                    "firmware_hid_report_full_chain: unit must be 0 or 1; got {other}"
+                )));
+            }
+        };
+
+        {
+            let mem = &mut self.inner.cores[i_main].memory;
+            let addr = |raw: u16| dlcp_sim::memory::Address::from_raw(raw);
+
+            mem.write_raw(addr(RAM_USB_STATE), 0x06);
+            mem.write_raw(addr(RAM_HID_STAGED), 0x00);
+            mem.write_raw(addr(ACTIVE_FLAGS), mem.read_raw(addr(ACTIVE_FLAGS)) | 0x08);
+            mem.write_raw(addr(PORTC_ADDR), mem.read_raw(addr(PORTC_ADDR)) | 0x01);
+            mem.write_raw(addr(UCON_ADDR), mem.read_raw(addr(UCON_ADDR)) & !0x02);
+            mem.write_raw(addr(UEP1_ADDR), 0x1E);
+
+            mem.write_raw(addr(BDT_EP1_OUT_COUNT), HID_REPORT_LEN as u8);
+            mem.write_raw(addr(BDT_EP1_OUT_ADDR_LO), 0x2C);
+            mem.write_raw(addr(BDT_EP1_OUT_ADDR_HI), 0x04);
+            mem.write_raw(addr(BDT_EP1_OUT_STAT), 0x08);
+            mem.write_raw(addr(BDT_EP1_IN_COUNT), 0x00);
+            mem.write_raw(addr(BDT_EP1_IN_ADDR_LO), 0x6C);
+            mem.write_raw(addr(BDT_EP1_IN_ADDR_HI), 0x04);
+            mem.write_raw(addr(BDT_EP1_IN_STAT), 0x40);
+
+            for i in 0..HID_REPORT_LEN {
+                let value = report.get(i).copied().unwrap_or(0);
+                mem.write_raw(addr(EP1_OUT_BUFFER + i as u16), value);
+                mem.write_raw(addr(EP1_IN_BUFFER + i as u16), 0);
+            }
+        }
+
+        fn run_subroutine_interleaved(
+            chain: &mut RustChain,
+            core_idx: usize,
+            pc: u32,
+            sentinel_pc: u32,
+            watch_pc: Option<u32>,
+            max_ticks: u64,
+            control_bootloader_reset: Option<(usize, u64)>,
+        ) -> PyResult<(usize, u64)> {
+            let old_pc = chain.cores[core_idx].pc();
+            if !chain.stacks[core_idx].push(sentinel_pc) {
+                return Err(PyRuntimeError::new_err(
+                    "firmware_hid_report_full_chain: unable to push synthetic return address",
+                ));
+            }
+            chain.stacks[core_idx].mirror_to_sfrs(&mut chain.cores[core_idx].memory);
+            chain.cores[core_idx].set_pc(pc);
+
+            let start_tick = chain.current_tick;
+            let deadline = start_tick.saturating_add(max_ticks);
+            let mut hits = 0usize;
+            let mut control_reset_done = false;
+            loop {
+                let current_pc = chain.cores[core_idx].pc();
+                if current_pc == sentinel_pc {
+                    chain.cores[core_idx].set_pc(old_pc);
+                    return Ok((hits, chain.current_tick.saturating_sub(start_tick)));
+                }
+                if chain.current_tick >= deadline {
+                    chain.cores[core_idx].set_pc(old_pc);
+                    return Err(PyRuntimeError::new_err(format!(
+                        "firmware_hid_report_full_chain: usb_hid_dispatch_out_report_if_ready did not return within {max_ticks} universal ticks"
+                    )));
+                }
+                if watch_pc.is_some_and(|wanted| current_pc == wanted) {
+                    hits += 1;
+                }
+
+                if let Some((i_ctl, reset_after_ticks)) = control_bootloader_reset {
+                    let reset_tick = start_tick.saturating_add(reset_after_ticks);
+                    if !control_reset_done && chain.current_tick >= reset_tick {
+                        let old = chain.cores[i_ctl].peripherals.eeprom.get_byte(0xFF);
+                        chain.cores[i_ctl].peripherals.eeprom.set_byte(0xFF, 0x00);
+                        chain.trace_host_eeprom_seed(i_ctl, 0xFF, old, 0x00);
+                        apply_reset(
+                            &mut chain.cores[i_ctl],
+                            &mut chain.stacks[i_ctl],
+                            ResetSource::PowerOn,
+                        );
+                        chain.schedule_next_core_step(i_ctl);
+                        control_reset_done = true;
+                        continue;
+                    }
+                    if !control_reset_done {
+                        if let Some(next) = chain.events.peek() {
+                            if next.tick > reset_tick {
+                                chain.current_tick = reset_tick;
+                                continue;
+                            }
+                        }
+                    }
+                }
+
+                let event = match chain.events.pop() {
+                    Some(event) => event,
+                    None => {
+                        chain.cores[core_idx].set_pc(old_pc);
+                        return Err(PyRuntimeError::new_err(
+                            "firmware_hid_report_full_chain: event queue emptied before subroutine returned",
+                        ));
+                    }
+                };
+                if event.tick > deadline {
+                    chain.current_tick = deadline;
+                    chain.cores[core_idx].set_pc(old_pc);
+                    return Err(PyRuntimeError::new_err(format!(
+                        "firmware_hid_report_full_chain: usb_hid_dispatch_out_report_if_ready did not return within {max_ticks} universal ticks"
+                    )));
+                }
+                chain.current_tick = event.tick;
+                match event.kind {
+                    EventKind::CoreInstructionComplete(idx) => {
+                        chain.execute_core_step(idx);
+                    }
+                    EventKind::PinPropagation(_) => {}
+                    EventKind::PeripheralDeadline { .. } => {}
+                    EventKind::UartByteDelivery { .. } => {
+                        chain.cores[core_idx].set_pc(old_pc);
+                        return Err(PyRuntimeError::new_err(
+                            "firmware_hid_report_full_chain: queued UART delivery events are not supported by this HID helper",
+                        ));
+                    }
+                }
+            }
+        }
+
+        let (_, ticks1) = run_subroutine_interleaved(
+            &mut self.inner,
+            i_main,
+            main_usb_service_pc,
+            RETURN_SENTINEL_PC,
+            None,
+            max_ticks,
+            None,
+        )?;
+
+        let (dispatch_hits, ticks2) = run_subroutine_interleaved(
+            &mut self.inner,
+            i_main,
+            main_usb_service_pc,
+            RETURN_SENTINEL_PC,
+            Some(hid_command_dispatch_pc),
+            max_ticks,
+            control_bootloader_reset_after_ticks.map(|ticks| (self.i_ctl, ticks)),
+        )?;
+
+        let mem = &self.inner.cores[i_main].memory;
+        let addr = |raw: u16| dlcp_sim::memory::Address::from_raw(raw);
+        let in_stat = mem.read_raw(addr(BDT_EP1_IN_STAT));
+        if (in_stat & 0x80) == 0 {
+            return Err(PyRuntimeError::new_err(format!(
+                "firmware_hid_report_full_chain: firmware did not arm EP1 IN response (BDT stat=0x{in_stat:02X})"
+            )));
+        }
+
+        let mut response = Vec::with_capacity(HID_REPORT_LEN);
+        for i in 0..HID_REPORT_LEN {
+            response.push(mem.read_raw(addr(EP1_IN_BUFFER + i as u16)));
+        }
+        Ok((response, dispatch_hits, ticks1.saturating_add(ticks2)))
+    }
+
     /// Drive an external input pin on one MAIN's PORTx to the
     /// requested logic level.  Equivalent of gpsim's
     /// ``MainChainHarness(rc2_mode=...)`` continuous pin-level

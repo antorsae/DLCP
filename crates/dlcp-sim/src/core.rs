@@ -431,6 +431,10 @@ pub const TBLWT_BLOCK_SIZE_2455: usize = 32;
 /// variants.)
 pub const TBLWT_BLOCK_SIZE_K20: usize = 32;
 
+/// Program-flash erase block size.  Both supported variants erase
+/// 64-byte rows; write blocks are smaller on these parts.
+pub const PROGRAM_ERASE_BLOCK_SIZE: usize = 64;
+
 /// Options for loading a full Intel HEX image into a fresh
 /// [`Core`].  The two optional GOTO bakes model the DLCP MAIN
 /// bootloader trampoline in tests that load an app-only V3.x
@@ -552,6 +556,13 @@ impl Core {
             Variant::Pic18F2455 => TBLWT_BLOCK_SIZE_2455,
             Variant::Pic18F25K20 => TBLWT_BLOCK_SIZE_K20,
         }
+    }
+
+    /// Program-memory erase block size.  The erase path must not
+    /// reuse `tblwt_block_size()`: PIC18F25K20 writes 32-byte
+    /// blocks but erases 64-byte rows.
+    pub const fn program_erase_block_size(&self) -> usize {
+        PROGRAM_ERASE_BLOCK_SIZE
     }
 
     /// Snapshot W/STATUS/BSR into the fast shadow stack.

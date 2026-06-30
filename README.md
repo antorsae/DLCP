@@ -3,16 +3,20 @@
 Drop-in replacement firmware for the **Hypex DLCP**.  The current
 non-hardware-gated candidate pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0091`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x5C / build 20260628`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x0099`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x60 / build 20260630`)
 
-CONTROL `rev 0x5C` includes the real-RB5 POWER-wake RC5 decoder recovery,
-the PB2 `Same as PB1` + `DOWN` fix, the
-follow-up BF/08 ACKSTAT-only stale-`!` fix found by the broad simulator gate,
-persistent PB1/PB2 input settings with `Same as PB1` as the erased/unknown PB2
-EEPROM default, fixed RC5 F4/F5 preset/input toggle shortcuts, LCD refresh-budget
-throttling, and the
-test-robustness canonical artifact gates documented in
+MAIN `rev 0x0099` includes the CONTROL-flash relay fail-fast fix: an unarmed
+CONTROL relay returns `42 12 ...` immediately instead of allowing a full
+success-looking stream that fails at final `41 11 ...`.  It also flushes the
+final CONTROL application record before the `0x77C0` bootloader boundary.
+CONTROL `rev 0x60` includes the real-RB5 POWER-wake RC5 decoder recovery,
+the PB2 `Same as PB1` + `DOWN` fix, the follow-up BF/08 ACKSTAT-only stale-`!`
+fix found by the broad simulator gate, persistent PB1/PB2 input settings with
+`Same as PB1` as the erased/unknown PB2 EEPROM default, fixed RC5 F4/F5
+preset/input toggle shortcuts, LCD refresh-budget throttling, PB2 full-table
+row-to-`cmd06` intent persistence, and the test-robustness canonical artifact
+gates documented in
 [`docs/TEST_ROBUSTNESS_IMPL.md`](docs/TEST_ROBUSTNESS_IMPL.md).  Non-hardware
 gates remain required before hardware field closure; live PB2 DOWN,
 audio-routing, persistence, and IR field gates are still required.  The current
@@ -109,7 +113,7 @@ shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 PB2 initially shows `Same as PB1`, preserving the stock-style broadcast input
 behavior for both MAINs.  Selecting a concrete PB2 source makes PB1 and PB2
 independent and sends addressed input frames; selecting `Same as PB1` again
-returns to broadcast behavior.  CONTROL `rev 0x5C` persists PB1 and PB2 input
+returns to broadcast behavior.  CONTROL `rev 0x60` persists PB1 and PB2 input
 choices in guarded CONTROL EEPROM bytes and keeps PB2 pending until PB2 is
 rediscovered after boot.  The Volume page always shows PB1's source.
 This fixes the stock MASTER/FOLLOWER digital-input problem: stock CONTROL
@@ -126,7 +130,7 @@ Input PB2: AES
 If PB2 health ages out, the PB2 input title can show `old` or `lost`, but the
 page remains available after PB2 has been discovered.  The reported PB2
 `Same as PB1` + `DOWN` reboot is simulator/canonical-HEX fixed in CONTROL
-`rev 0x52` and retained in `rev 0x5C`, but not live field-closed until the
+`rev 0x52` and retained in `rev 0x60`, but not live field-closed until the
 hardware gate in
 [`docs/HARDWARE_TEST.md`](docs/HARDWARE_TEST.md) passes.
 
@@ -349,8 +353,10 @@ relayed through a MAIN USB HID path; refresh `LEFT_HID`/`RIGHT_HID` after any
 MAIN USB re-enumeration.  With exactly one visible MAIN, the wrapper auto-picks
 that MAIN.  With multiple visible MAINs, pass the relay MAIN path explicitly.
 CONTROL must be in its bootloader before the live flash. Power-cycle while
-holding **UP + DOWN** for about 6 seconds; do not press SELECT. After CONTROL
-flashing, power-cycle once so V1.73 starts cleanly from cold boot.
+holding **UP + DOWN** for about 6 seconds; do not press SELECT. With MAIN
+V3.5 rev `0x0099` or newer, a missed relay handshake returns `42 12 ...` and
+the repo flasher aborts before report 2 with manual bootloader guidance. After
+CONTROL flashing, power-cycle once so V1.73 starts cleanly from cold boot.
 
 Useful post-flash checks:
 
@@ -400,10 +406,10 @@ Full simulator gate:
 .venv_ep0/bin/python -m pytest tests/sim -n 16 -q
 ```
 
-Current non-hardware x5C verification snapshot:
+Current non-hardware x60 verification snapshot:
 
 - Full all-tests gate:
-  `2111 passed, 21 skipped, 4 xfailed, 7 warnings in 1589.30s`
+  `2144 passed, 21 skipped, 2 xfailed, 7 warnings in 1302.84s`
   This includes the simulator suite; the 19 live hardware tests remain skipped
   unless `--run-hardware` is passed.
 - Focused IR/reconnect/release/LCD/PB2/Field-8 gates:
@@ -411,10 +417,10 @@ Current non-hardware x5C verification snapshot:
   [docs/BUG_IR_POWER_WAKE_RC5_DEAD_IMPL.md](docs/BUG_IR_POWER_WAKE_RC5_DEAD_IMPL.md)
 - MAIN RAM-bank safety: `OK (main-v35)`
 - CONTROL RAM-bank safety: `OK (control-v173)`
-- MAIN x0091 SHA-256:
-  `2e17a79dfd0686d95559275d70b2d830cf40de3dda4f61984c3a8b7b40819f7e`
-- CONTROL x5C SHA-256:
-  `04223d7b6f677671431cef3fac6e1b39986b3f5041e95a7eab722a91c96cdb4f`
+- MAIN x0099 SHA-256:
+  `fcc882e9ef1ec7cd0c5923530cd7a8e4e63c893a02bf08e418b575fb0ca76e92`
+- CONTROL x60 SHA-256:
+  `6bc5abd6a8ea9fc96360c6f99cd524ba3f84dcc425ae0d1d1cbb15505b670875`
 
 This is not live field closure for PB2 DOWN, multi-PB audio routing, or PB2
 input persistence, IR, or test-robustness incidents; run the dedicated hardware

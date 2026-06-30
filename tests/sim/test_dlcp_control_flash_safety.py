@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import shutil
 import sys
 import types
 
@@ -10,7 +11,10 @@ from dlcp_fw.paths import (
     STOCK_CONTROL_HEX_V14,
     V171_CONTROL_HEX,
     V172_CONTROL_HEX,
+    V173_CONTROL_ASM,
     V173_CONTROL_HEX,
+    V35_MAIN_ASM,
+    V35_MAIN_HEX,
 )
 from dlcp_fw.flash.dlcp_control_flash import (
     CONTROL_BOOT_START,
@@ -18,6 +22,7 @@ from dlcp_fw.flash.dlcp_control_flash import (
     CONTROL_PROG_END_EXCL,
     CONTROL_RELEASE_MAGIC,
     CONTROL_RELEASE_METADATA_ADDR,
+    ControlRelayNotArmedError,
     HidDeviceInfo,
     PreflightError,
     _pick_device,
@@ -31,6 +36,8 @@ from dlcp_fw.flash.dlcp_control_flash import (
     run_preflight,
 )
 from dlcp_fw.patch.build_v171_release import build_v171_release, bump_v171_release_revision
+from dlcp_fw.patch.build_v173_release import build_v173_release
+from dlcp_fw.sim.v30_symbols import assemble_v30
 
 
 # All tests in this module are backend-agnostic (static source/hex
@@ -40,9 +47,140 @@ from dlcp_fw.patch.build_v171_release import build_v171_release, bump_v171_relea
 # semantics).
 pytestmark = pytest.mark.dual_supported
 
+_RELAY_HANDSHAKE_MAX_TICKS = 500_000_000
+
 
 def _stock_control_v14() -> Path:
     return STOCK_CONTROL_HEX_V14
+
+
+def _mk_report(cmd: int) -> bytearray:
+    report = bytearray(64)
+    report[0] = cmd & 0xFF
+    return report
+
+
+def _first_control_stream_report(stream: bytes) -> bytes:
+    report = _mk_report(0x42)
+    report[2 : 2 + 30] = stream[:30]
+    return bytes(report)
+
+
+def _copy_main_include(tmp_path: Path) -> None:
+    shutil.copy2(V35_MAIN_ASM.parent / "dlcp_main_ram.inc", tmp_path / "dlcp_main_ram.inc")
+
+
+def _assemble_temp_v35(tmp_path: Path, text: str, *, stem: str = "dlcp_main_v35") -> Path:
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    _copy_main_include(tmp_path)
+    asm_path = tmp_path / f"{stem}.asm"
+    hex_path = tmp_path / f"{stem}.hex"
+    asm_path.write_text(text, encoding="utf-8")
+    assemble_v30(asm_path, hex_path, output_lst=hex_path.with_suffix(".lst"))
+    assert hex_path.with_suffix(".lst").exists()
+    return hex_path
+
+
+def _chain(control_hex: Path, main_hex: Path):
+    native = pytest.importorskip("dlcp_fw.sim.dlcp_sim_native")
+    return native.Chain.from_v171_v32(
+        control_hex_path=str(control_hex),
+        main_hex_path=str(main_hex),
+    )
+
+
+def _connected_chain(control_hex: Path, main_hex: Path):
+    chain = _chain(control_hex, main_hex)
+    assert chain.run_until_connected(300) < 300, chain.lcd_lines()
+    return chain
+
+
+def _single_main_chain(control_hex: Path, main_hex: Path):
+    native = pytest.importorskip("dlcp_fw.sim.dlcp_sim_native")
+    return native.Chain.from_v17_v3x_chain(
+        control_hex_path=str(control_hex),
+        v3x_main_hex_path=str(main_hex),
+    )
+
+
+def _connected_single_main_chain(control_hex: Path, main_hex: Path):
+    chain = _single_main_chain(control_hex, main_hex)
+    assert chain.run_until_connected(300) < 300, chain.lcd_lines()
+    return chain
+
+
+def _assert_flash_release_metadata(readback: bytes, expected: bytes) -> tuple[int, int, int, int]:
+    offset = CONTROL_RELEASE_METADATA_ADDR
+    actual_meta = readback[offset : offset + 16]
+    expected_meta = expected[offset : offset + 16]
+    assert actual_meta == expected_meta
+    assert actual_meta[: len(CONTROL_RELEASE_MAGIC)] == CONTROL_RELEASE_MAGIC
+    return actual_meta[8], actual_meta[9], actual_meta[10], actual_meta[11]
+
+
+def _manual_bootloader_chain(control_hex: Path, main_hex: Path):
+    chain = _chain(control_hex, main_hex)
+    chain.write_control_eeprom_byte(0xFF, 0x00)
+    for _ in range(80):
+        tx = bytes(
+            byte for _tick, src, dst, byte in chain.uart_tx_records_full()
+            if src == 0 and dst == 1
+        )
+        if b"FW_Upd" in tx:
+            return chain
+        chain.step_ticks(1_000_000)
+    pytest.fail(
+        f"CONTROL bootloader prompt not observed; lcd={chain.lcd_lines()!r}, "
+        f"tx_len={len(chain.uart_tx_records_full())}"
+    )
+
+
+def _flash_stream_through_main_relay(
+    chain,
+    stream: bytes,
+    *,
+    control_bootloader_reset_after_ticks: int | None = None,
+) -> tuple[bytes, int]:  # type: ignore[no-untyped-def]
+    total_ticks = 0
+    pos = 0
+    report_i = 0
+    while pos < len(stream):
+        chunk = stream[pos : pos + 30]
+        if len(chunk) < 30:
+            chunk = chunk + bytes([0xFF]) * (30 - len(chunk))
+        report = _mk_report(0x42)
+        report[2 : 2 + 30] = chunk
+        resp, dispatch_hits, ticks = chain.firmware_hid_report_full_chain(
+            0,
+            bytes(report),
+            max_ticks=500_000_000,
+            control_bootloader_reset_after_ticks=(
+                control_bootloader_reset_after_ticks if report_i == 0 else None
+            ),
+        )
+        total_ticks += ticks
+        assert dispatch_hits >= 1
+        assert resp[0] == 0x42
+        assert resp[1] == 0x00, {
+            "report": report_i + 1,
+            "pos": pos,
+            "resp": resp[:8],
+        }
+        pos += 30
+        report_i += 1
+
+    expected_crc = crc_stream(stream)
+    report = _mk_report(0x41)
+    report[4] = (expected_crc >> 8) & 0xFF
+    report[5] = expected_crc & 0xFF
+    resp, dispatch_hits, ticks = chain.firmware_hid_report_full_chain(
+        0,
+        bytes(report),
+        max_ticks=500_000_000,
+    )
+    total_ticks += ticks
+    assert dispatch_hits >= 1
+    return resp, total_ticks
 
 
 def test_preflight_bootloader_match(patched_control_hex: Path) -> None:
@@ -313,6 +451,233 @@ def test_flash_control_first_report_times_out_when_ack_missing(
     assert fake.closed is True
     assert len(fake.writes) == 1
     assert fake.writes[0][1] == 0x42
+
+
+def test_flash_control_aborts_when_main_reports_relay_not_armed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeHidDevice:
+        def __init__(self) -> None:
+            self.writes: list[bytes] = []
+            self.closed = False
+
+        def open_path(self, path: bytes) -> None:
+            assert path == b"pb1"
+
+        def set_nonblocking(self, value: bool) -> None:
+            assert value is True
+
+        def write(self, payload: bytes) -> int:
+            self.writes.append(payload)
+            return len(payload)
+
+        def read(self, size: int, timeout_ms: int):
+            resp = bytearray(64)
+            resp[0] = 0x42
+            resp[1] = 0x12
+            return list(resp)
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake = FakeHidDevice()
+    monkeypatch.setitem(
+        sys.modules,
+        "hid",
+        types.SimpleNamespace(device=lambda: fake),
+    )
+
+    with pytest.raises(ControlRelayNotArmedError, match="UP\\+DOWN"):
+        flash_control(
+            vid=0x04D8,
+            pid=0xFF89,
+            path=b"pb1",
+            stream=bytes([0xFF]) * CONTROL_PROG_END_EXCL,
+            pace_ms=0,
+            init_delay_ms=0,
+            verify=True,
+            dry_run=False,
+            verbose=False,
+        )
+
+    assert fake.closed is True
+    assert len(fake.writes) == 1
+    assert fake.writes[0][1] == 0x42
+
+
+def test_cli_reports_relay_not_armed_without_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    class FakeHidDevice:
+        def open_path(self, path: bytes) -> None:
+            assert path == b"pb1"
+
+        def set_nonblocking(self, value: bool) -> None:
+            assert value is True
+
+        def write(self, payload: bytes) -> int:
+            return len(payload)
+
+        def read(self, size: int, timeout_ms: int):
+            resp = bytearray(64)
+            resp[0] = 0x42
+            resp[1] = 0x12
+            return list(resp)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setitem(
+        sys.modules,
+        "hid",
+        types.SimpleNamespace(device=lambda: FakeHidDevice()),
+    )
+
+    rc = main(
+        [
+            "--hex",
+            str(V173_CONTROL_HEX),
+            "--path",
+            "pb1",
+            "--report-timeout-ms",
+            "1",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "MAIN returned cmd 0x42 status 0x12" in captured.err
+    assert "UP+DOWN" in captured.err
+    assert "Traceback" not in captured.err
+
+
+def test_source_assembled_v35_unarmed_relay_rejects_first_42_report(tmp_path: Path) -> None:
+    main_hex = _assemble_temp_v35(tmp_path, V35_MAIN_ASM.read_text(encoding="utf-8"))
+    stream = build_control_stream(parse_intel_hex(str(V173_CONTROL_HEX)))
+    chain = _connected_single_main_chain(V173_CONTROL_HEX, main_hex)
+
+    resp, dispatch_hits, _ticks = chain.firmware_hid_report_full_chain(
+        0,
+        _first_control_stream_report(stream),
+        max_ticks=_RELAY_HANDSHAKE_MAX_TICKS,
+    )
+
+    assert dispatch_hits >= 1
+    assert resp[:4] == bytes([0x42, 0x12, 0x00, 0x00])
+    assert chain.read_main_reg(0, 0x0CB) == 0x00
+    assert chain.read_main_reg(0, 0x07C) == 0x00
+    assert chain.read_main_reg(0, 0x07D) == 0x00
+
+
+def test_canonical_v35_unarmed_relay_rejects_first_42_report_after_release_build() -> None:
+    stream = build_control_stream(parse_intel_hex(str(V173_CONTROL_HEX)))
+    chain = _connected_chain(V173_CONTROL_HEX, V35_MAIN_HEX)
+
+    resp, dispatch_hits, _ticks = chain.firmware_hid_report_full_chain(
+        0,
+        _first_control_stream_report(stream),
+        max_ticks=_RELAY_HANDSHAKE_MAX_TICKS,
+    )
+
+    assert dispatch_hits >= 1
+    assert resp[:4] == bytes([0x42, 0x12, 0x00, 0x00])
+
+
+def test_old_relay_false_ack_behavior_reproduces_with_temp_mutation(tmp_path: Path) -> None:
+    fixed_text = V35_MAIN_ASM.read_text(encoding="utf-8")
+    assert "bz          fw_update_init_sequence__reject_unarmed_relay" in fixed_text
+    old_text = fixed_text.replace(
+        "bz          fw_update_init_sequence__reject_unarmed_relay",
+        "bz          hid_command_dispatch__emit_opcode_status",
+        1,
+    )
+    old_hex = _assemble_temp_v35(tmp_path, old_text, stem="dlcp_main_v35_old_relay")
+    stream = build_control_stream(parse_intel_hex(str(V173_CONTROL_HEX)))
+    chain = _connected_chain(V173_CONTROL_HEX, old_hex)
+
+    resp, dispatch_hits, _ticks = chain.firmware_hid_report_full_chain(
+        0,
+        _first_control_stream_report(stream),
+        max_ticks=_RELAY_HANDSHAKE_MAX_TICKS,
+    )
+
+    assert dispatch_hits >= 1
+    assert resp[:4] == bytes([0x42, 0x00, 0x00, 0x00])
+    assert chain.read_main_reg(0, 0x0CB) == 0x00
+
+    verify = _mk_report(0x41)
+    expected_crc = crc_stream(stream)
+    verify[4] = (expected_crc >> 8) & 0xFF
+    verify[5] = expected_crc & 0xFF
+    resp, dispatch_hits, _ticks = chain.firmware_hid_report_full_chain(
+        0,
+        bytes(verify),
+        max_ticks=_RELAY_HANDSHAKE_MAX_TICKS,
+    )
+
+    assert dispatch_hits >= 1
+    assert resp[:4] == bytes([0x41, 0x11, 0x00, 0x00])
+
+
+@pytest.mark.slow
+def test_full_chain_fixed_main_flashes_control_v173_through_real_bootloader(
+    tmp_path: Path,
+) -> None:
+    main_hex = _assemble_temp_v35(tmp_path, V35_MAIN_ASM.read_text(encoding="utf-8"))
+    stream = build_control_stream(parse_intel_hex(str(V173_CONTROL_HEX)))
+    chain = _connected_single_main_chain(V173_CONTROL_HEX, main_hex)
+
+    resp, total_ticks = _flash_stream_through_main_relay(
+        chain,
+        stream,
+        control_bootloader_reset_after_ticks=200_000,
+    )
+
+    assert resp[:4] == bytes([0x41, 0x00, 0xAA, 0x00])
+    readback = chain.read_core_flash(0, 0x0000, CONTROL_PROG_END_EXCL)
+    assert readback[0x0040:] == stream[0x0040:]
+    assert _assert_flash_release_metadata(readback, stream)[:3] == (0x01, 0x07, 0x33)
+    tx = bytes(byte for _tick, src, dst, byte in chain.uart_tx_records_full() if src == 0 and dst == 1)
+    assert b"FW_Upd" in tx
+    assert total_ticks > 0
+
+
+@pytest.mark.slow
+def test_full_chain_fixed_main_flashes_newer_v173_through_real_bootloader(
+    tmp_path: Path,
+) -> None:
+    main_hex = _assemble_temp_v35(tmp_path / "main", V35_MAIN_ASM.read_text(encoding="utf-8"))
+    control_dir = tmp_path / "control"
+    control_dir.mkdir()
+    shutil.copy2(V173_CONTROL_ASM.parent / "dlcp_control_ram.inc", control_dir / "dlcp_control_ram.inc")
+    temp_control_asm = control_dir / V173_CONTROL_ASM.name
+    temp_control_asm.write_text(V173_CONTROL_ASM.read_text(encoding="utf-8"), encoding="utf-8")
+    newer_control_hex = control_dir / "DLCP_Control_V1.73_newer.hex"
+    _old_rev, new_rev, _built_hex = build_v173_release(
+        asm_path=temp_control_asm,
+        output_hex=newer_control_hex,
+        build_date="20260701",
+    )
+    stream = build_control_stream(parse_intel_hex(str(newer_control_hex)))
+    chain = _connected_chain(V173_CONTROL_HEX, main_hex)
+
+    resp, total_ticks = _flash_stream_through_main_relay(
+        chain,
+        stream,
+        control_bootloader_reset_after_ticks=200_000,
+    )
+
+    assert resp[:4] == bytes([0x41, 0x00, 0xAA, 0x00])
+    readback = chain.read_core_flash(0, 0x0000, CONTROL_PROG_END_EXCL)
+    assert readback[0x0040:] == stream[0x0040:]
+    major, minor, sub, revision = _assert_flash_release_metadata(readback, stream)
+    assert (major, minor, sub) == (0x01, 0x07, 0x33)
+    assert revision == new_rev
+    assert readback[CONTROL_RELEASE_METADATA_ADDR + 12 : CONTROL_RELEASE_METADATA_ADDR + 16] == bytes(
+        [0x20, 0x26, 0x07, 0x01]
+    )
+    assert total_ticks > 0
 
 
 def test_preflight_reports_target_release_and_compare_limitation(capsys) -> None:

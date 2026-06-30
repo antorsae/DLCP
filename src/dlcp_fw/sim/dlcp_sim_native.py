@@ -753,6 +753,38 @@ class Chain:
         )
         return bytes(response), int(dispatch_hits)
 
+    def firmware_hid_report_full_chain(
+        self,
+        unit: int,
+        payload: bytes | bytearray | list[int],
+        max_ticks: int = 250_000_000,
+        control_bootloader_reset_after_ticks: int | None = None,
+    ) -> tuple[bytes, int, int]:
+        """Execute one HID report through MAIN while advancing the full chain.
+
+        This uses the same EP1 OUT/IN firmware boundary as
+        :meth:`firmware_hid_report`, but the rust facade runs the multi-core
+        event scheduler while MAIN is inside the redirected HID service
+        subroutine.  It is slower and intended for relay contracts where MAIN
+        waits on real CONTROL UART bootloader traffic.
+        """
+        report = [int(b) & 0xFF for b in payload]
+        main_usb_service_pc = _main_symbol_for_hex(
+            self._main_hex_path, "usb_hid_dispatch_out_report_if_ready", 0x3436
+        )
+        hid_command_dispatch_pc = _main_symbol_for_hex(
+            self._main_hex_path, "hid_command_dispatch", 0x10AC
+        )
+        response, dispatch_hits, ticks = self._inner.firmware_hid_report_full_chain(
+            int(unit),
+            report,
+            int(max_ticks),
+            main_usb_service_pc,
+            hid_command_dispatch_pc,
+            None if control_bootloader_reset_after_ticks is None else int(control_bootloader_reset_after_ticks),
+        )
+        return bytes(response), int(dispatch_hits), int(ticks)
+
     def read_core_flash(
         self, core_idx: int, addr: int, length: int
     ) -> bytes:

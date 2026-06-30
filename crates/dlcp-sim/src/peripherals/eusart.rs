@@ -348,7 +348,6 @@ impl Eusart {
             }
             mem.write_raw(Address::from_raw(RCSTA_ADDR), new_rcsta);
         } else {
-            mem.write_raw(Address::from_raw(RCREG_ADDR), 0);
             let rcsta = mem.read_raw(Address::from_raw(RCSTA_ADDR));
             mem.write_raw(
                 Address::from_raw(RCSTA_ADDR),
@@ -366,7 +365,12 @@ impl Eusart {
     /// silicon FIFO is 2-deep (DS §20.0 EUSART chapter):
     /// each RCREG read pops the OLDEST byte, leaving the
     /// next byte (if any) staged in RCREG, and clears RCIF
-    /// only when the FIFO is now empty.  Without the FIFO
+    /// only when the FIFO is now empty.  When the FIFO drains,
+    /// RCREG remains a stale latch holding the byte just read;
+    /// RCIF, not RCREG's value, is the "fresh unread byte"
+    /// indicator.  The stock CONTROL bootloader relies on this
+    /// by comparing W after an RCREG read and then reading
+    /// RCREG again to store the same byte.  Without the FIFO
     /// depth, V3.1 MAIN's chain protocol parser sees only
     /// the latest byte after each ISR-latency window,
     /// turning intact `B1 04 00` frames into phase-shifted
@@ -378,8 +382,9 @@ impl Eusart {
             // `mem` was the front of the FIFO; the executor's
             // `read_target_with_hook` captured it BEFORE
             // calling us.  Update `mem[RCREG]` so the next
-            // read returns the next FIFO byte (or 0 if the
-            // FIFO drains).
+            // read returns the next FIFO byte if one exists.
+            // If the FIFO drains, keep the last-read byte
+            // latched in RCREG while clearing RCIF below.
             self.rx_fifo.pop_front();
             self.update_rx_front_sfrs(mem);
             // RCIF tracks "FIFO non-empty".  Clear it only
@@ -1178,8 +1183,9 @@ mod tests {
     /// Reg 9-4 (PIR1) bit 5: "RCIF: EUSART Receive Interrupt
     /// Flag bit -- 1 = the EUSART receive buffer, RCREG, is
     /// full (cleared when RCREG is read); 0 = the EUSART
-    /// receive buffer is empty."  Our 1-byte model is always
-    /// "FIFO now empty" after a read.  Without this clear,
+    /// receive buffer is empty."  With one queued byte the FIFO
+    /// is empty after the read, but RCREG itself remains a stale
+    /// data latch.  Without this clear,
     /// V3.1's level-triggered IRQ dispatcher re-fires on the
     /// same byte and the ISR's frame parser re-processes it,
     /// completing bogus 3-byte frames that the firmware
@@ -1205,6 +1211,43 @@ mod tests {
             mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
             0,
             "post: RCIF cleared by RCREG read"
+        );
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0xAB,
+            "post: drained FIFO leaves the last RCREG byte latched"
+        );
+    }
+
+    /// A drained receive FIFO clears RCIF but does not zero the
+    /// RCREG data latch.  This matches the CONTROL bootloader's
+    /// stock idiom: it calls a helper that reads RCREG into W,
+    /// compares W against CR, then reads RCREG again to store the
+    /// same byte.
+    #[test]
+    fn rcreg_latches_last_byte_after_fifo_drains() {
+        let mut eusart = Eusart::new(Variant::Pic18F25K20);
+        let mut mem = fresh_mem();
+        mem.write_raw(Address::from_raw(RCSTA_ADDR), RCSTA_SPEN | RCSTA_CREN);
+        eusart.deliver_rx_byte(0x3A, &mut mem);
+
+        eusart.on_sfr_read(RCREG_ADDR, &mut mem);
+
+        assert_eq!(
+            mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
+            0,
+            "FIFO drain must clear RCIF"
+        );
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0x3A,
+            "RCREG data latch should preserve the last-read byte"
+        );
+        eusart.deliver_rx_byte(0x42, &mut mem);
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0x42,
+            "next accepted byte must replace the stale RCREG latch"
         );
     }
 
@@ -1246,12 +1289,18 @@ mod tests {
             PIR1_RCIF,
             "RCIF stays asserted while FIFO non-empty"
         );
-        // Second read: pop 0x04; FIFO empty; RCIF clears.
+        // Second read: pop 0x04; FIFO empty; RCIF clears while
+        // RCREG keeps the last byte latched.
         eusart.on_sfr_read(RCREG_ADDR, &mut mem);
         assert_eq!(
             mem.read_raw(Address::from_raw(PIR1_ADDR)) & PIR1_RCIF,
             0,
             "RCIF clears when FIFO drains"
+        );
+        assert_eq!(
+            mem.read_raw(Address::from_raw(RCREG_ADDR)),
+            0x04,
+            "RCREG keeps the last byte latched after FIFO drains"
         );
     }
 
@@ -1283,8 +1332,8 @@ mod tests {
         eusart.on_sfr_read(RCREG_ADDR, &mut mem); // pop 0x22
         assert_eq!(
             mem.read_raw(Address::from_raw(RCREG_ADDR)),
-            0,
-            "FIFO empty -- dropped 0x33 was lost"
+            0x22,
+            "FIFO empty -- dropped 0x33 was lost, last byte remains latched"
         );
     }
 
