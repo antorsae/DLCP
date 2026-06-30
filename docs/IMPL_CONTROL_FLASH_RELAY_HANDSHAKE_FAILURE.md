@@ -10,10 +10,10 @@ and fixed-good to newer-good CONTROL flash transitions.
 ## Implementation Result
 
 Implemented on the MAIN V3.5 line only.  Canonical
-`firmware/patched/releases/DLCP_Firmware_V3.5.hex` is now rev `0x0099`, SHA-256
-`fcc882e9ef1ec7cd0c5923530cd7a8e4e63c893a02bf08e418b575fb0ca76e92`.
-CONTROL V1.73 remains rev `0x60` / build `20260630`, SHA-256
-`6bc5abd6a8ea9fc96360c6f99cd524ba3f84dcc425ae0d1d1cbb15505b670875`.
+`firmware/patched/releases/DLCP_Firmware_V3.5.hex` is now rev `0x009A`, SHA-256
+`7d84601e588df6840c9f1d5d849cc7b74eaa9d0b07ec7c9f9c2c8487adfeb157`.
+CONTROL V1.73 is rev `0x62` / build `20260630`, SHA-256
+`5b1c5bf41ade024a6fdad1df8715a7952e9be630d64be7445a71b0c45e684b4a`.
 
 Firmware/flasher changes:
 
@@ -22,6 +22,9 @@ Firmware/flasher changes:
 - MAIN clears the relay-session flag with the relay accumulators.
 - MAIN keeps `0x77BF` inside the flashable CONTROL app window and flushes the
   saved final `0x77B0` record at the exclusive `0x77C0` bootloader boundary.
+- MAIN returns after each 30-byte HID relay payload instead of falling through
+  into the CR/LF helper, so a partial downstream `:10` Intel HEX data record is
+  not split at a HID report boundary.
 - `dlcp_control_flash.py` aborts immediately on nonzero `0x42` status; `0x12`
   prints concise manual `UP+DOWN` bootloader guidance with no traceback.
 - The native simulator can now run a full-chain MAIN HID report while CONTROL
@@ -36,15 +39,16 @@ Implemented proof:
   `tests/sim/test_v34_v173_refactoring_contracts.py -k "relay or listing_size"`
   -> `3 passed`.
 - Slow full-chain relay simulations:
-  `tests/sim/test_dlcp_control_flash_safety.py -m slow` -> `2 passed`; both
-  current-bad to fixed-good and fixed-good to newer-good end at `41 00 aa` and
-  verify CONTROL flash readback/metadata.
+  `tests/sim/test_dlcp_control_flash_safety.py -k 'full_chain_fixed_main_flashes_control_v173_through_real_bootloader or full_chain_fixed_main_flashes_newer_v173_through_real_bootloader'`
+  -> `2 passed, 32 deselected in 49.37s`; both current-bad to fixed-good and
+  fixed-good to newer-good end at `41 00 aa`, verify CONTROL flash
+  readback/metadata, and assert complete routed `:10` data records.
 - Rust release simulator gate:
   `cargo test --release -p dlcp-sim` -> passed.
 - `scripts/check_ram_access_safety.py --target main-v35` -> OK.
-- Full pytest gate:
-  `PYTHONPATH=src .venv_ep0/bin/python -m pytest tests -n 32 -q` ->
-  `2144 passed, 21 skipped, 2 xfailed, 7 warnings in 1302.84s`.
+- Full simulator gate:
+  `PYTHONPATH=src .venv_ep0/bin/python -m pytest tests/sim -n 32 -q` ->
+  `2150 passed, 2 skipped, 2 xfailed, 7 warnings in 991.13s`.
 
 Live hardware flash was not run as part of this implementation.
 

@@ -1,7 +1,7 @@
 # IR Preset/Input Switch Shortcuts
 
-Date: 2026-06-24
-Status: Implemented in canonical CONTROL V1.73 release rev 0x54
+Date: 2026-06-30
+Status: Implemented in canonical CONTROL V1.73 rev 0x62
 
 ## Purpose
 
@@ -26,8 +26,12 @@ Current CONTROL source defines these fixed RC5 shortcuts in
 | F2 | 57 | `0x39` | Preset B |
 | Standby | 58 | `0x3A` | Force standby |
 | Wake | 59 | `0x3B` | Force wake |
+| F4 | 61 | `0x3D` | Preset toggle A <-> B |
+| F5 | 63 | `0x3F` | Input toggle S/PDIF <-> Optical |
 
-So F1 and F2 are already correct for preset A/B.
+So F1 and F2 are already correct for preset A/B.  F4/F5 are implemented in
+current V1.73, and this follow-up hardens their repeat, saturation, and
+coverage contracts.
 
 The requested new codes are interpreted as RC5 decimal command values:
 
@@ -39,10 +43,9 @@ The requested new codes are interpreted as RC5 decimal command values:
 RC5 command values are 6-bit values (`0x00..0x3F`).  Therefore the requested
 codes are decimal `61` and `63`, not hexadecimal `0x61` or `0x63`.
 
-`0x3D` and `0x3F` are not currently claimed by the fixed V1.73 shortcut
-cascade.  Legacy V1.5b/V1.6b compatibility tests already treat `0x3D` as an
-unknown command; `0x3F` is inside the valid RC5 command range but is not named
-by the current fixed shortcut constants.
+Legacy V1.5b/V1.6b compatibility tests treat `0x3D` as an unknown command;
+`0x3F` is inside the valid RC5 command range.  V1.73 owns both as fixed
+shortcuts after configured-action matching.
 
 ## Requirements
 
@@ -64,6 +67,10 @@ by the current fixed shortcut constants.
      EEPROM write itself has no exposed abort status.
    - It must not emit a preset frame that leaves CONTROL state, persisted state,
      and MAIN state intentionally inconsistent.
+   - It must use a repeat inhibit so a held or blasted F4 IR command does not
+     toggle rapidly through A/B/A/B states.
+   - Successful F4 coverage must prove MAIN-side preset work completes, not
+     just CONTROL state and the `cmd 0x20` frame.
 
 4. Add F5 input toggle:
    - RC5 `0x3F` toggles PB1/global input intent between S/PDIF and Optical.
@@ -74,8 +81,15 @@ by the current fixed shortcut constants.
      local cache state.
    - It must update the PB1 input cache and emit the existing input-select
      frame path.
+   - If the input frame path cannot reserve TX space for the first route frame,
+     F5 must be a no-op: no PB1 cache change, no PB1 dirty bit, no LCD/input
+     row update, and no EEPROM change.
+   - If PB2 is already known and linked, F5 must prove room for the addressed
+     PB1+PB2 pair before local mutation, so a linked pair does not split due to
+     queue saturation.
    - If PB2 is linked as `Same as PB1`, emit addressed PB1/PB2 input frames
      once PB2 is known; before PB2 discovery, emit only the PB1-addressed frame.
+     `cmd 0x06` input routing must never use broadcast route `0xB0`.
    - If PB2 is independently configured, reuse existing targeted PB1 behavior
      and do not overwrite PB2 intent.  This preserves the recommended tandem
      setup: `Input PB1: Auto Detect` or a concrete external source, and
@@ -115,9 +129,13 @@ by the current fixed shortcut constants.
   probe.
 - The preset toggle can branch to the existing preset-A or preset-B cases based
   on `PRESET_BIT`, instead of duplicating send/persist/abort logic.
+- The preset toggle must set an inhibit window before branching to the existing
+  cases, because a held F4 command otherwise toggles on every decoded repeat.
 - The input toggle should use direct `cmd 0x06` payloads (`0x05` S/PDIF,
   `0x08` Optical) and then call the existing input sender.  It should avoid
   inventing a new route command.
+- The input toggle should prove first-frame TX capacity before mutating PB1
+  input state, so full TX-ring saturation cannot leave CONTROL ahead of MAIN.
 - Any new banked-RAM access in the IR dispatch path must explicitly select the
   correct bank or use access-safe aliases before touching the byte.
 - If the UI row cache is updated, derive it through the existing
@@ -129,11 +147,14 @@ by the current fixed shortcut constants.
 Add simulator coverage proving:
 
 - F1 `0x38` still selects preset A and F2 `0x39` still selects preset B.
-- F4 `0x3D` toggles A -> B and B -> A, including repeated presses.
+- F4 `0x3D` toggles A -> B and B -> A after the repeat guard expires.
+- A held/blasted F4 `0x3D` inside the repeat guard does not toggle twice.
 - F4 uses the same TX-saturation abort/restore semantics as explicit preset
   A/B, and successful F4 toggles persist through the existing EEPROM path.
   Do not require EEPROM-abort testing unless the implementation first adds an
   explicit EEPROM timeout/abort contract.
+- Successful F4 toggles drive both MAINs through preset job completion and DSP
+  coefficient/state convergence, not only CONTROL state and frame bytes.
 - Standby `0x3A` and wake `0x3B` still dispatch as before.
 - Wrong-address fixed shortcut commands `0x38..0x3F` do not dispatch.
 - If a configured IR action is assigned a fixed shortcut command, including
@@ -145,7 +166,13 @@ Add simulator coverage proving:
 - F5 `0x3F` from Optical emits S/PDIF payload `0x05`.
 - F5 `0x3F` from S/PDIF, Auto Detect, AES, USB, analogue, or unknown/corrupt
   PB1 cache emits Optical payload `0x08`.
-- With PB2 linked, F5 emits broadcast route `0xB0`.
+- If the TX ring is saturated before the first F5 input frame can be queued,
+  F5 leaves PB1 cache, LCD/input row, dirty flags, EEPROM, and MAIN route state
+  unchanged.
+- With PB2 linked and PB2 known, F5 emits addressed PB1 and PB2 frames
+  (`0xB1` and `0xB2`) and no broadcast route `0xB0`.
+- Before PB2 discovery, F5 emits only an addressed PB1 route (`0xB1`) and
+  leaves pending PB2 intent untouched until PB2 is discovered.
 - With PB2 independent, F5 emits targeted PB1 route `0xB1` and leaves PB2
   intent, PB2 persistence dirty flag, and PB2 EEPROM byte unchanged.
 - F5 updates PB1 MAIN input/SRC route state end to end, not only CONTROL's TX

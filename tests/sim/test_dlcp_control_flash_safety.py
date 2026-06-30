@@ -118,6 +118,25 @@ def _assert_flash_release_metadata(readback: bytes, expected: bytes) -> tuple[in
     return actual_meta[8], actual_meta[9], actual_meta[10], actual_meta[11]
 
 
+def _assert_complete_main_relay_data_records(records: list[tuple[int, int, int, int]]) -> None:
+    routed: dict[tuple[int, int], bytearray] = {}
+    for _tick, src, dst, byte in records:
+        if src == 0:
+            continue
+        routed.setdefault((src, dst), bytearray()).append(byte)
+
+    saw_data_records = False
+    for tx in routed.values():
+        data_records = [line for line in bytes(tx).split(b"\r\n") if line.startswith(b":10")]
+        if not data_records:
+            continue
+        saw_data_records = True
+        short_records = [line for line in data_records if len(line) != 43]
+        assert short_records == []
+
+    assert saw_data_records
+
+
 def _manual_bootloader_chain(control_hex: Path, main_hex: Path):
     chain = _chain(control_hex, main_hex)
     chain.write_control_eeprom_byte(0xFF, 0x00)
@@ -640,6 +659,7 @@ def test_full_chain_fixed_main_flashes_control_v173_through_real_bootloader(
     assert _assert_flash_release_metadata(readback, stream)[:3] == (0x01, 0x07, 0x33)
     tx = bytes(byte for _tick, src, dst, byte in chain.uart_tx_records_full() if src == 0 and dst == 1)
     assert b"FW_Upd" in tx
+    _assert_complete_main_relay_data_records(chain.uart_tx_records_full())
     assert total_ticks > 0
 
 
@@ -677,6 +697,7 @@ def test_full_chain_fixed_main_flashes_newer_v173_through_real_bootloader(
     assert readback[CONTROL_RELEASE_METADATA_ADDR + 12 : CONTROL_RELEASE_METADATA_ADDR + 16] == bytes(
         [0x20, 0x26, 0x07, 0x01]
     )
+    _assert_complete_main_relay_data_records(chain.uart_tx_records_full())
     assert total_ticks > 0
 
 

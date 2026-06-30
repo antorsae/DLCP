@@ -2,7 +2,7 @@
 
 Date: 2026-06-30
 
-Status: fixed in MAIN V3.5 rev `0x0099`; live hardware not run
+Status: fixed in MAIN V3.5 rev `0x009A`; live hardware not run
 
 ## Summary
 
@@ -19,12 +19,14 @@ verify resp[0..7] = 41 11 00 00 00 00 00 00
 RuntimeError: CRC verify failed (resp[2]=0x00, expected 0xAA)
 ```
 
-MAIN V3.5 rev `0x0099` changes that failure from a late full-stream CRC failure
+MAIN V3.5 rev `0x009A` changes that failure from a late full-stream CRC failure
 into an immediate `42 12 ...` relay-not-armed response.  The repo flasher now
 aborts on that status with manual bootloader guidance instead of streaming the
 remaining reports.  The same V3.5 build also fixes the relay's final application
 record boundary so the `0x77B0..0x77BF` CONTROL metadata row is sent and
-acknowledged before final `0x41` verification.
+acknowledged before final `0x41` verification, and fixes packet-boundary CR/LF
+injection so a 30-byte HID report boundary cannot split a downstream `:10`
+Intel HEX data record.
 
 Manual CONTROL bootloader entry remains the live operator path unless app-side
 handoff has been separately validated: power-cycle CONTROL while holding
@@ -42,7 +44,7 @@ For the 2026-06-30 reproduction:
 
 - previous deployed CONTROL artifact: V1.73 rev `0x5F`, build `20260629`
 - target CONTROL artifact: V1.73 rev `0x60`, build `20260630`
-- fixed MAIN artifact: canonical V3.5 rev `0x0099`
+- fixed MAIN artifact: canonical V3.5 rev `0x009A`
 - target stream length: `0x77C0` bytes, 1022 reports
 - expected relay CRC: `0x2780`
 - observed final verify: `41 11 00`
@@ -159,7 +161,8 @@ CONTROL lines where app-side bootloader entry is unreliable or absent.
   convenience path.
 - Live hardware flash confirmation was not run for this fix.
 - Operators using older MAIN firmware can still see the late `41 11 00` failure
-  shape; flash MAINs to V3.5 rev `0x0099` or newer first.
+  shape or malformed downstream Intel HEX records; flash MAINs to V3.5 rev
+  `0x009A` or newer first.
 
 ## Implemented Fix
 
@@ -169,6 +172,9 @@ CONTROL lines where app-side bootloader entry is unreliable or absent.
 - The relay keeps `0x77BF` inside the flashable app window and flushes any saved
   final record when the stream cursor reaches the exclusive `0x77C0` bootloader
   limit.
+- The relay returns to the HID handler after each 30-byte payload report instead
+  of falling through into the CR/LF helper, so partial downstream Intel HEX data
+  records stay contiguous across HID packet boundaries.
 - `dlcp_control_flash.py` rejects nonzero `0x42` stream status immediately; for
   `0x12` it raises `ControlRelayNotArmedError` and the CLI prints concise
   `UP+DOWN` bootloader guidance without a Python traceback.
@@ -189,6 +195,8 @@ CONTROL lines where app-side bootloader entry is unreliable or absent.
 - Slow full-chain proof:
   - `test_full_chain_fixed_main_flashes_control_v173_through_real_bootloader`
   - `test_full_chain_fixed_main_flashes_newer_v173_through_real_bootloader`
+  - both tests also assert emitted MAIN relay `:10` data records are complete
+    per UART route, not split by packet-boundary CR/LF.
 
 ## Operational Guidance Until Fixed
 

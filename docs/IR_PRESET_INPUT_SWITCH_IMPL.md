@@ -1,7 +1,7 @@
 # IR Preset/Input Switch Shortcuts Implementation Plan
 
-Date: 2026-06-24
-Status: Implemented - simulator verified; canonical release published
+Date: 2026-06-30
+Status: Implemented; follow-up hardening published in CONTROL V1.73 rev 0x62
 Source spec: `docs/IR_PRESET_INPUT_SWITCH.md`
 
 ## Scope
@@ -15,7 +15,8 @@ Implement CONTROL V1.73 fixed Hypex RC5 shortcuts:
 - Add repo hardware-sender names for F4/F5 if hardware smoke is claimed.
 
 MAIN V3.5 protocol changes are out of scope.  F5 must reuse existing
-`cmd 0x06` input-select frames.
+`cmd 0x06` input-select frames, and those frames must be addressed only to
+known/reachable PBs.  `B0/06` broadcast input routing is forbidden.
 
 ## Required Docs Read
 
@@ -38,16 +39,16 @@ MAIN V3.5 protocol changes are out of scope.  F5 must reuse existing
   - `RC5_PRESET_B equ 0x39`
   - `RC5_STANDBY_ENTER equ 0x3A`
   - `RC5_WAKE equ 0x3B`
+  - `RC5_PRESET_TOGGLE equ 0x3D`
+  - `RC5_INPUT_OPTICAL_SPDIF_TOGGLE equ 0x3F`
 - `src/dlcp_fw/asm/dlcp_control_v173.asm` first compares the decoded address
   against RAM `0x20`, then compares configured action codes in RAM `0x21..0x26`.
-- The current broad fixed-shortcut label
-  `ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe`
-  is also reached by wrong-address and configured-action-success paths.  F4/F5
-  must not be appended there without splitting or guarding the path.
-- The fixed shortcut cascade currently tests only `0x38..0x3B`; `0x3D` and
-  `0x3F` are not named fixed shortcuts.  Legacy V1.5b/V1.6b tests treat
-  `0x3D` as unknown; `0x3F` is not in the current fixed cascade or RC5 constant
-  list.
+- The original F4/F5 implementation split the fixed-shortcut probe so only
+  address-matched commands that miss all configured action slots enter the
+  fixed cascade.  Source tests now assert all six configurable action bytes are
+  checked before the fixed F1/F2/F4/F5 cases.
+- The fixed shortcut cascade tests `0x38..0x3B`, `0x3D`, and `0x3F`.
+  Legacy V1.5b/V1.6b tests still treat `0x3D` as unknown on old firmware.
 - Existing preset cases `v171_ir_preset_a_case` and
   `v171_ir_preset_b_case` perform state update,
   `v171_send_preset_frame_and_persist`, TX-abort restore, event flag, and IR
@@ -66,20 +67,26 @@ MAIN V3.5 protocol changes are out of scope.  F5 must reuse existing
 - `tests/sim/test_v173_multi_pb_input_selection.py` has the right source
   iteration fixture: it copies `V17_CONTROL_RAM_INC` and `V173_CONTROL_ASM`,
   assembles a temporary CONTROL HEX, and boots it with V3.5 MAIN.
-- `src/dlcp_fw/cli/hardware_flipper_ir.py` currently exposes F1/F2 but not
-  F4/F5.
+- `src/dlcp_fw/cli/hardware_flipper_ir.py` already exposes F4/F5 sender names;
+  this follow-up does not require a live hardware smoke run.
 
 ## Gap Analysis
 
-- No constants exist for RC5 `0x3D`/`0x3F`.
-- The fixed shortcut dispatch entry path is too broad for the new F4/F5
-  requirement and should be split or guarded.
-- No F4/F5 behavior tests exist.
-- No tests pin wrong-address behavior or configured-action collision
-  precedence for the new shortcuts.
-- No tests pin F5 PB2 persistence side effects.
-- README/HARDWARE_TEST/hardware Flipper action maps do not document or expose
-  F4/F5.
+- Historical original gaps closed by the 2026-06-24 F4/F5 implementation:
+  constants exist, fixed shortcuts are address-gated after configured-action
+  matching, the Flipper sender exposes F4/F5, and happy-path F4/F5 simulator
+  coverage exists.
+- The current F4 toggle path lacks a repeat inhibit, so held or blasted F4 RC5
+  repeats can toggle through multiple preset states too quickly.
+- Existing F4 behavior tests prove CONTROL state, EEPROM, and MAIN preset bits
+  but do not prove MAIN preset jobs finish or DSP coefficient state converges.
+- The current F5 path updates PB1 cache/dirty/UI state before calling
+  `input_frame_send`; if the TX ring is already saturated, CONTROL can advance
+  local input state without queuing any visible route frame.
+- F5 has linked/independent happy-path tests, but the single-known-PB F5 path
+  and saturated-TX no-op path are not pinned.
+- The 2026-06-24 implementation evidence remains historical; the current
+  pre-hardening baseline is CONTROL V1.73 rev `0x60` / build `20260630`.
 
 ## Proposed Implementation
 
@@ -102,6 +109,8 @@ MAIN V3.5 protocol changes are out of scope.  F5 must reuse existing
      `v173_ir_input_optical_spdif_toggle_case`.
 
 4. Implement `v173_ir_preset_toggle_case` without duplicated send logic:
+   - Set the same short shared RC5 inhibit window used by input switching
+     before branching, so a held F4 command cannot rapidly toggle A/B/A/B.
    - If `PRESET_BIT` is set, branch to existing `v171_ir_preset_a_case`.
    - If `PRESET_BIT` is clear, branch to existing `v171_ir_preset_b_case`.
    - This inherits TX saturation restore, persistence on success, event flag,
@@ -111,6 +120,15 @@ MAIN V3.5 protocol changes are out of scope.  F5 must reuse existing
    - Select bank 0, or use access-safe aliases, before every banked access to
      `input_select_cache_b0`, `rx_parsed_data_acc`, `rx_ring_staging_b0`, and
      related staging bytes.
+   - Before mutating PB1 cache, LCD row state, dirty flags, or EEPROM state,
+     call a TX-ring capacity helper and branch on `STATUS.C` immediately.
+     `STATUS.C` is the helper ABI and later compare/map instructions clobber
+     it.
+   - If PB2 is known and linked, prove room for six bytes before local mutation
+     so the addressed PB1/PB2 pair cannot be split by queue saturation.  For
+     single-known-PB and independent PB2 cases, prove room for one 3-byte frame.
+     If the required capacity is unavailable, re-arm IR and return with no
+     local input change.
    - If `input_select_cache_b0 == 0x08`, target S/PDIF payload `0x05`.
    - Otherwise target Optical payload `0x08`.
    - Stage the target payload in `rx_parsed_data_acc`, call
@@ -119,8 +137,9 @@ MAIN V3.5 protocol changes are out of scope.  F5 must reuse existing
    - Copy the target payload into `input_select_cache_b0`.
    - Set the same redraw/event bits used by the existing input IR path.
    - Call `input_frame_send` so existing linked/independent PB2 route behavior
-     is reused: `B0` when linked/PB2 unknown, `B1` for PB1 when PB2 is
-     independent.
+     is reused: `B1` while only PB1 is known, addressed `B1` plus `B2` when PB2
+     is linked and known, and addressed `B1` only when PB2 is independent.  Do
+     not emit `B0/06`.
    - Re-arm `IR_ARMED` before return.
 
 6. Add hardware sender support:
@@ -187,6 +206,12 @@ unless the implementation explicitly enters the canonical release-publish path.
      IR re-arms.
    - Do not require EEPROM-abort testing unless this implementation first adds
      an explicit EEPROM timeout/abort contract.
+   - Real-RB5/receiver-layer repeat regression: send F4, then send a held
+     repeat inside the inhibit window; assert only one preset transition and no
+     opposite-direction `cmd 0x20` frame.
+   - DSP completion regression: after F4, assert both MAINs reach the requested
+     preset, preset jobs return idle, and the MAIN DSP coefficient image/state
+     converges across PB1/PB2.  The old bit-only test was insufficient.
 
 3. F5 input toggle and UI coherence:
    - From PB1 Optical payload `0x08`, inject `0x3F`; expect S/PDIF payload
@@ -202,17 +227,17 @@ unless the implementation explicitly enters the canonical release-publish path.
      prove no PB2-page corruption.
 
 4. F5 route and PB2 safety:
-   - Linked PB2: expect broadcast route `0xB0`; verify MAIN PB1 and PB2 apply
-     the expected input/SRC route when linked.
+   - Linked PB2: expect addressed `B1/06` and `B2/06` with no `B0/06`; verify
+     MAIN PB1 and PB2 apply the expected input/SRC route when linked.
+   - Single-known-PB boot/discovery window through F5: expect only `B1/06`;
+     PB2 concrete intent remains pending until PB2 is discovered.
    - Independent PB2 with `input_intent_pb2=0x07` and persisted AES: expect
      route `0xB1`, PB2 runtime intent unchanged, PB2 MAIN remains AES, PB2
      EEPROM `0x5F` unchanged, and `INPUT_SPLIT_FLAG_PB2_PERSIST_DIRTY` clear.
    - Existing input next/previous tests still pass.
-   - Document and test, if practical, that F5 intentionally inherits existing
-     input next/previous TX-saturation semantics: local PB1 cache/LCD may update
-     before `input_frame_send` can reserve TX space.  If this behavior is not
-     acceptable for F5, implement restore/no-op-on-saturation instead and add a
-     saturation regression.
+   - TX saturation regression: force the TX ring full before F5; assert no
+     `cmd 0x06`, PB1 cache/row/dirty state unchanged, EEPROM unchanged, MAIN
+     route unchanged, and IR re-armed.
 
 5. BSR/banked-RAM safety:
    - Add a source-level assertion around the new F5 case proving `movlb 0x00`
@@ -231,6 +256,7 @@ Focused commands:
 
 ```bash
 .venv_ep0/bin/python -m pytest tests/sim/test_v173_multi_pb_input_selection.py -q -k 'ir or input'
+.venv_ep0/bin/python -m pytest tests/sim/test_v171_ir_rc5_pulse_train.py -q -k 'f4 or receiver_dispatches_volume_mute_preset_and_input_shortcuts'
 .venv_ep0/bin/python -m pytest tests/sim/test_hardware_flipper_ir.py -q
 .venv_ep0/bin/python -m pytest tests/sim/test_v171_ir_command_matrix.py tests/sim/test_v171_preset_inline.py tests/sim/test_v171_ir_endpoints.py -q
 PYTHONPATH=src .venv_ep0/bin/python scripts/check_ram_access_safety.py --target control-v173
@@ -305,16 +331,106 @@ or RAM safety failure.
 - CONTROL source has named constants and dispatch for `0x3D` and `0x3F`.
 - Fixed shortcuts fire only for configured-address, unconsumed commands.
 - F4 toggles A/B using the existing preset send/persist/TX-abort path.
+- Held/blasted F4 is rate-limited by a repeat inhibit and cannot toggle twice
+  inside one inhibit window.
 - F5 toggles only PB1/global S/PDIF/Optical intent and respects linked vs
   independent PB2 routing.
+- F5 is a no-op when the first input route frame cannot reserve TX-ring space.
 - F5 proves MAIN route/SRC effects, not just CONTROL frame bytes.
 - README, HARDWARE_TEST, and Flipper sender docs/actions are updated.
+- If no hardware smoke is run, README/HARDWARE_TEST may continue to list F4/F5
+  sender support while documenting simulator-only closure for this hardening.
 - Focused simulator tests and RAM safety pass under `.venv_ep0`.
 - Release build is produced only through the canonical V1.73 builder when the
   implementation is meant to publish a new release, and release identity docs
   are updated in the same change.
 
-## Implementation Result
+## 2026-06-30 Follow-Up Implementation Result
+
+Implemented and published on 2026-06-30.
+
+Changed files for this follow-up:
+
+- `src/dlcp_fw/asm/dlcp_control_v173.asm`
+- `firmware/patched/releases/DLCP_Control_V1.73.hex`
+- `tests/sim/test_v173_multi_pb_input_selection.py`
+- `tests/sim/test_v171_ir_rc5_pulse_train.py`
+- `README.md`
+- `AGENTS.md`
+- `docs/TEST_ROBUSTNESS_IMPL.md`
+- `docs/IR_PRESET_INPUT_SWITCH.md`
+- `docs/IR_PRESET_INPUT_SWITCH_IMPL.md`
+
+Behavior implemented:
+
+- F4 `0x3D` now seeds the short shared RC5 inhibit window before branching to
+  the existing preset A/B handlers, so a held F4 frame cannot immediately
+  toggle A/B/A/B.
+- F5 `0x3F` now proves TX capacity before mutating PB1 input cache, selected
+  LCD row state, dirty flags, or EEPROM-save state.
+- F5 uses the existing 3-byte reserve for single-known-PB and independent-PB2
+  cases, and a new 6-byte reserve for known+linked PB2 so the addressed
+  `B1/06` + `B2/06` pair cannot split due to queue saturation.
+- `B0/06` input broadcast remains forbidden; addressed routing continues to be
+  provided by `input_frame_send`.
+
+Old-behavior red checks:
+
+- The new real-RB5 F4 held-repeat test passed on source-assembled CONTROL and
+  failed on the pre-hardening canonical x60 artifact because x60 had no F4
+  inhibit.
+- Independent reviewer probes reproduced the x60 F5 bug: with the TX ring
+  saturated, F5 emitted no `cmd 0x06` frame but still changed PB1 cache, set
+  PB1 dirty, and could later persist PB1 EEPROM ahead of MAIN route state.
+
+Canonical release:
+
+```bash
+PYTHONPATH=src .venv_ep0/bin/python scripts/build_v173_release.py
+# built canonical V1.73 CONTROL release:
+# firmware/patched/releases/DLCP_Control_V1.73.hex (release rev 0x60 -> 0x62)
+
+shasum -a 256 firmware/patched/releases/DLCP_Control_V1.73.hex
+# 5b1c5bf41ade024a6fdad1df8715a7952e9be630d64be7445a71b0c45e684b4a
+```
+
+Verification:
+
+```bash
+.venv_ep0/bin/python -m pytest tests/sim/test_v173_multi_pb_input_selection.py -q -k 'f4 or f5 or fixed_ir_shortcut_probe'
+# 29 passed, 149 deselected in 99.05s
+
+.venv_ep0/bin/python -m pytest tests/sim/test_v171_ir_rc5_pulse_train.py -q -k 'f4_held_repeat or receiver_dispatches_volume_mute_preset_and_input_shortcuts'
+# 4 passed, 18 deselected in 18.25s
+
+.venv_ep0/bin/python -m pytest tests/sim/test_v35_v173_release_builders.py tests/sim/test_v34_v173_release_builders.py -q
+# 14 passed in 0.06s
+
+.venv_ep0/bin/python -m pytest tests/sim/test_v171_ir_command_matrix.py tests/sim/test_v171_preset_inline.py tests/sim/test_v171_ir_endpoints.py tests/sim/test_hardware_flipper_ir.py -q
+# 28 passed in 117.03s
+
+PYTHONPATH=src .venv_ep0/bin/python scripts/check_ram_access_safety.py --target control-v173
+# RAM bank safety: OK (control-v173)
+```
+
+No live hardware smoke and no full all-tests gate were run for this x61
+hardening pass.  Live PB2 DOWN, audio-routing, persistence, IR, and
+test-robustness field gates remain required before hardware field closure.
+
+Follow-up review synthesis:
+
+- Eight independent review passes were run for the follow-up IMPL.
+- High findings on F4 repeat inhibit and F5 saturated-TX no-op are closed by
+  the source changes and red/green tests above.
+- Medium findings on receiver-layer fidelity and configured-action precedence
+  are closed by the real-RB5 held-repeat test and the expanded source-flow
+  assertion over action bytes `0x21..0x26`.
+- Medium finding on linked PB2 partial TX capacity is closed by the F5
+  6-byte preflight before local mutation.
+- Release-ledger ambiguity is closed by publishing x61 and recording x60 as
+  the pre-hardening baseline.
+
+## Historical 2026-06-24 Implementation Result
 
 Implemented on 2026-06-24.
 

@@ -1933,6 +1933,22 @@ tx_ring_reserve_3:
         bcf     STATUS, C, A
         return  0x0
 
+tx_ring_reserve_6:
+        ; Same ABI as tx_ring_reserve_3, but probes room for two routed
+        ; 3-byte frames before F5 mutates linked PB1/PB2 input state.
+        movlb   0x00
+        movf    tx_ring_rd_b0, W, B
+        subwf   tx_ring_wr_b0, W, B
+        btfss   STATUS, C, A
+        addlw   0x30
+        addlw   0x06
+        movwf   v171_tx_enq_retry_acc, A
+        movlw   0x30
+        cpfslt  v171_tx_enq_retry_acc, A
+        bra     tx_ring_reserve_3_saturated
+        bcf     STATUS, C, A
+        return  0x0
+
 tx_ring_reserve_3_saturated:
         movlb   0x01
         incfsz  v171_tx_saturate_count_b1, F, BANKED
@@ -4149,11 +4165,29 @@ ir_dispatch_configured_or_fixed_shortcuts__post_configured_fixed_shortcut_probe:
         return  0x0
 
 v173_ir_preset_toggle_case:
+        movlw   0x58
+        movwf   ir_rc5_inhibit_lo_acc, A
+        movlw   0x1b
+        movwf   ir_rc5_inhibit_hi_acc, A
         btfsc   control_flags_acc, PRESET_BIT, A             ; B -> A
         bra     v171_ir_preset_a_case
         bra     v171_ir_preset_b_case                        ; A -> B
 
 v173_ir_input_optical_spdif_toggle_case:
+        movlb   0x01
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_SEEN, BANKED
+        bra     v173_ir_input_toggle_preflight_single
+        btfss   input_split_flags_b1, INPUT_SPLIT_FLAG_PB2_LINKED, BANKED
+        bra     v173_ir_input_toggle_preflight_single
+        movlb   0x00
+        call    tx_ring_reserve_6, 0x0
+        bc      v173_ir_input_toggle_abort_rearm
+        bra     v173_ir_input_toggle_select_target
+v173_ir_input_toggle_preflight_single:
+        movlb   0x00
+        call    tx_ring_reserve_3, 0x0
+        bc      v173_ir_input_toggle_abort_rearm
+v173_ir_input_toggle_select_target:
         movlb   0x00
         movlw   0x08
         cpfseq  input_select_cache_b0, BANKED                ; Optical?
@@ -4176,6 +4210,10 @@ v173_ir_input_toggle_stage:
         movlw   0x1b                                        ; stock input IR inhibit
         movwf   (Common_RAM + 28), A
         rcall   input_frame_send
+        bsf     control_flags_acc, IR_ARMED, A
+        return  0x0
+v173_ir_input_toggle_abort_rearm:
+        movlb   0x00
         bsf     control_flags_acc, IR_ARMED, A
         return  0x0
 
@@ -4796,7 +4834,7 @@ v171_diag_render_healthy:
         call    lcd_char_write, 0x0
         movlw   'K'
         call    lcd_char_write, 0x0
-        call    v172_diag_render_identity_suffix, 0x0
+        rcall   v172_diag_render_identity_suffix
 
         movlw   0xC0                                       ; LCD cursor row 1 col 0
         call    lcd_command, 0x0
@@ -9437,7 +9475,7 @@ input_pb2_same_as_pb1_table:
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x36, 0x30, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x33, 0x30, 0x00 ; "Rev x60 20260630"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x36, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x33, 0x30, 0x00 ; "Rev x62 20260630"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -9445,7 +9483,7 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x60                    ; V1.73 + monotonic release revision
+        db      0x01, 0x07, 0x33, 0x62                    ; V1.73 + monotonic release revision
         db      0x20, 0x26, 0x06, 0x30                    ; build date 20260630 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---

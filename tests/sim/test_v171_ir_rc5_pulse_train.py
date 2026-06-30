@@ -688,6 +688,60 @@ def test_v173_real_rc5_receiver_dispatches_volume_mute_preset_and_input_shortcut
 
 @pytest.mark.dual_supported
 @pytest.mark.slow
+def test_v173_real_rc5_f4_held_repeat_does_not_toggle_twice(
+    v173_control_image: Path,
+) -> None:
+    chain = _build_v173_v35_chain(v173_control_image)
+    _configure_hypex_ir_profile(chain)
+    chain.write_reg(
+        CONTROL_FLAGS_PHYS,
+        (chain.read_reg(CONTROL_FLAGS_PHYS) & ~CONTROL_PRESET_B_MASK) | IR_ARMED_MASK,
+    )
+    chain.write_control_eeprom_byte(0x74, 0x00)
+
+    before_tx = len(chain.tx_frames())
+    _rearm_rc5_receiver_without_state_reset(chain)
+    _drive_rc5_pulse_train(
+        chain,
+        addr=IR_ADDR_HYPEX,
+        cmd=IR_CMD_PRESET_TOGGLE,
+        toggle=0,
+    )
+    _wait_for_decoded(
+        chain,
+        addr=IR_ADDR_HYPEX,
+        cmd=IR_CMD_PRESET_TOGGLE,
+        label="initial real-RB5 F4 preset toggle",
+    )
+    _wait_until(
+        chain,
+        lambda: bool(chain.read_reg(CONTROL_FLAGS_PHYS) & CONTROL_PRESET_B_MASK)
+        and (0xB0, 0x20, 0x01) in list(chain.tx_frames()[before_tx:]),
+        label="initial real-RB5 F4 did not select preset B",
+        slices=30,
+    )
+    chain.step_ticks(RC5_INTER_FRAME_GAP_TICKS)
+    assert (
+        chain.read_reg(IR_INHIBIT_LO_PHYS) or chain.read_reg(IR_INHIBIT_HI_PHYS)
+    ), "F4 repeat guard expired before the held-repeat frame"
+
+    before_repeat = len(chain.tx_frames())
+    _drive_rc5_pulse_train(
+        chain,
+        addr=IR_ADDR_HYPEX,
+        cmd=IR_CMD_PRESET_TOGGLE,
+        toggle=0,
+    )
+    chain.step_ticks(5_000_000)
+    repeat_frames = list(chain.tx_frames()[before_repeat:])
+
+    assert (0xB0, 0x20, 0x00) not in repeat_frames
+    assert chain.read_reg(CONTROL_FLAGS_PHYS) & CONTROL_PRESET_B_MASK
+    assert chain.read_control_eeprom_byte(0x74) == 0x01
+
+
+@pytest.mark.dual_supported
+@pytest.mark.slow
 def test_v173_real_rc5_receiver_dispatches_standby_and_wake_shortcuts(
     v173_control_image: Path,
 ) -> None:
