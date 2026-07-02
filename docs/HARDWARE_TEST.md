@@ -136,7 +136,7 @@ Important property:
   mechanism
 - this means CONTROL test images can be deployed without a separate CONTROL USB
   cable
-- MAIN V3.5 rev `0x0099` or newer returns `42 12 ...` immediately if the
+- MAIN V3.5 rev `0x009B` or newer returns `42 12 ...` immediately if the
   CONTROL relay does not arm.  Treat that as "payload was not streamed"; enter
   manual CONTROL bootloader with `UP+DOWN` and retry through the explicit relay
   MAIN HID path.
@@ -1500,7 +1500,7 @@ plus redacted/hash-only IDs, cropped LCD-only media, and stripped metadata.
    retry.  Do not count a `--preflight-only` pass as relay/CONTROL path proof.
 
    Power-cycle CONTROL or the full DLCP, verify the LCD boot splash reports
-   V1.73 `Rev x60`, rerun `identify-mains --require-left-right`, and refresh
+   V1.73 `Rev x63`, rerun `identify-mains --require-left-right`, and refresh
    `LEFT_HID`/`RIGHT_HID`.  A no-flash run is smoke-only unless an app
    hash/readback proves the exact on-device image.
 
@@ -1685,7 +1685,7 @@ gate unless the current operator has explicitly approved live hardware access.
 
 ### Prerequisites
 
-- MAIN flashed with canonical V3.5 rev `0x0099` or newer.
+- MAIN flashed with canonical V3.5 rev `0x009B` or newer.
 - Known locked digital source on the selected input.
 - Explicit HID path for the MAIN under test.  Use `--all` only when the goal is
   to query every attached MAIN.
@@ -1746,8 +1746,8 @@ future route/TAS regressions.
 ### Prerequisites
 
 - CONTROL flashed with canonical V1.73 for the target validation; the current
-  multi-PB/test-robustness/IR/LCD artifact is rev `0x60`.
-- both MAINs flashed with canonical V3.5, currently rev `0x0099`.
+  multi-PB/test-robustness/IR/LCD/Fable artifact is rev `0x63`.
+- both MAINs flashed with canonical V3.5, currently rev `0x009B`.
 - known audio source available on at least one fixed digital input and through
   Auto Detect; if possible, exercise `S/PDIF`, `USB Audio`, `AES`, and
   `Optical` individually.

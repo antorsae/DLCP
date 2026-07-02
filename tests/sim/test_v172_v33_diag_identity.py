@@ -425,6 +425,20 @@ def _inject_control_rx_frames(chain, frames: list[tuple[int, int, int]]) -> None
     chain.step_ticks(2_000_000)
 
 
+def _identity_reply_frames(
+    query_id: int, *, major: int, minor: int, revision: int
+) -> list[tuple[int, int, int]]:
+    return [
+        (0xBF, 0x4F, query_id),
+        (0xBF, 0x50, major & 0x0F),
+        (0xBF, 0x51, minor & 0x0F),
+        (0xBF, 0x52, (revision >> 4) & 0x0F),
+        (0xBF, 0x53, revision & 0x0F),
+        (0xBF, 0x54, (revision >> 12) & 0x0F),
+        (0xBF, 0x55, (revision >> 8) & 0x0F),
+    ]
+
+
 def test_v33_cmd25_identity_handler_reuses_diag_burst_loop() -> None:
     """MAIN space is tight: cmd 0x25 must stay compact, not unroll 5 frames."""
     text = V33_MAIN_ASM.read_text(encoding="utf-8")
@@ -826,6 +840,77 @@ def test_v173_v35_canonical_diag_identity_malformed_replies_do_not_validate_or_p
         context=f"canonical PB{pb_idx + 1} identity recovery after {case}",
     )
     assert_lcd_exact(final_lines, expected)
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_identity_parser_waits_for_v35_rev16_tail_before_valid(
+    v173_hex: Path, v35_hex: Path, pb_idx: int
+) -> None:
+    chain = _connected_chain(v173_hex, v35_hex)
+    query_id = _arm_identity_pending(chain, pb_idx, pending_id=0x12)
+    frames = _identity_reply_frames(query_id, major=0x03, minor=0x05, revision=0x0123)
+
+    _inject_control_rx_frames(chain, frames[:5])
+
+    mask = _identity_mask(pb_idx)
+    assert not (chain.read_reg(V172_DIAG_ID_VALID_MASK_PHYS) & mask)
+    assert chain.read_reg(V172_DIAG_ID_EXPECTED_CMD_PHYS) == 0x54
+    assert chain.read_reg(V172_DIAG_ID_FLAGS_PHYS) & V172_DIAG_ID_PENDING_MASK
+    assert all(chain.read_reg(addr) == 0x00 for addr in _diag_identity_cells(pb_idx))
+
+    _inject_control_rx_frames(chain, frames[5:])
+
+    major, minor, rev_lo, rev_hi = _diag_identity_cells(pb_idx)
+    assert chain.read_reg(V172_DIAG_ID_VALID_MASK_PHYS) & mask
+    assert chain.read_reg(V172_DIAG_ID_SEEN_MASK_PHYS) & mask
+    assert not (chain.read_reg(V172_DIAG_ID_FLAGS_PHYS) & V172_DIAG_ID_PENDING_MASK)
+    assert [chain.read_reg(addr) for addr in (major, minor, rev_lo, rev_hi)] == [
+        0x03,
+        0x05,
+        0x23,
+        0x01,
+    ]
+
+
+@pytest.mark.slow
+@pytest.mark.parametrize("pb_idx", [0, 1])
+def test_v173_identity_parser_keeps_legacy_v33_bf53_commit_path(
+    v173_hex: Path, v35_hex: Path, pb_idx: int
+) -> None:
+    chain = _connected_chain(v173_hex, v35_hex)
+    query_id = _arm_identity_pending(chain, pb_idx, pending_id=0x12)
+    frames = _identity_reply_frames(query_id, major=0x03, minor=0x03, revision=0x0091)
+
+    _inject_control_rx_frames(chain, frames[:5])
+
+    mask = _identity_mask(pb_idx)
+    major, minor, rev_lo, rev_hi = _diag_identity_cells(pb_idx)
+    assert chain.read_reg(V172_DIAG_ID_VALID_MASK_PHYS) & mask
+    assert not (chain.read_reg(V172_DIAG_ID_FLAGS_PHYS) & V172_DIAG_ID_PENDING_MASK)
+    assert [chain.read_reg(addr) for addr in (major, minor, rev_lo, rev_hi)] == [
+        0x03,
+        0x03,
+        0x91,
+        0x00,
+    ]
+
+
+def test_v173_identity_parser_source_gate_is_v34_plus_not_v34_only() -> None:
+    text = V173_CONTROL_ASM.read_text(encoding="utf-8")
+    match = re.search(
+        r"v172_bf4f_payload_rev_lo:\n(?P<body>.*?)\nv172_bf4f_commit_rev8:",
+        text,
+        re.DOTALL,
+    )
+    assert match is not None, "BF/4F revision-low parser block not found"
+    body = match.group("body")
+
+    assert "cpfslt  v172_diag_id_tmp_minor_b2, BANKED" in body
+    assert not re.search(
+        r"movlw\s+0x04\s+cpfseq\s+v172_diag_id_tmp_minor_b2,\s+BANKED\s+bra\s+v172_bf4f_commit_rev8",
+        body,
+    )
 
 
 @pytest.mark.slow

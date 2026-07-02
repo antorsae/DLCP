@@ -1375,8 +1375,10 @@ v172_bf4f_payload_rev_lo:
         cpfseq  v172_diag_id_tmp_major_b2, BANKED
         bra     v172_bf4f_commit_rev8
         movlw   0x04
-        cpfseq  v172_diag_id_tmp_minor_b2, BANKED
+        cpfslt  v172_diag_id_tmp_minor_b2, BANKED
+        bra     v172_bf4f_expect_rev16_hi
         bra     v172_bf4f_commit_rev8
+v172_bf4f_expect_rev16_hi:
         movlw   0x54
         movwf   v172_diag_id_expected_cmd_b2, BANKED
         bra     v172_bf4f_exit_bsr0
@@ -7381,26 +7383,28 @@ v171_waiting_cold_past_grace_done:
         call    rx_parser_entry, 0x0                           ; dest: 0x00044a
         call    v171_service_rx_frame_gap, 0x0             ; cold WAITING parser stall guard (entry/exit movlb 0x0 absorbs rx_parser_entry BSR drift)
         call    v173_waiting_ir_service, 0x0               ; BUG-2: keep IR armed while WAITING
+        ; Accumulate the four sentinels in a foreground-only cell; ISR entry
+        ; uses Common_RAM+24, so that cell cannot safely hold this predicate.
         movlw   0x80
         subwf   input_select_cache_b0, W, B                                  ; reg: 0x0b8
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
-        movwf   (Common_RAM + 24), A                        ; reg: 0x018
+        movwf   v171_tx_enq_retry_acc, A                    ; scratch
         movlw   0x80
         subwf   volume_cache_b0, W, B                                  ; reg: 0x0b9
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
-        andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
+        andwf   v171_tx_enq_retry_acc, F, A
         movlw   0x80
         subwf   cmd1d_setting_cache_b0, W, B                                  ; reg: 0x0a7
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
-        andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
+        andwf   v171_tx_enq_retry_acc, F, A
         movlw   0x80
         subwf   raw_status_cache_b0, W, B                                  ; reg: 0x0a1
         btfss   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         movlw   0x01
-        andwf   (Common_RAM + 24), F, A                     ; reg: 0x018
+        andwf   v171_tx_enq_retry_acc, F, A
         btfsc   STATUS, Z, A                                ; reg: 0xfd8, bit: 2
         bra     boot_waiting_for_dlcp_loop                                   ; dest: 0x00118c
         movlw   0x61
@@ -9475,7 +9479,7 @@ input_pb2_same_as_pb1_table:
 control_release_banner_row1:
         db      0x46, 0x69, 0x72, 0x6D, 0x77, 0x61, 0x72, 0x65, 0x20, 0x56, 0x31, 0x2E, 0x37, 0x33, 0x00 ; "Firmware V1.73"
 control_release_banner_row2:
-        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x36, 0x32, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x36, 0x33, 0x30, 0x00 ; "Rev x62 20260630"
+        db      0x52, 0x65, 0x76, 0x20, 0x78, 0x36, 0x33, 0x20, 0x32, 0x30, 0x32, 0x36, 0x30, 0x37, 0x30, 0x32, 0x00 ; "Rev x63 20260702"
 
 ; --- Canonical V1.73 release metadata (flashed app space, not runtime state) ---
         org     0x77b0
@@ -9483,8 +9487,8 @@ control_release_banner_row2:
 control_release_metadata:
         db      0x44, 0x4c, 0x43, 0x50                    ; "DLCP"
         db      0x43, 0x54, 0x52, 0x4c                    ; "CTRL"
-        db      0x01, 0x07, 0x33, 0x62                    ; V1.73 + monotonic release revision
-        db      0x20, 0x26, 0x06, 0x30                    ; build date 20260630 (BCD YYYYMMDD)
+        db      0x01, 0x07, 0x33, 0x63                    ; V1.73 + monotonic release revision
+        db      0x20, 0x26, 0x07, 0x02                    ; build date 20260702 (BCD YYYYMMDD)
 
 ; --- V1.73 bootloader pin (app code may grow beyond stock extents) ---
         org     0x7800

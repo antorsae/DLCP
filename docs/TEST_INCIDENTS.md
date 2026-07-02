@@ -1,6 +1,6 @@
 # Test Incidents
 
-Last updated: 2026-06-30
+Last updated: 2026-07-02
 Scope: sanitized hardware and simulator incidents that must be promoted into
 deterministic regressions or opt-in hardware gates.
 
@@ -37,6 +37,81 @@ Simulator reproducibility:
 Regression or hardware gate:
 Disposition:
 ```
+
+## TR-20260702-001 Fable Confirmed V3.5/V1.73 Firmware Bugs
+
+Incident ID: `TR-20260702-001`
+Date: 2026-07-02
+
+Firmware artifacts:
+
+- MAIN: `firmware/patched/releases/DLCP_Firmware_V3.5.hex`
+- CONTROL: `firmware/patched/releases/DLCP_Control_V1.73.hex`
+
+Artifact-derived identity:
+
+- MAIN: fixed canonical V3.5 rev `0x009B`, SHA-256
+  `7238d08cacf32f25358cf1a83d86984cb7c1d454ce46051bafe56acc3eed1071`
+- CONTROL: fixed canonical V1.73 rev `0x63`, build `20260702`, SHA-256
+  `9a28543e99ff1806a470826283323e9438a29dd6a4aa6917a27152a1631c2ee1`
+
+Observed state:
+
+- LCD rows: not a single live observation; report covers confirmed simulator and
+  static code paths.
+- USB/HID enumeration: not involved.
+- Audio state: duplicate MAIN wake and repeated fixed-input route churn can be
+  audio-visible; no live audio evidence was collected in this pass.
+
+Operator actions:
+
+- Fable code review reported six behavior bugs in current V3.5/V1.73 source.
+  The bugs were independently checked and implemented only on V3.5 MAIN and
+  V1.73 CONTROL.
+
+Raw evidence:
+
+- Local chat/review transcript only; no raw hardware identifiers or media.
+
+Sanitized evidence:
+
+- `docs/FABLE_CONFIRMED_BUGS_20260702.md`
+- `docs/FABLE_CONFIRMED_BUGS_20260702_IMPL.md`
+
+Simulator reproducibility:
+
+- Deterministic pre-fix focused run failed `27` nodes on old behavior, including
+  duplicate wake canceling bring-up, channel-6 boot source mutating channel 5,
+  repeated fixed-input `cmd 0x06` route churn, missing RX-ring prior-`GIE`
+  structural guard, V3.5 identity committing at `BF/53`, and cold-WAITING use
+  of ISR scratch `(Common_RAM + 24)`.
+- FABLE-004 RX-ring/OERR and FABLE-006 WAITING scratch are instruction-window
+  races. The current simulator cannot deterministically interrupt at the exact
+  foreground instruction boundary, so closure is structural plus broad
+  simulator regression coverage.
+
+Regression or hardware gate:
+
+- Deterministic regressions:
+  `tests/sim/test_v35_duplicate_wake_idempotence.py`,
+  `tests/sim/test_v35_boot_source_sanitizer.py`,
+  `tests/sim/test_v35_cmd06_idempotence.py`,
+  `tests/sim/test_v35_uart_rx_ring_oerr_race.py`,
+  `tests/sim/test_v173_waiting_predicate_scratch.py`,
+  and V3.5 rev16 additions in `tests/sim/test_v172_v33_diag_identity.py`.
+- Focused post-fix gate: `25 passed in 30.30s`.
+- Affected broad group: `339 passed in 1346.10s`.
+- Release/preflight gate: `105 passed, 3 warnings in 60.06s`.
+- RAM safety: `OK (main-v35, control-v173)`.
+- Full simulator gate: `2175 passed, 2 skipped, 2 xfailed, 7 warnings in
+  1610.69s`.
+- Remaining hardware gates: live PB2 DOWN, audio routing, persistence, IR, and
+  live CONTROL flashing remain required before hardware field closure.
+
+Disposition:
+
+- Fixed in MAIN V3.5 rev `0x009B` and CONTROL V1.73 rev `0x63` / build
+  `20260702`. Live hardware was not run.
 
 ## TR-20260630-003 CONTROL Flash Relay Not Armed But Stream ACKs
 

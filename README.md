@@ -3,22 +3,26 @@
 Drop-in replacement firmware for the **Hypex DLCP**.  The current
 non-hardware-gated candidate pair is:
 
-- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x009A`)
-- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x62 / build 20260630`)
+- MAIN: [`firmware/patched/releases/DLCP_Firmware_V3.5.hex`](firmware/patched/releases/DLCP_Firmware_V3.5.hex) (`V3.5 / rev 0x009B`)
+- CONTROL: [`firmware/patched/releases/DLCP_Control_V1.73.hex`](firmware/patched/releases/DLCP_Control_V1.73.hex) (`V1.73 / rev 0x63 / build 20260702`)
 
-MAIN `rev 0x009A` includes the CONTROL-flash relay fail-fast fix: an unarmed
+MAIN `rev 0x009B` includes the CONTROL-flash relay fail-fast fix: an unarmed
 CONTROL relay returns `42 12 ...` immediately instead of allowing a full
 success-looking stream that fails at final `41 11 ...`.  It also flushes the
 final CONTROL application record before the `0x77C0` bootloader boundary and
 keeps partial downstream Intel HEX records open across 30-byte HID packet
-boundaries instead of inserting packet-boundary CR/LF.
-CONTROL `rev 0x62` includes the real-RB5 POWER-wake RC5 decoder recovery,
+boundaries instead of inserting packet-boundary CR/LF.  It also makes duplicate
+wake frames idempotent, clamps channel-6 boot source data without mutating
+channel 5, suppresses repeated fixed-input `cmd 0x06` route churn, and masks the
+RX-ring dequeue against OERR resync races while preserving prior `GIE`.
+CONTROL `rev 0x63` includes the real-RB5 POWER-wake RC5 decoder recovery,
 the PB2 `Same as PB1` + `DOWN` fix, the follow-up BF/08 ACKSTAT-only stale-`!`
 fix found by the broad simulator gate, persistent PB1/PB2 input settings with
 `Same as PB1` as the erased/unknown PB2 EEPROM default, fixed RC5 F4/F5
 preset/input toggle shortcuts with F4 held-repeat suppression and F5
 saturated-TX no-op behavior, LCD refresh-budget throttling, PB2 full-table
-row-to-`cmd06` intent persistence, and the test-robustness canonical artifact
+row-to-`cmd06` intent persistence, V3.4+ Diagnostics identity revision parsing,
+cold-WAITING ISR scratch isolation, and the test-robustness canonical artifact
 gates documented in
 [`docs/TEST_ROBUSTNESS_IMPL.md`](docs/TEST_ROBUSTNESS_IMPL.md).  Non-hardware
 gates remain required before hardware field closure; live PB2 DOWN,
@@ -113,12 +117,13 @@ shows each MAIN's version/revision directly on the PB1/PB2 Diagnostics pages.
 
 **Per-PB input selection.**  Once CONTROL has seen PB2, the menu order becomes
 `Volume -> Preset -> Input PB1 -> Input PB2 -> Setup -> PB1 Diag -> PB2 Diag`.
-PB2 initially shows `Same as PB1`, preserving the stock-style broadcast input
-behavior for both MAINs.  Selecting a concrete PB2 source makes PB1 and PB2
-independent and sends addressed input frames; selecting `Same as PB1` again
-returns to broadcast behavior.  CONTROL `rev 0x62` persists PB1 and PB2 input
-choices in guarded CONTROL EEPROM bytes and keeps PB2 pending until PB2 is
-rediscovered after boot.  The Volume page always shows PB1's source.
+PB2 initially shows `Same as PB1`, preserving linked PB1/PB2 input intent after
+PB2 is known.  Selecting a concrete PB2 source makes PB1 and PB2 independent and
+sends addressed input frames; selecting `Same as PB1` again returns to linked
+intent.  Route frames are addressed only to PBs known reachable; a persisted PB2
+concrete source stays pending until PB2 is rediscovered after boot.  CONTROL
+`rev 0x63` persists PB1 and PB2 input choices in guarded CONTROL EEPROM bytes.
+The Volume page always shows PB1's source.
 This fixes the stock MASTER/FOLLOWER digital-input problem: stock CONTROL
 broadcasts one global input selection, so choosing `Optical` makes both PB1 and
 PB2 listen to their local optical receivers even though the follower is normally
@@ -133,7 +138,7 @@ Input PB2: AES
 If PB2 health ages out, the PB2 input title can show `old` or `lost`, but the
 page remains available after PB2 has been discovered.  The reported PB2
 `Same as PB1` + `DOWN` reboot is simulator/canonical-HEX fixed in CONTROL
-`rev 0x52` and retained in `rev 0x62`, but not live field-closed until the
+`rev 0x52` and retained in `rev 0x63`, but not live field-closed until the
 hardware gate in
 [`docs/HARDWARE_TEST.md`](docs/HARDWARE_TEST.md) passes.
 
@@ -180,7 +185,8 @@ roles, with rename decisions tracked in
 `artifacts/reanalysis/dlcp_main_v34_rename_ledger.tsv`.  The same engineering
 pass reclaimed the MAIN app region from the edge of the fixed `0x4C00` preset
 table wall to controlled feature budget; the current V3.5 listing leaves
-`1826` bytes before `0x4C00`.  That reserve is deliberate
+`1706` bytes before `0x4C00` and `5532` total program-memory bytes free.  That
+reserve is deliberate
 feature budget for future diagnostics, safety checks, and controlled UI/audio
 behavior changes.
 
@@ -357,7 +363,7 @@ MAIN USB re-enumeration.  With exactly one visible MAIN, the wrapper auto-picks
 that MAIN.  With multiple visible MAINs, pass the relay MAIN path explicitly.
 CONTROL must be in its bootloader before the live flash. Power-cycle while
 holding **UP + DOWN** for about 6 seconds; do not press SELECT. With MAIN
-V3.5 rev `0x009A` or newer, a missed relay handshake returns `42 12 ...` and
+V3.5 rev `0x009B` or newer, a missed relay handshake returns `42 12 ...` and
 the repo flasher aborts before report 2 with manual bootloader guidance. After
 CONTROL flashing, power-cycle once so V1.73 starts cleanly from cold boot.
 
@@ -406,28 +412,24 @@ Fast simulator gate:
 Full simulator gate:
 
 ```bash
-.venv_ep0/bin/python -m pytest tests/sim -n 16 -q
+.venv_ep0/bin/python -m pytest tests/sim -n 32 -q
 ```
 
-Current non-hardware x62/x009A verification snapshot:
+Current non-hardware x63/x009B verification snapshot:
 
 - Full simulator gate:
-  `2150 passed, 2 skipped, 2 xfailed, 7 warnings in 991.13s`
-- Full-chain CONTROL flash relay proof:
-  `2 passed, 32 deselected in 49.37s`
-- F4/F5 source-assembled multi-PB hardening slice:
-  `29 passed, 149 deselected in 99.05s`
-- Real-RB5 F4 held-repeat and F4/F5 receiver smoke on source + canonical:
-  `4 passed, 18 deselected in 18.25s`
-- V1.73/V3.5 release builder parity:
-  `14 passed in 0.06s`
-- V1.71/V1.73 dispatcher + Flipper sender compatibility:
-  `28 passed in 117.03s`
-- CONTROL RAM-bank safety: `OK (control-v173)`
-- MAIN x009A SHA-256:
-  `7d84601e588df6840c9f1d5d849cc7b74eaa9d0b07ec7c9f9c2c8487adfeb157`
-- CONTROL x62 SHA-256:
-  `5b1c5bf41ade024a6fdad1df8715a7952e9be630d64be7445a71b0c45e684b4a`
+  `2175 passed, 2 skipped, 2 xfailed, 7 warnings in 1610.69s`
+- Fable confirmed-bug focused regressions:
+  `25 passed in 30.30s`
+- Affected multi-PB/Diagnostics/refactoring/field repro group:
+  `339 passed in 1346.10s`
+- Release/preflight gate:
+  `105 passed, 3 warnings in 60.06s`
+- RAM-bank safety: `OK (main-v35, control-v173)`
+- MAIN x009B SHA-256:
+  `7238d08cacf32f25358cf1a83d86984cb7c1d454ce46051bafe56acc3eed1071`
+- CONTROL x63 SHA-256:
+  `9a28543e99ff1806a470826283323e9438a29dd6a4aa6917a27152a1631c2ee1`
 
 This is not live field closure for PB2 DOWN, multi-PB audio routing, or PB2
 input persistence, IR, or test-robustness incidents; run the dedicated hardware

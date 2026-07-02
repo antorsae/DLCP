@@ -1828,23 +1828,15 @@ uart_link_parser__latch_data_and_dispatch_command:
 ; ---------------------------------------------------------------------------
 ; wake_request_handler                     (cmd=0x03 data=0x01)
 ; Sets active_flags.bit3 (open the gate) and raises event_flags.bit2 only if
-; the gate was previously closed (so a wake against an already-open gate
-; doesn't re-trigger run_wake_rail_gate_and_dsp_cold_init). The XOR-then-AND-then-XOR dance is the
-; stock idiom for "set bit3 unconditionally, set bit2 only if was clear".
+; the gate was previously closed.  Duplicate wake frames can arrive in one
+; parser drain; once bit2 is pending, an already-open duplicate must preserve
+; the deferred run_wake_rail_gate_and_dsp_cold_init dispatch.
 ; This is the wake frame that V1.62b CONTROL was failing to send after
 ; reconnect — see V162B_RECONNECT_WAKE_BUG.md.
 ; ---------------------------------------------------------------------------
 wake_request_handler:
-    clrf        length_mask_or_divisor_low_scratch_byte, ACCESS                    ; ram_0x005 = (gate-was-closed) ? 1 : 0
     btfss       active_flags_acc, 3, ACCESS              ; gate already open?
-    incf        length_mask_or_divisor_low_scratch_byte, F, ACCESS
-    rlncf       length_mask_or_divisor_low_scratch_byte, F, ACCESS
-    rlncf       length_mask_or_divisor_low_scratch_byte, F, ACCESS                 ; shifted into bit2 mask position
-    movf        event_flags_b0, W, BANKED
-    xorwf       length_mask_or_divisor_low_scratch_byte, W, ACCESS
-    andlw       0xFB                                 ; preserve every bit except bit2
-    xorwf       length_mask_or_divisor_low_scratch_byte, W, ACCESS                 ; OR in bit2 if we computed it
-    movwf       event_flags_b0, BANKED
+    bsf         event_flags_b0, 2, BANKED                ; closed -> schedule wake bring-up
     btfsc       event_flags_b0, 2, BANKED               ; event raised?
     bsf         active_flags_acc, 3, ACCESS              ; open the gate
     bra         uart_link_parser__handler_return_tail
@@ -2017,8 +2009,11 @@ cmd06_input_select_handler:
     bra         cmd06_input_select_commit
 cmd06_input_select_check_noop:
     movf        current_cmd_data_b0, W, BANKED
-    iorwf       input_select_b0, W, BANKED
+    xorwf       input_select_b0, W, BANKED
     bnz         cmd06_input_select_commit
+    movf        current_cmd_data_b0, W, BANKED
+    cpfseq      input_select_mirror_b0, BANKED
+    movwf       input_select_mirror_b0, BANKED
     bra         uart_link_parser__handler_return_tail
 cmd06_input_select_commit:
     movf        current_cmd_data_b0, W, BANKED              ; commit new input
@@ -2263,7 +2258,7 @@ restore_eeprom_settings_on_boot__validate_channel6_source:
     cpfsgt      INDF2, ACCESS
     bra         restore_eeprom_settings_on_boot__validate_src_route_status
     movlw       0x01
-    movwf       channel_5_source_config_b0, BANKED
+    movwf       channel_6_source_config_b0, BANKED
 restore_eeprom_settings_on_boot__validate_src_route_status:
     movlw       0x03
     cpfsgt      src_route_status_code_acc, ACCESS
@@ -2347,7 +2342,7 @@ restore_eeprom_settings_on_boot__read_preset_a_filename:
     rcall       eeprom_write_runtime_version_byte_at_w
     movlw       0x82
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x9A                            ; V3.5_RUNTIME_EEPROM_REV_LO
+    movlw       0x9B                            ; V3.5_RUNTIME_EEPROM_REV_LO
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
     bra         eeprom_write_byte_if_changed_rcall_trampoline
 
@@ -7910,9 +7905,15 @@ uint8_to_float32_and_save:
 ; ---------------------------------------------------------------------------
 rx_ring_read:
     clrf        addr_high_table_row_or_checksum_scratch_byte, ACCESS
+    clrf        eeprom_gate_flash_gie_or_uart_timeout_scratch_byte, ACCESS
+    btfss       INTCON, 7, ACCESS
+    bra         rx_ring_read__dequeue_with_gie_masked
+    incf        eeprom_gate_flash_gie_or_uart_timeout_scratch_byte, F, ACCESS
+    bcf         INTCON, 7, ACCESS
+rx_ring_read__dequeue_with_gie_masked:
     rcall       rx_ring_has_data
 
-    bz          rx_ring_read__return_byte_or_zero
+    bz          rx_ring_read__restore_gie
     ; Task #8 (session-49 lost mute frame): every consumed byte is parser
     ; PROGRESS, so it must reset the mid-frame stall watchdog.  The stock
     ; parser idles at fpos=1 after each dispatched frame, letting the
@@ -7929,8 +7930,11 @@ rx_ring_read:
     incf        rx_ring_rd_b0, F, BANKED
     movlw       0xBF
     cpfsgt      rx_ring_rd_b0, BANKED
-    bra         rx_ring_read__return_byte_or_zero
+    bra         rx_ring_read__restore_gie
     clrf        rx_ring_rd_b0, BANKED
+rx_ring_read__restore_gie:
+    tstfsz      eeprom_gate_flash_gie_or_uart_timeout_scratch_byte, ACCESS
+    bsf         INTCON, 7, ACCESS
 rx_ring_read__return_byte_or_zero:
     movf        addr_high_table_row_or_checksum_scratch_byte, W, ACCESS
     return      0
@@ -9265,7 +9269,7 @@ cmd25_identity_query_handler:
     movwf       status_addr_high_or_i2c_payload_scratch_byte, ACCESS
     movlw       0x09                        ; V3.5_IDENTITY_REV_LO_HI
     movwf       count_flash_page_or_i2c_payload_scratch_byte, ACCESS
-    movlw       0x0A                        ; V3.5_IDENTITY_REV_LO_LO
+    movlw       0x0B                        ; V3.5_IDENTITY_REV_LO_LO
     movwf       flash_end_high_or_loop_mask_scratch_byte, ACCESS
     movlw       0x00                        ; V3.5_IDENTITY_REV_HI_HI
     movwf       flash_src_low_or_rx_length_scratch_byte, ACCESS
@@ -10523,7 +10527,7 @@ eeprom_data:
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
-    db  0x03, 0x05, 0x9A, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
+    db  0x03, 0x05, 0x9B, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; V3.5 lineage: V3.2 diagnostics plus cmd 0x25 MAIN identity reply; third byte is the legacy low byte of the 16-bit release revision
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
     db  0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF  ; ................
