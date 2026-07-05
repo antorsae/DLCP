@@ -1,5 +1,11 @@
 # DLCP A/B Presets
 
+> **Historical design doc.**  This describes the original binary-patch and
+> V3.0/V3.1 preset design.  Later releases changed some decisions recorded
+> here — notably, preset config **filenames are displayed** on the CONTROL
+> LCD again since V3.3/V1.72 (see `docs/PRESET_FILENAME_LCD_SPEC.md`).  The
+> current release pair is described in the root `README.md`.
+
 Reliability-first A/B preset patches for:
 
 - MAIN `V2.3` stock -> patched `V2.4`–`V2.8`, source-assembled `V3.0`/`V3.1`

@@ -1,6 +1,6 @@
 # Historical Release Archive
 
-This archive keeps older firmware versions and non-recommended releases out of the root README.  The supported deployment described in the README is **V3.4 MAIN + V1.73 CONTROL**.
+This archive keeps older firmware versions and non-recommended releases out of the root README.  The supported deployment described in the README is **V3.5 MAIN + V1.73 CONTROL**.
 
 ## Stock Baseline
 
@@ -11,8 +11,9 @@ This archive keeps older firmware versions and non-recommended releases out of t
 
 Stock operation works for normal use, but the firmware has unbounded waits and
 limited fault visibility.  The V3.2 + V1.71 line fixed many robustness gaps,
-V3.3 + V1.72 layered per-MAIN Diagnostics identity display on top, and V3.4 +
-V1.73 is the current recommended pair.
+V3.3 + V1.72 layered per-MAIN Diagnostics identity display on top, V3.4 + V1.73
+was the refactoring/hardening pair, and V3.5 + V1.73 is the current recommended
+pair.
 
 ## MAIN History
 
@@ -27,7 +28,8 @@ V1.73 is the current recommended pair.
 | V3.1 | Source rewrite | Integrated the V2.x features into source; precursor to V3.2. |
 | V3.2 | Source rewrite | Historical robustness/Diagnostics MAIN release and rollback reference. |
 | V3.3 | Source rewrite | Previous supported MAIN release; adds cmd `0x25` MAIN identity reply for V1.72 Diagnostics. |
-| V3.4 | Source rewrite | Current supported MAIN release; includes RAM-bank safety hardening, Preset filename lifecycle fixes, SRC4382 estimator-hole/source-loss robustness, DSP coefficient transaction safety, wake I2C phase-order hardening, chain-TX arbitration, I2C recovery classification, and V3.4 identity plumbing. |
+| V3.4 | Source rewrite | Previous supported MAIN release; includes RAM-bank safety hardening, Preset filename lifecycle fixes, SRC4382 estimator-hole/source-loss robustness, DSP coefficient transaction safety, wake I2C phase-order hardening, chain-TX arbitration, I2C recovery classification, and V3.4 identity plumbing.  Source kept stable for reproducible historical rebuilds. |
+| V3.5 | Source rewrite | Current supported MAIN release; V3.4 source-line promotion plus CONTROL-flash relay fail-fast/boundary fixes, XML-compiled A/B preset release flow, SRC4382 USB `cmd 0x45` signal diagnostics, and the 2026-07 wake/route/RX-ring hardening. |
 
 ## CONTROL History
 
@@ -44,14 +46,16 @@ V1.73 is the current recommended pair.
 
 ## Compatibility Notes
 
-V3.4 MAIN and V1.73 CONTROL are the current supported pair.  V3.3 MAIN and
-V1.72 CONTROL remain the previous supported identity-display pair, and V3.2
-MAIN plus V1.71 CONTROL remain a useful historical robustness pair and rollback
+V3.5 MAIN and V1.73 CONTROL are the current supported pair.  V3.4 MAIN plus
+V1.73 CONTROL is the previous supported pair and MAIN rollback reference, V3.3
+MAIN and V1.72 CONTROL remain the previous identity-display pair, and V3.2 MAIN
+plus V1.71 CONTROL remain a useful historical robustness pair and rollback
 reference.
 
 | MAIN | CONTROL | Status |
 |---|---|---|
-| V3.4 | V1.73 | Current supported pair. |
+| V3.5 | V1.73 | Current supported pair. |
+| V3.4 | V1.73 | Previous supported pair; MAIN rollback reference. |
 | V3.4 | V1.72 | Staged MAIN-first combination for controlled rollout or CONTROL rollback. |
 | V3.3 | V1.73 | Staged CONTROL-first/MAIN rollback combination. |
 | V3.3 | V1.72 | Previous supported pair. |
