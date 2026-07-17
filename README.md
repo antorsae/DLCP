@@ -114,6 +114,43 @@ scroll.  Before PB2 has ever replied there is one `Input:` page and no separate
 page for the rest of that CONTROL session.  The two Diagnostics pages remain
 available so an absent, old, or lost PB can still be inspected.
 
+#### Input selection in detail
+
+UP selects the next row and DOWN selects the previous row; both lists wrap:
+
+```text
+         UP ──────────────────────────────────────────────────────────────────►
+PB1  Auto Detect → S/PDIF → USB Audio → AES → Optical
+       → Analogue 1 → Analogue 2 → Analogue 3 → Analogue 4 ⟲
+
+PB2  Same as PB1 → Auto Detect → S/PDIF → USB Audio → AES → Optical
+       → Analogue 1 → Analogue 2 → Analogue 3 → Analogue 4 ⟲
+         ◄───────────────────────────────────────────────────────────────── DOWN
+```
+
+`Same as PB1` is a link mode, not another physical input.  On that default row
+PB2 is linked; choosing any concrete PB2 row makes it independent:
+
+```text
+       linked                 UP                 independent
+┌────────────────┐                      ┌────────────────┐
+│Input PB2:      │ ───────────────────► │Input PB2:      │
+│Same as PB1     │                      │Auto Detect     │
+└────────────────┘                      └────────────────┘
+```
+
+While linked, changing PB1 applies the new source to both boards.  After PB2
+is made independent, each input page changes only its named board.  Selecting
+`Same as PB1` again immediately moves PB2 to PB1's current source and restores
+linked behavior; DOWN from that row safely wraps to `Analogue 4`.  The Volume
+page always reports PB1's source.
+
+At protocol level these remain addressed `cmd 0x06` frames: a linked change
+sends one to `B1` and one to `B2`, while an independent change sends only to
+the selected board; V1.73 never relies on a global `B0` input broadcast.  Data
+values are `0x00` Auto Detect, `0x01`–`0x04` Analogue 1–4, `0x05` S/PDIF,
+`0x06` USB Audio, `0x07` AES, and `0x08` Optical.
+
 | Page | Shows | UP / DOWN | SELECT |
 |---|---|---|---|
 | `Volume` | Volume in dB (or blinking `Mute`), PB1 source, link health, active preset letter (`!` if DSP fault) | Volume in 1 dB steps (also unmutes) | Toggle mute |
