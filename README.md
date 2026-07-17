@@ -87,28 +87,54 @@ after a change before switching off).  The full menu order becomes
 Six buttons: **UP, DOWN, LEFT, RIGHT, SELECT, STBY**.  LEFT/RIGHT move
 between pages (wrapping in both directions); UP/DOWN and SELECT act on the
 current page.  Stock V1.6b has three pages (`Volume → Input → Setup`);
-everything else here is new:
+Preset, per-board input selection, and both Diagnostics pages are new.
+
+This is the exact 16x2 LCD flow captured from a two-MAIN simulation using the
+canonical V1.73 CONTROL and V3.5 MAIN images.  Follow the arrowheads with
+**RIGHT**; **LEFT** traverses the same ring in reverse:
 
 ```text
-◄ LEFT                                                      RIGHT ►
-Volume → Preset → Input PB1 → Input PB2 → Setup → PB1 Diag → PB2 Diag ⟲
-                              (appears once
-                              PB2 discovered)
+┌────────────────┐ → ┌────────────────┐ → ┌────────────────┐ → ┌────────────────┐
+│Volume:-17.0dB A│   │Preset         A│   │Input PB1:      │   │Input PB2:      │
+│Auto Detect     │   │521.4 22MG10F-v5│   │Auto Detect     │   │Same as PB1     │
+└────────────────┘   └────────────────┘   └────────────────┘   └────────────────┘
+        ▲                                                               │
+        │                                                               ▼
+┌────────────────┐ ← ┌────────────────┐ ← ┌────────────────┐ ←──────────┘
+│PB2 OK v3.5 009B│   │PB1 OK v3.5 009B│   │Setup           │
+│O1              │   │O1              │   │BL Timeout      │
+└────────────────┘   └────────────────┘   └────────────────┘
 ```
+
+The values are one clean power-on example: volume and source follow saved
+settings, and `O1` is normal power-on-reset context, not a fault.  The Preset
+row shows one 16-character window of the active FilterData name; longer names
+scroll.  Before PB2 has ever replied there is one `Input:` page and no separate
+`Input PB2:` entry.  Discovery renames it `Input PB1:` and inserts the PB2 input
+page for the rest of that CONTROL session.  The two Diagnostics pages remain
+available so an absent, old, or lost PB can still be inspected.
 
 | Page | Shows | UP / DOWN | SELECT |
 |---|---|---|---|
-| `Volume` | Volume in dB (or blinking `Mute`), link health, active preset letter (`!` if DSP fault) | Volume up/down (also unmutes) | Toggle mute |
+| `Volume` | Volume in dB (or blinking `Mute`), PB1 source, link health, active preset letter (`!` if DSP fault) | Volume in 1 dB steps (also unmutes) | Toggle mute |
 | `Preset` | Active preset A/B, link-health glyph; second line: the loaded config's filename, scrolling | UP = preset A, DOWN = preset B | — |
 | `Input PB1` | PB1 source | Cycle: Auto Detect · S/PDIF · USB Audio · AES · Optical · Analogue 1–4 | — |
 | `Input PB2` | PB2 source (title shows `old`/`lost` if PB2 stops reporting) | Same list plus `Same as PB1` (default) | — |
-| `Setup` | One setup item at a time | Choose item | Enter/leave the item's editor |
+| `Setup` | `BL Timeout` | — | Enter/leave the timeout editor |
 | `PB1 Diag` / `PB2 Diag` | Live health per board: `PBn OK v3.5 NNNN`, issue counters, reset causes (park ~1 s to populate) | — | — |
 
-Setup items (stock-inherited): `Source CH1:`–`Source CH6:` output routing
-(`Left` / `Right` / `L+R` / `L-R`), `USBaudio:` mapping (`CAT/AES` /
-`S/PDIF`), and `BL Timeout` LCD backlight (`Off` / `30 sec` / `2 min` /
-`5 min`).
+V1.73 exposes one Setup item.  SELECT opens its editor; UP/DOWN cycles the four
+actual LCD values, and LEFT/RIGHT returns to the surrounding page ring:
+
+```text
+┌────────────────┐   SELECT   ┌────────────────┐
+│Setup           │ ─────────→ │BL Timeout      │
+│BL Timeout      │            │30 sec          │
+└────────────────┘            └────────────────┘
+                                  UP / DOWN
+                                      ↕
+                Off (no timeout) ↔ 30 sec ↔ 2 min ↔ 5 min ⟲
+```
 
 Outside the page ring:
 
